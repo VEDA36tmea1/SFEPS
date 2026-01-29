@@ -16,16 +16,16 @@
 
 | 타입 | 언제 쓰나? | 프로젝트 예시 |
 | --- | --- | --- |
-| `feat` | 새로운 기능 추가 | `feat: add face detection and age-gender analysis to camera` |
-| `fix` | 버그 수정 | `fix: fix UART timeout in RFID-server communication` |
-| `refactor` | 코드 구조 개선 (기능 변화 없음) | `refactor: simplify RTSP stream handling in server` |
-| `docs` | 문서(README, 기획서 등) 수정 | `docs: update architecture diagram for monorepo` |
-| `test` | 테스트 코드 추가/수정 | `test: add integration tests for laser activation` |
-| `chore` | 빌드/설정/잡일 (코드 아닌 것) | `chore: add .gitignore and pre-commit hooks` |
-| `style` | 코드 포맷팅 (기능 영향 없음) | `style: format python code with black` |
-| `perf` | 성능 개선 | `perf: optimize face detection latency under 500ms` |
-| `ci` | CI/CD 설정 변경 | `ci: add github actions for build and test` |
-| `build` | 빌드 시스템/의존성 변경 | `build: update opencv to 4.8.0` |
+| `✨ feat` | 새로운 기능 추가 | `feat: add face detection and age-gender analysis to camera` |
+| `🐛 fix` | 버그 수정 | `fix: fix UART timeout in RFID-server communication` |
+| `♻️ refactor` | 코드 구조 개선 (기능 변화 없음) | `refactor: simplify RTSP stream handling in server` |
+| `📝 docs` | 문서(README, 기획서 등) 수정 | `docs: update architecture diagram for monorepo` |
+| `🧪 test` | 테스트 코드 추가/수정 | `test: add integration tests for laser activation` |
+| `🧹 chore` | 빌드/설정/잡일 (코드 아닌 것) | `chore: add .gitignore and pre-commit hooks` |
+| `🎨 style` | 코드 포맷팅 (기능 영향 없음) | `style: format python code with black` |
+| `⚡ perf` | 성능 개선 | `perf: optimize face detection latency under 500ms` |
+| `🚦 ci` | CI/CD 설정 변경 | `ci: add github actions for build and test` |
+| `📦 build` | 빌드 시스템/의존성 변경 | `build: update opencv to 4.8.0` |
 
 ### scope (범위)
 
@@ -81,6 +81,24 @@ BREAKING CHANGE: All hardware modules need firmware update
 ```
 
 `!` 느낌표는 **breaking change 표시**로, SemVer를 사용할 경우 자동으로 major 버전 업 조건이 됩니다.
+
+## 브랜치 전략
+
+이 레포는 다음과 같은 브랜치 네이밍 규칙을 권장합니다.
+
+| 브랜치 | 용도 | 예시 |
+| --- | --- | --- |
+| `master`  | 전체 통합 코드  | `master` |
+| `feature/` | 새로운 기능 개발 | `feature/123-camera-face-detection` |
+| `fix/` | 버그 수정 | `fix/45-laser-galvo-not-activating` |
+| `refactor/` | 코드 리팩토링 (기능 변경 없음) | `refactor/78-server-rtsp-handling` |
+| `docs/` | 문서 수정 | `docs/19-update-architecture-diagram` |
+| `test/` | 테스트 코드 추가/수정 | `test/102-add-rfid-integration-tests` |
+| `chore/` | 빌드, 설정, CI 등 잡일 | `chore/15-setup-github-actions` |
+| `hotfix/` | 프로덕션에 즉시 적용해야 하는 긴급 수정 | `hotfix/urgent-rfid-uart-crash` |
+
+- 브랜치 이름에는 **이슈 번호나 간단한 설명**을 포함하는 것을 추천합니다.
+- 긴급 수정(`hotfix/`)은 가능한 빠르게 `master`(또는 실제 운영 브랜치)와 필요한 하위 브랜치에 머지합니다.
 
 ## 디렉터리 구조 가이드
 
