@@ -1,0 +1,163 @@
+# =====================================
+# 기본 OS / 에디터 / 일반적인 잡파일
+# =====================================
+.DS_Store
+Thumbs.db
+*.swp
+*~
+*.bak
+*.tmp
+.vscode/
+.cursor/
+.idea/
+*.code-workspace
+
+# =====================================
+# Python (Server, AI 모듈 등)
+# =====================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.env
+.venv/
+venv/
+ENV/
+*.pyc
+
+# =====================================
+# C++/QT (Client 모듈)
+# =====================================
+*.o
+*.obj
+*.moc
+*.ui.qmake
+moc_*.cpp
+ui_*.h
+*.pro.user
+*.pro.user.*
+build-*/
+debug/
+release/
+*.dll
+*.so
+*.dylib
+*.exe
+*.app
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.a
+*.pch
+*.sdf
+*.opensdf
+*.suo
+*.user
+*.sln.docstates
+*.userprefs
+*.aps
+*.ncb
+*.sbr
+*.bsc
+*.opt
+*.plg
+*.positions
+*.sublime-workspace
+*.sublime-project
+
+# QT 빌드 결과물 (특히 CMake나 qmake 사용 시)
+CMakeLists.txt.user
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
+*.cmake
+*.qmlc
+*.qmltypes
+
+# =====================================
+# STM32 / Embedded (hardware/stm32-rfid-laser/)
+# =====================================
+# STM32CubeIDE / Keil / IAR 등 일반적인 IDE 결과물
+*.elf
+*.hex
+*.bin
+*.map
+*.lst
+*.srec
+*.out
+*.axf
+*.dep
+*.ewd
+*.ewp
+*.eww
+*.uvoptx
+*.uvprojx
+Debug/
+Release/
+build/
+STM32CubeIDE/
+*.ioc   # CubeMX 프로젝트 파일은 커밋해도 되지만, 백업용 .bak 등은 무시
+*.bak
+*.sw4stm32/
+*.metadata/
+.cproject
+.project
+.settings/
+
+# =====================================
+# OpenCV / ML 관련 (Server나 Camera 처리 시)
+# =====================================
+*.npy
+*.npz
+*.h5
+*.pth
+*.onnx
+*.pb
+*.tflite
+*.xml
+*.bin  # 모델 파일은 필요 시 커밋, 하지만 대용량이면 .gitattributes로 LFS 처리 추천
+
+# =====================================
+# 로그 / 임시 / 테스트 결과물
+# =====================================
+logs/
+*.log
+*.logs
+test-results/
+coverage/
+tmp/
+temp/
+
+# =====================================
+# monorepo 공통
+# =====================================
+# 대용량 파일 (필요 시 Git LFS로 관리)
+*.mp4
+*.avi
+*.mov
+*.zip
+*.tar.gz
+
+# 개인 설정 파일
+*.local.*
+config.local.*
+secrets.*
+credentials.*
+
+# =====================================
+# GitHub / CI
+# =====================================
+.github/ISSUE_TEMPLATE/
+.github/PULL_REQUEST_TEMPLATE.md  # 필요 시 커밋하지만 보통은 아니에요
