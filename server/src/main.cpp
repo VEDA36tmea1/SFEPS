@@ -22,11 +22,9 @@ int main(int argc, char *argv[]) {
     gst_rtsp_media_factory_set_launch(factory, 
         "( "
         "libcamerasrc ! "
-        "video/x-raw,width=640,height=480,framerate=24/1 ! "
+        "video/x-raw,width=1280,height=720,framerate=30/1 ! "
         "videoconvert ! "
-        //"x264enc tune=zerolatency speed-preset=ultrafast key-int-max=24 ! "
-        "video/x-raw,format=NV12 ! "
-        "v4l2h264enc extra-controls=\"controls,video_bitrate=800000,video_gop_size=24\"! "
+        "x264enc tune=zerolatency speed-preset=ultrafast bitrate=2500 key-int-max=30 sliced-threads=true ! "
         "h264parse config-interval=-1 ! "
         "rtph264pay name=pay0 pt=96 "
         ")");
