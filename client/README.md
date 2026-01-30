@@ -1,6 +1,6 @@
-# 🛡️ MetroGuard AI - Intelligent Surveillance System
+# SFEPS - Subway Fare Evasion Detection System
 
-**MetroGuard AI**는 Qt6와 OpenCV를 결합하여 실시간 지하철 내 이상 징후를 감지하고 모니터링하기 위한 지능형 영상 감시 시스템 프로토타입입니다.
+**SFEPS**는 Qt6와 OpenCV를 결합하여 실시간 지하철 내 이상 징후를 감지하고 모니터링하기 위한 지능형 영상 감시 시스템 프로토타입입니다.
 
 ---
 
@@ -31,15 +31,11 @@
 PowerShell 또는 터미널에서 다음 명령어를 실행합니다.
 
 ```powershell
-# 1. 빌드 폴더 생성 및 이동
-mkdir build
-cd build
-
-# 2. CMake 구성 (MinGW 컴파일러 명시)
-cmake -G "MinGW Makefiles" `
+# 1. 빌드 환경 구성
+cmake -G "MinGW Makefiles" -B build -S . `
   -DCMAKE_C_COMPILER="C:/Qt/Tools/mingw1310_64/bin/gcc.exe" `
   -DCMAKE_CXX_COMPILER="C:/Qt/Tools/mingw1310_64/bin/g++.exe" `
-  -DCMAKE_MAKE_PROGRAM="C:/Qt/Tools/mingw1310_64/bin/mingw32-make.exe" ..
+  -DCMAKE_MAKE_PROGRAM="C:/Qt/Tools/mingw1310_64/bin/mingw32-make.exe"
 
 # 3. 컴파일 및 빌드
-cmake --build .
+cmake --build build
