@@ -1,41 +1,44 @@
 # SFEPS - Subway Fare Evasion Detection System
 
-**SFEPS**는 Qt6와 OpenCV를 결합하여 실시간 지하철 내 이상 징후를 감지하고 모니터링하기 위한 지능형 영상 감시 시스템 프로토타입입니다.
+**SFEPS**는 Qt6 기반의 클라이언트와 라즈베리파이(MariaDB + GStreamer) 서버를 결합하여, 지하철 내 부정 승차 및 이상 징후를 실시간으로 감지하고 관리하는 지능형 통합 보안 시스템입니다.
 
 ---
 
 ## 🚀 주요 기능
-* **실시간 스트리밍**: RTSP 주소, 웹캠(0), 또는 로컬 영상 파일을 통한 실시간 피드 분석.
-* **영상 처리**: OpenCV를 이용한 실시간 밝기 조절 및 ROI(관심 영역) 확대 기능.
-* **지능형 로그**: 감지된 이상 징후의 타임스탬프 및 상세 내역(AI 판독 결과 등) 기록.
+* **보안 로그인 시스템**: TCP/IP 소켓 통신을 통해 라즈베리파이 내 MariaDB와 연동된 사용자 인증 기능.
+* **멀티 프로토콜 스트리밍**: 라즈베리파이로부터의 **RTSP 실시간 피드** 송수신 및 웹캠, 로컬 영상 지원.
+* **실시간 영상 처리**: OpenCV 기반의 실시간 밝기 조절, ROI(관심 영역) 확대 및 AI 판독 결과 시각화.
+* **중앙 집중형 로그 관리**: 인증 시도 및 이상 징후 발생 시 서버(MariaDB)에 실시간 타임스탬프 기록.
 * **사용자 인터랙션**: 마우스 드래그를 통한 특정 구역 확대 및 슬라이더를 이용한 영상 보정.
 
 ---
 
-## 🛠️ 개발 환경 및 요구 사항
+## 🛠️ 시스템 구성 및 요구 사항
+
+### [Client]
 * **OS**: Windows 10/11
 * **Framework**: Qt 6.10.0 (MinGW 13.1.0 64-bit)
 * **Library**: OpenCV 4.5.5 (MinGW 빌드본)
-* **Build Tool**: CMake 3.21 이상
+* **Network**: TCP Port 1234 (Auth), RTSP Port 8554 (Streaming)
 
 ---
 
-## 📦 빌드 및 설치 방법
+## ⚙️ 네트워크 설정 (필수)
+클라이언트 실행 전 `LoginDialog` 관련 코드에서 서버(라즈베리파이)의 IP 주소를 반드시 확인하십시오.
 
-### 1. 필수 경로 확인
-빌드 전 다음 경로에 라이브러리가 설치되어 있는지 확인하십시오. (경로가 다를 경우 `CMakeLists.txt` 수정 필요)
-* **OpenCV**: `C:/Users/2-08/OpenCV-MinGW-Build`
-* **Qt**: `C:/Qt/6.10.0/mingw_64`
+```cpp
+// 서버 접속 정보 예시 (실제 라즈베리파이 IP로 수정 필요)
+socket->connectToHost("192.168.0.92", 1234);
 
-### 2. CMake 빌드 단계
-PowerShell 또는 터미널에서 다음 명령어를 실행합니다.
+## 1. 빌드 폴더 생성 및 이동
+mkdir build
+cd build
 
-```powershell
-# 1. 빌드 환경 구성
-cmake -G "MinGW Makefiles" -B build -S . `
+## 2. 빌드 환경 구성
+cmake -G "MinGW Makefiles" .. `
   -DCMAKE_C_COMPILER="C:/Qt/Tools/mingw1310_64/bin/gcc.exe" `
   -DCMAKE_CXX_COMPILER="C:/Qt/Tools/mingw1310_64/bin/g++.exe" `
   -DCMAKE_MAKE_PROGRAM="C:/Qt/Tools/mingw1310_64/bin/mingw32-make.exe"
 
-# 3. 컴파일 및 빌드
-cmake --build build
+## 3. 컴파일 및 빌드
+cmake --build .
