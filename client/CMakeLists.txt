@@ -25,6 +25,8 @@ add_executable(QtVideoPlayer
     src/main.cpp
     src/mainwindow.cpp
     src/mainwindow.h
+    src/logindialog.cpp
+    src/logindialog.h
 )
 
 target_include_directories(QtVideoPlayer SYSTEM PRIVATE "${OPENCV_INCLUDE_DIR}")

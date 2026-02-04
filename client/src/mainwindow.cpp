@@ -16,7 +16,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     addSampleData();   // 데이터 로드
 
     // RTSP 연결: FFMPEG 백엔드를 명시하여 주소 오인 에러 방지
-    QString rtspUrl = "rtsp://192.168.0.89:8554/stream";
+    QString rtspUrl = "rtsp://192.168.0.89:8554/live";
     cap.open(rtspUrl.toStdString(), cv::CAP_FFMPEG); 
     
     if(cap.isOpened()) {
