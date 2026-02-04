@@ -4,7 +4,7 @@
 #include "log.h"
 
 // [수정 필요] 가져올 외부 카메라(CCTV)의 주소
-#define EXTERNAL_RTSP_URL "rtsp://admin:CCgbdCCgbd@192.168.0.30/profile1/media.smp" 
+#define EXTERNAL_RTSP_URL "rtsp://admin:CCgbdCCgbd@192.168.0.30/profile2/media.smp" 
 
 // [설정] 서버 포트 및 경로 (rtsp://내IP:8554/live)
 #define SERVER_PORT "8554"
@@ -62,7 +62,7 @@ int main(int argc, char *argv[]) {
     // latency=0: 지연시간 최소화
    gst_rtsp_media_factory_set_launch(factory, 
         "( "
-        "rtspsrc location=" EXTERNAL_RTSP_URL " protocols=tcp latency=200 ! "
+        "rtspsrc location=" EXTERNAL_RTSP_URL " protocols=tcp latency=500 ! "
         "rtph264depay ! "
         "h264parse ! "
         "rtph264pay name=pay0 pt=96 "
