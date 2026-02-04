@@ -11,9 +11,9 @@ set(CMAKE_AUTOUIC ON)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Multimedia MultimediaWidgets Network)
 
 # [2] OpenCV 경로 설정
-set(OPENCV_BIN_DIR "C:/Users/2-08/OpenCV-MinGW-Build/x64/mingw/bin")
-set(OPENCV_INCLUDE_DIR "C:/Users/2-08/OpenCV-MinGW-Build/include")
-set(OPENCV_LIB_DIR "C:/Users/2-08/OpenCV-MinGW-Build/x64/mingw/lib")
+set(OPENCV_BIN_DIR "${CMAKE_SOURCE_DIR}/../OpenCV-MinGW-Build/x64/mingw/bin")
+set(OPENCV_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/../OpenCV-MinGW-Build/include")
+set(OPENCV_LIB_DIR "${CMAKE_SOURCE_DIR}/../OpenCV-MinGW-Build/x64/mingw/lib")
 
 # --- [3] 핵심: 출력 경로를 프로젝트폴더/build 로 강제 지정 ---
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build")

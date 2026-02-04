@@ -28,15 +28,26 @@
 
 ---
 
-## 1. 빌드 폴더 생성 및 이동
-mkdir build
-cd build
+## 1. 사전 준비 (OpenCV 설치)
+이 프로젝트는 특정 버전의 OpenCV MinGW 빌드(`OpenCV-4.5.5-x64`)를 필요로 합니다.
+`client` 폴더의 상위 디렉토리(프로젝트 루트)에 OpenCV를 다운로드해야 합니다.
 
-## 2. 빌드 환경 구성
-cmake -G "MinGW Makefiles" .. `
-  -DCMAKE_C_COMPILER="C:/Qt/Tools/mingw1310_64/bin/gcc.exe" `
-  -DCMAKE_CXX_COMPILER="C:/Qt/Tools/mingw1310_64/bin/g++.exe" `
-  -DCMAKE_MAKE_PROGRAM="C:/Qt/Tools/mingw1310_64/bin/mingw32-make.exe"
+```powershell
+# 프로젝트 루트(SFEPS)에서 실행:
+git clone --branch OpenCV-4.5.5-x64 --depth 1 https://github.com/huihut/OpenCV-MinGW-Build.git OpenCV-MinGW-Build
+```
 
-## 3. 컴파일 및 빌드
-cmake --build .
+## 2. 프로젝트 구성 및 빌드
+MinGW Makefiles를 사용하여 빌드를 구성하고 실행합니다.
+
+```powershell
+# client 폴더 내에서 실행:
+
+# 1. 구성 (Generatate)
+cmake -G "MinGW Makefiles" -S . -B build
+
+# 2. 빌드 (Build)
+cmake --build build
+```
+
+빌드가 완료되면 `build` 폴더 내에 `QtVideoPlayer.exe` 실행 파일이 생성됩니다.
