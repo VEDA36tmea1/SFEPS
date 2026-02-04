@@ -2,6 +2,8 @@
 #include <gst/rtsp-server/rtsp-server.h>
 #include <iostream>
 #include "log.h"
+#include <thread>
+#include <arpa/inet.h>
 
 // [수정 필요] 가져올 외부 카메라(CCTV)의 주소
 #define EXTERNAL_RTSP_URL "rtsp://admin:CCgbdCCgbd@192.168.0.30/profile2/media.smp" 
@@ -15,6 +17,45 @@ struct ServerData {
     DBLogger *logger;
 };
 
+// [추가] 로그인만 담당하는 전용 함수
+void run_login_auth() {
+    DBLogger db("test_db");
+    if (!db.connect()) return;
+
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    int opt = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    struct sockaddr_in addr;
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons(5555); // Qt 클라이언트와 약속한 포트
+
+    bind(server_fd, (struct sockaddr *)&addr, sizeof(addr));
+    listen(server_fd, 5);
+
+    while (true) {
+        int client_fd = accept(server_fd, NULL, NULL);
+        char buffer[1024] = {0};
+        int len = read(client_fd, buffer, 1024);
+
+        if (len > 0) {
+            std::string data(buffer);
+            // "ID:PW" 형식에서 ID 추출 및 검증
+            size_t sep = data.find(':');
+            if (sep != std::string::npos) {
+                std::string user = data.substr(0, sep);
+                // 일단 들어오면 무조건 PASS로 보낸 뒤 DB에 기록 (검증 로직은 필요시 추가)
+                send(client_fd, "PASS", 4, 0);
+                db.enqueue("LOGIN", user);
+            } else {
+                send(client_fd, "FAIL", 4, 0);
+            }
+        }
+        close(client_fd);
+    }
+}
+
 // 팀원이 접속했을 때 실행되는 함수 (로그 기록)
 static void client_connected(GstRTSPServer *server, GstRTSPClient *client, ServerData *data) {
     std::cout << ">> New Client Connected!" << std::endl;
@@ -26,7 +67,7 @@ int main(int argc, char *argv[]) {
     // ---------------------------------------------------------
     // 1. DB 연결 및 초기화
     // ---------------------------------------------------------
-    DBLogger myLogger;
+    DBLogger myLogger("CCgbd");
     if (!myLogger.connect()) {
         std::cerr << "[CRITICAL] DB Connection Failed! Server stops." << std::endl;
         return -1;
@@ -35,6 +76,9 @@ int main(int argc, char *argv[]) {
     // 서버 시작 로그 기록
     myLogger.enqueue("SYSTEM", "SFEPS Relay Server Initializing...");
     std::cout << "DB Connected & Logger Initialized." << std::endl;
+
+    std::thread auth_thread(run_login_auth);
+    auth_thread.detach(); // 백그라운드에서 알아서 돌아가게 분리
 
     // ---------------------------------------------------------
     // 2. GStreamer RTSP 서버 설정
