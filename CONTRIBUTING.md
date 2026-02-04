@@ -14,18 +14,20 @@
 
 ### 주요 type 목록
 
-| 타입 | 언제 쓰나? | 프로젝트 예시 |
-| --- | --- | --- |
-| `✨ feat` | 새로운 기능 추가 | `feat: add face detection and age-gender analysis to camera` |
-| `🐛 fix` | 버그 수정 | `fix: fix UART timeout in RFID-server communication` |
-| `♻️ refactor` | 코드 구조 개선 (기능 변화 없음) | `refactor: simplify RTSP stream handling in server` |
-| `📝 docs` | 문서(README, 기획서 등) 수정 | `docs: update architecture diagram for monorepo` |
-| `🧪 test` | 테스트 코드 추가/수정 | `test: add integration tests for laser activation` |
-| `🧹 chore` | 빌드/설정/잡일 (코드 아닌 것) | `chore: add .gitignore and pre-commit hooks` |
-| `🎨 style` | 코드 포맷팅 (기능 영향 없음) | `style: format python code with black` |
-| `⚡ perf` | 성능 개선 | `perf: optimize face detection latency under 500ms` |
-| `🚦 ci` | CI/CD 설정 변경 | `ci: add github actions for build and test` |
-| `📦 build` | 빌드 시스템/의존성 변경 | `build: update opencv to 4.8.0` |
+| **이모지** | **깃모지 코드** | **타입** | **의미 (언제 쓰나?)** | **실전 커밋 예시** |
+| --- | --- | --- | --- | --- |
+| 🎉 | `:tada:` | `init` | 프로젝트 시작 (첫 커밋) | `:tada: init: start SFEPS project structure` |
+| ✨ | `:sparkles:` | `feat` | 새로운 기능 추가 | `:sparkles: feat: add face detection to camera` |
+| 🐛 | `:bug:` | `fix` | 버그 수정 | `:bug: fix: fix UART timeout in RFID communication` |
+| ♻️ | `:recycle:` | `refactor` | 코드 구조 개선 | `:recycle: refactor: simplify RTSP stream handling` |
+| 📝 | `:memo:` | `docs` | 문서 작성 및 수정 | `:memo: docs: update architecture diagram` |
+| 🧪 | `:test_tube:` | `test` | 테스트 코드 추가/수정 | `:test_tube: test: add integration tests for laser` |
+| 🧹 | `:broom:` | `chore` | 빌드/설정/단순 잡일 | `:broom: chore: add .gitignore and hooks` |
+| 🎨 | `:art:` | `style` | 코드 스타일/포맷팅 | `:art: style: format C++ code with clang-format` |
+| ⚡ | `:zap:` | `perf` | 성능 개선 (속도 등) | `:zap: perf: optimize detection latency under 500ms` |
+| 🚦 | `:vertical_traffic_light:` | `ci` | CI/CD 설정 변경 | `:vertical_traffic_light: ci: add github actions for build` |
+| 📦 | `:package:` | `build` | 빌드 시스템/의존성 변경 | `:package: build: update opencv to 4.10.0` |
+| 🛠️ | `:hammer_and_wrench:` | `config` | 개발 환경/설정 변경 | `:hammer_and_wrench: config: update CMakeLists for cross-build` |
 
 ### scope (범위)
 
