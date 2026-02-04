@@ -8,8 +8,35 @@
 #include <QTimer>
 #include <QRubberBand>
 #include <QMouseEvent>
-#include <QMap>
+#include <QThread>
+#include <QMutex>
 #include <opencv2/opencv.hpp>
+
+Q_DECLARE_METATYPE(cv::Mat)
+
+// VideoCaptureWorker 클래스: RTSP 스트림을 별도 스레드에서 읽어 지연 최소화
+class VideoCaptureWorker : public QThread {
+    Q_OBJECT
+public:
+    VideoCaptureWorker(cv::VideoCapture *cap, QObject *parent = nullptr) : QThread(parent), cap(cap) {}
+    void stop() { running = false; wait(); }
+signals:
+    void newFrame(const cv::Mat &frame);
+protected:
+    void run() override {
+        running = true;
+        cv::Mat frame;
+        while (running) {
+            if (cap->read(frame)) {
+                emit newFrame(frame);
+            }
+            QThread::msleep(10); // 약간의 지연으로 CPU 사용 줄임
+        }
+    }
+private:
+    cv::VideoCapture *cap;
+    bool running = false;
+};
 
 // 탐지된 위반 사례의 정보를 저장하는 구조체
 struct FraudLog {
@@ -33,9 +60,10 @@ protected:
     void mouseReleaseEvent(QMouseEvent *event) override;
 
 private slots:
-    void updateFrame();                     // 타이머에 의해 초당 약 30회 호출되는 영상 갱신 함수
+    void updateDisplay();                   // 화면 표시 업데이트 함수
     void onLogSelected(QListWidgetItem *item); // 리스트의 로그를 클릭했을 때 실행되는 팝업 함수
     void resetZoom();                       // 확대를 취소하고 원본 화면으로 복구
+    void processFrame(const cv::Mat &frame); // 워커로부터 새 프레임 처리
 
 private:
     void setupUI();         // 화면 레이아웃 및 위젯 초기 설정
@@ -44,7 +72,7 @@ private:
 
     cv::VideoCapture cap;   // OpenCV 영상 캡처 객체 (RTSP 스트림용)
     cv::Mat currentFrame;   // 현재 읽어온 원본 영상 프레임 데이터
-    QTimer *timer;          // 영상 갱신 주기를 관리하는 타이머
+    VideoCaptureWorker *worker; // RTSP 읽기 워커 스레드
     
     QLabel *videoDisplay;   // 영상을 실제로 화면에 뿌려주는 라벨 위젯
     QListWidget *logList;   // 우측 위반 사례 목록 위젯

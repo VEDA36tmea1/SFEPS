@@ -16,7 +16,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     addSampleData();   // 데이터 로드
 
     // RTSP 연결: FFMPEG 백엔드를 명시하여 주소 오인 에러 방지
-    QString rtspUrl = "rtsp://192.168.0.89:8554/live";
+    QString rtspUrl = "rtsp://admin:CCgbdCCgbd@192.168.0.30/profile2/media.smp";
     cap.open(rtspUrl.toStdString(), cv::CAP_FFMPEG); 
     
     if(cap.isOpened()) {
@@ -24,13 +24,17 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
     }
 
-    // 약 30FPS(1000ms / 33) 속도로 영상을 갱신하도록 타이머 시작
-    timer = new QTimer(this);
-    connect(timer, &QTimer::timeout, this, &MainWindow::updateFrame);
-    timer->start(33); 
+    // 워커 스레드 시작: RTSP 스트림을 별도 스레드에서 읽어 지연 최소화
+    worker = new VideoCaptureWorker(&cap, this);
+    connect(worker, &VideoCaptureWorker::newFrame, this, &MainWindow::processFrame);
+    worker->start(); 
 }
 
 MainWindow::~MainWindow() {
+    if (worker) {
+        worker->stop();
+        delete worker;
+    }
     cap.release(); // 프로그램 종료 시 비디오 캡처 자원 해제
 }
 
@@ -89,11 +93,12 @@ void MainWindow::setupUI() {
     rubberBand = new QRubberBand(QRubberBand::Rectangle, this);
 }
 
-void MainWindow::updateFrame() {
-    if(!cap.isOpened()) return;
+void MainWindow::processFrame(const cv::Mat &frame) {
+    currentFrame = frame.clone(); // 새 프레임 복사
+    updateDisplay(); // 화면 업데이트
+}
 
-    // 스트림으로부터 한 프레임을 읽어옴
-    if (!cap.read(currentFrame)) return; 
+void MainWindow::updateDisplay() { 
 
     // 슬라이더 값에 따라 프레임 밝기 보정
     currentFrame.convertTo(currentFrame, -1, 1, brightnessSlider->value());
