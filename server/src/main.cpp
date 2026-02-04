@@ -1,48 +1,93 @@
 #include <gst/gst.h>
-#include <gst/rtsp-server/rtsp-server.h>
 #include <iostream>
-#include "db_handler.h" // 우리가 만든 헤더 파일 포함
+#include "log.h"
+
+#define RTSP_URL "rtsp://192.168.0.XX:8554/stream"
+
+struct CustomData {
+    GMainLoop *loop;
+    DBLogger *logger; // 클래스명 변경 반영
+};
+
+static gboolean bus_call(GstBus *bus, GstMessage *msg, gpointer user_data) {
+    CustomData *data = (CustomData *) user_data;
+
+    switch (GST_MESSAGE_TYPE(msg)) {
+        case GST_MESSAGE_EOS:
+            std::cout << "End of stream" << std::endl;
+            data->logger->enqueue("INFO", "Stream Ended (EOS)");
+            g_main_loop_quit(data->loop);
+            break;
+
+        case GST_MESSAGE_ERROR: {
+            gchar *debug;
+            GError *error;
+            gst_message_parse_error(msg, &error, &debug);
+            
+            std::cerr << "Error: " << error->message << std::endl;
+            data->logger->enqueue("ERROR", error->message);
+
+            g_error_free(error);
+            g_free(debug);
+            g_main_loop_quit(data->loop);
+            break;
+        }
+        
+        case GST_MESSAGE_STATE_CHANGED: {
+            GstState old_state, new_state, pending_state;
+            gst_message_parse_state_changed(msg, &old_state, &new_state, &pending_state);
+            
+            if (GST_MESSAGE_SRC(msg) == GST_OBJECT_PARENT(bus) && new_state == GST_STATE_PLAYING) {
+                data->logger->enqueue("STATUS", "RTSP Stream Started");
+            }
+            break;
+        }
+        default: break;
+    }
+    return TRUE;
+}
 
 int main(int argc, char *argv[]) {
-    // 1. DB 연결 및 로그 기록
-    DBHandler db;
-    if (db.connect()) {
-        db.writeLog("Server Started (Refactored Structure)");
+    // 1. DBLogger 생성
+    DBLogger myLogger;
+    if (!myLogger.connect()) {
+        std::cerr << "DB Init Failed." << std::endl;
+        return -1;
     }
-
-    // 2. GStreamer RTSP 서버 설정
-    gst_init(&argc, &argv);
-
-    GMainLoop *loop = g_main_loop_new(NULL, FALSE);
-    GstRTSPServer *server = gst_rtsp_server_new();
-    GstRTSPMountPoints *mounts = gst_rtsp_server_get_mount_points(server);
-    GstRTSPMediaFactory *factory = gst_rtsp_media_factory_new();
-
-    // libcamerasrc 파이프라인
-    gst_rtsp_media_factory_set_launch(factory, 
-        "( "
-        "libcamerasrc ! "
-        "video/x-raw,width=1280,height=720,framerate=30/1 ! "
-        "videoconvert ! "
-        "x264enc tune=zerolatency speed-preset=ultrafast bitrate=2500 key-int-max=30 sliced-threads=true ! "
-        "h264parse config-interval=-1 ! "
-        "rtph264pay name=pay0 pt=96 "
-        ")");
-
-    gst_rtsp_media_factory_set_latency(factory, 0);
-
-    gst_rtsp_media_factory_set_shared(factory, TRUE);
-    gst_rtsp_mount_points_add_factory(mounts, "/live", factory);
     
-    g_object_unref(mounts);
-    gst_rtsp_server_attach(server, NULL);
+    myLogger.enqueue("SYSTEM", "SFEPS Server Started");
 
-    std::cout << "========================================" << std::endl;
-    std::cout << "   RTSP Smart Server (구조개선판) 시작   " << std::endl;
-    std::cout << "========================================" << std::endl;
-    std::cout << "VLC 주소: rtsp://<IP>:8554/live" << std::endl;
+    // 2. GStreamer 설정
+    GMainLoop *loop;
+    GstElement *pipeline;
+    GstBus *bus;
+    guint bus_watch_id;
 
+    gst_init(&argc, &argv);
+    loop = g_main_loop_new(NULL, FALSE);
+
+    CustomData data;
+    data.loop = loop;
+    data.logger = &myLogger;
+
+    pipeline = gst_element_factory_make("playbin", "player");
+    if (!pipeline) return -1;
+
+    g_object_set(G_OBJECT(pipeline), "uri", RTSP_URL, NULL);
+
+    bus = gst_pipeline_get_bus(GST_PIPELINE(pipeline));
+    bus_watch_id = gst_bus_add_watch(bus, bus_call, &data);
+    gst_object_unref(bus);
+
+    std::cout << "RTSP Streaming Start..." << std::endl;
+    gst_element_set_state(pipeline, GST_STATE_PLAYING);
     g_main_loop_run(loop);
+
+    std::cout << "Stopping..." << std::endl;
+    gst_element_set_state(pipeline, GST_STATE_NULL);
+    gst_object_unref(GST_OBJECT(pipeline));
+    g_source_remove(bus_watch_id);
+    g_main_loop_unref(loop);
 
     return 0;
 }
