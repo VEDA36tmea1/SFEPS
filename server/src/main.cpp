@@ -5,6 +5,8 @@
 #include <filesystem> // 파일 관리용 (C++17)
 #include <chrono>     // 시간 계산용
 #include "log.h"
+#include <thread>
+#include <arpa/inet.h>
 
 // ▼▼▼ 카메라 주소 수정 필수 ▼▼▼
 #define RTSP_URL "rtsp://127.0.0.1:8554/cam1" 
@@ -17,104 +19,60 @@ struct CustomData {
     DBLogger *logger;
 };
 
-// [신규 기능] 1시간 지난 녹화 파일 자동 삭제 청소부
-static gboolean cleanup_old_files(gpointer user_data) {
-    // 보관 기간: 1시간
-    const auto retention_period = std::chrono::hours(1);
-    
-    try {
-        // 현재 시간 (파일 시스템 시계 기준)
-        auto now = fs::file_time_type::clock::now();
+// [추가] 로그인만 담당하는 전용 함수
+void run_login_auth() {
+    DBLogger db("test_db");
+    if (!db.connect()) return;
 
-        // 현재 폴더(".") 내의 모든 파일을 검사
-        for (const auto& entry : fs::directory_iterator(".")) {
-            if (entry.is_regular_file()) {
-                std::string filename = entry.path().filename().string();
-                
-                // 우리가 만든 녹화 파일인지 확인 (rec_로 시작하고 .mp4로 끝남)
-                if (filename.find("rec_") == 0 && filename.find(".mp4") != std::string::npos) {
-                    
-                    // 파일의 마지막 수정 시간 확인
-                    auto ftime = fs::last_write_time(entry);
-                    
-                    // (현재시간 - 수정시간)이 1시간보다 크면 삭제
-                    if (now - ftime > retention_period) {
-                        std::cout << "[Auto Cleanup] Deleting old recording: " << filename << std::endl;
-                        fs::remove(entry.path());
-                    }
-                }
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    int opt = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    struct sockaddr_in addr;
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons(5555); // Qt 클라이언트와 약속한 포트
+
+    bind(server_fd, (struct sockaddr *)&addr, sizeof(addr));
+    listen(server_fd, 5);
+
+    while (true) {
+        int client_fd = accept(server_fd, NULL, NULL);
+        char buffer[1024] = {0};
+        int len = read(client_fd, buffer, 1024);
+
+        if (len > 0) {
+            std::string data(buffer);
+            // "ID:PW" 형식에서 ID 추출 및 검증
+            size_t sep = data.find(':');
+            if (sep != std::string::npos) {
+                std::string user = data.substr(0, sep);
+                // 일단 들어오면 무조건 PASS로 보낸 뒤 DB에 기록 (검증 로직은 필요시 추가)
+                send(client_fd, "PASS", 4, 0);
+                db.enqueue("LOGIN", user);
+            } else {
+                send(client_fd, "FAIL", 4, 0);
             }
         }
-    } catch (const std::exception& e) {
-        std::cerr << "[Cleanup Error] " << e.what() << std::endl;
+        close(client_fd);
     }
-    
-    return TRUE; // TRUE를 반환해야 타이머가 꺼지지 않고 계속 반복됩니다.
 }
 
-// [신규] 재연결 시도 함수 (5초 뒤 실행됨)
-static gboolean retry_connection(gpointer user_data) {
-    CustomData *data = (CustomData *)user_data;
-    
-    std::cout << "[System] Retrying connection to camera..." << std::endl;
-    data->logger->enqueue("SYSTEM", "Retrying connection...");
-
-    // 다시 시작 시도 (PLAYING)
-    gst_element_set_state(data->pipeline, GST_STATE_PLAYING);
-    
-    return FALSE; // FALSE를 리턴해야 타이머가 한 번만 실행되고 사라짐
+// 팀원이 접속했을 때 실행되는 함수 (로그 기록)
+static void client_connected(GstRTSPServer *server, GstRTSPClient *client, ServerData *data) {
+    std::cout << ">> New Client Connected!" << std::endl;
+    // DB에 누가 들어왔다고 기록 (IP 정보 등은 심화 과정이라 생략하고 접속 사실만 기록)
+    data->logger->enqueue("INFO", "Client Connected to RTSP Server");
 }
 
-
-// [수정됨] 파이프라인 감시자 (에러 나도 안 죽고 재시도)
-static gboolean bus_call(GstBus *bus, GstMessage *msg, gpointer user_data) {
-    CustomData *data = (CustomData *) user_data;
-
-    switch (GST_MESSAGE_TYPE(msg)) {
-        case GST_MESSAGE_ELEMENT: {
-            const GstStructure *s = gst_message_get_structure(msg);
-            if (gst_structure_has_name(s, "splitmuxsink-fragment-closed")) {
-                const gchar *filepath = gst_structure_get_string(s, "location");
-                if (filepath) {
-                    std::cout << "[Recording] File Saved: " << filepath << std::endl;
-                    data->logger->enqueueRecording(filepath);
-                }
-            }
-            break;
-        }
-        case GST_MESSAGE_EOS:
-            std::cout << "End of stream (Camera disconnected?)" << std::endl;
-            data->logger->enqueue("INFO", "Stream Ended. Retrying...");
-            
-            // 연결 끊기면 -> 멈추고 재시도
-            gst_element_set_state(data->pipeline, GST_STATE_NULL);
-            g_timeout_add_seconds(5, retry_connection, data);
-            break;
-
-        case GST_MESSAGE_ERROR: {
-            gchar *debug;
-            GError *error;
-            gst_message_parse_error(msg, &error, &debug);
-            
-            std::cerr << "[Error] " << error->message << std::endl;
-            // DB에 에러 기록
-            data->logger->enqueue("ERROR", error->message);
-
-            g_error_free(error);
-            g_free(debug);
-
-            // ★ 중요: 에러가 나도 프로그램을 끄지 않음 (g_main_loop_quit 제거) ★
-            
-            // 1. 일단 파이프라인 멈춤 (리셋 효과)
-            gst_element_set_state(data->pipeline, GST_STATE_NULL);
-
-            // 2. 5초 뒤에 재연결 시도하도록 예약
-            std::cout << "[System] Waiting 5 seconds before reconnect..." << std::endl;
-            g_timeout_add_seconds(5, retry_connection, data);
-            break;
-        }
-        default:
-            break;
+int main(int argc, char *argv[]) {
+    // ---------------------------------------------------------
+    // 1. DB 연결 및 초기화
+    // ---------------------------------------------------------
+    DBLogger myLogger("CCgbd");
+    if (!myLogger.connect()) {
+        std::cerr << "[CRITICAL] DB Connection Failed! Server stops." << std::endl;
+        return -1;
     }
     return TRUE;
 }
@@ -139,30 +97,16 @@ GstFlowReturn on_new_meta_data(GstElement *sink, CustomData *data) {
     return GST_FLOW_ERROR;
 }
 
-// [핵심 2] 스트림 연결
-static void on_pad_added(GstElement *element, GstPad *pad, gpointer user_data) {
-    CustomData *data = (CustomData *)user_data;
-    GstCaps *caps = gst_pad_get_current_caps(pad);
-    GstStructure *str = gst_caps_get_structure(caps, 0);
-    const gchar *name = gst_structure_get_name(str);
+    std::thread auth_thread(run_login_auth);
+    auth_thread.detach(); // 백그라운드에서 알아서 돌아가게 분리
 
-    if (g_str_has_prefix(name, "video/")) {
-        GstElement *depay = gst_bin_get_by_name(GST_BIN(data->pipeline), "video_depay");
-        // 이미 연결되어 있으면 건너뜀 (재연결 시 중요)
-        if (!gst_pad_is_linked(gst_element_get_static_pad(depay, "sink"))) {
-            std::cout << "[Video] Re-linking stream..." << std::endl;
-            gst_element_link_pads(element, gst_pad_get_name(pad), depay, "sink");
-        }
-    }
-    else if (g_str_has_prefix(name, "application")) {
-        GstElement *appsink = gst_bin_get_by_name(GST_BIN(data->pipeline), "meta_sink");
-        if (!gst_pad_is_linked(gst_element_get_static_pad(appsink, "sink"))) {
-             std::cout << "[Metadata] Re-linking stream..." << std::endl;
-             gst_element_link_pads(element, gst_pad_get_name(pad), appsink, "sink");
-        }
-    }
-    gst_caps_unref(caps);
-}
+    // ---------------------------------------------------------
+    // 2. GStreamer RTSP 서버 설정
+    // ---------------------------------------------------------
+    GMainLoop *loop;
+    GstRTSPServer *server;
+    GstRTSPMountPoints *mounts;
+    GstRTSPMediaFactory *factory;
 
 int main(int argc, char *argv[]) {
     gst_init(&argc, &argv);

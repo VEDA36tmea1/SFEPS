@@ -10,6 +10,7 @@ Thumbs.db
 .vscode/
 .cursor/
 .idea/
+.cache/
 *.code-workspace
 
 # =====================================
@@ -48,6 +49,7 @@ ui_*.h
 *.pro.user.*
 build-*/
 debug/
+.qt/
 release/
 *.dll
 *.so
