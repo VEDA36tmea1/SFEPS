@@ -1,105 +1,222 @@
 #include <gst/gst.h>
-#include <gst/rtsp-server/rtsp-server.h>
+#include <gst/app/gstappsink.h>
 #include <iostream>
+#include <string>
+#include <filesystem> // 파일 관리용 (C++17)
+#include <chrono>     // 시간 계산용
 #include "log.h"
 
-// [수정 필요] 가져올 외부 카메라(CCTV)의 주소
-#define EXTERNAL_RTSP_URL "rtsp://admin:CCgbdCCgbd@192.168.0.30/profile2/media.smp" 
+// ▼▼▼ 카메라 주소 수정 필수 ▼▼▼
+#define RTSP_URL "rtsp://127.0.0.1:8554/cam1" 
 
-// [설정] 서버 포트 및 경로 (rtsp://내IP:8554/live)
-#define SERVER_PORT "8554"
-#define MOUNT_POINT "/live"
+namespace fs = std::filesystem;
 
-// 데이터를 콜백 함수로 넘기기 위한 구조체
-struct ServerData {
+struct CustomData {
+    GstElement *pipeline;
+    GMainLoop *loop;
     DBLogger *logger;
 };
 
-// 팀원이 접속했을 때 실행되는 함수 (로그 기록)
-static void client_connected(GstRTSPServer *server, GstRTSPClient *client, ServerData *data) {
-    std::cout << ">> New Client Connected!" << std::endl;
-    // DB에 누가 들어왔다고 기록 (IP 정보 등은 심화 과정이라 생략하고 접속 사실만 기록)
-    data->logger->enqueue("INFO", "Client Connected to RTSP Server");
+// [신규 기능] 1시간 지난 녹화 파일 자동 삭제 청소부
+static gboolean cleanup_old_files(gpointer user_data) {
+    // 보관 기간: 1시간
+    const auto retention_period = std::chrono::hours(1);
+    
+    try {
+        // 현재 시간 (파일 시스템 시계 기준)
+        auto now = fs::file_time_type::clock::now();
+
+        // 현재 폴더(".") 내의 모든 파일을 검사
+        for (const auto& entry : fs::directory_iterator(".")) {
+            if (entry.is_regular_file()) {
+                std::string filename = entry.path().filename().string();
+                
+                // 우리가 만든 녹화 파일인지 확인 (rec_로 시작하고 .mp4로 끝남)
+                if (filename.find("rec_") == 0 && filename.find(".mp4") != std::string::npos) {
+                    
+                    // 파일의 마지막 수정 시간 확인
+                    auto ftime = fs::last_write_time(entry);
+                    
+                    // (현재시간 - 수정시간)이 1시간보다 크면 삭제
+                    if (now - ftime > retention_period) {
+                        std::cout << "[Auto Cleanup] Deleting old recording: " << filename << std::endl;
+                        fs::remove(entry.path());
+                    }
+                }
+            }
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "[Cleanup Error] " << e.what() << std::endl;
+    }
+    
+    return TRUE; // TRUE를 반환해야 타이머가 꺼지지 않고 계속 반복됩니다.
+}
+
+// [신규] 재연결 시도 함수 (5초 뒤 실행됨)
+static gboolean retry_connection(gpointer user_data) {
+    CustomData *data = (CustomData *)user_data;
+    
+    std::cout << "[System] Retrying connection to camera..." << std::endl;
+    data->logger->enqueue("SYSTEM", "Retrying connection...");
+
+    // 다시 시작 시도 (PLAYING)
+    gst_element_set_state(data->pipeline, GST_STATE_PLAYING);
+    
+    return FALSE; // FALSE를 리턴해야 타이머가 한 번만 실행되고 사라짐
+}
+
+
+// [수정됨] 파이프라인 감시자 (에러 나도 안 죽고 재시도)
+static gboolean bus_call(GstBus *bus, GstMessage *msg, gpointer user_data) {
+    CustomData *data = (CustomData *) user_data;
+
+    switch (GST_MESSAGE_TYPE(msg)) {
+        case GST_MESSAGE_ELEMENT: {
+            const GstStructure *s = gst_message_get_structure(msg);
+            if (gst_structure_has_name(s, "splitmuxsink-fragment-closed")) {
+                const gchar *filepath = gst_structure_get_string(s, "location");
+                if (filepath) {
+                    std::cout << "[Recording] File Saved: " << filepath << std::endl;
+                    data->logger->enqueueRecording(filepath);
+                }
+            }
+            break;
+        }
+        case GST_MESSAGE_EOS:
+            std::cout << "End of stream (Camera disconnected?)" << std::endl;
+            data->logger->enqueue("INFO", "Stream Ended. Retrying...");
+            
+            // 연결 끊기면 -> 멈추고 재시도
+            gst_element_set_state(data->pipeline, GST_STATE_NULL);
+            g_timeout_add_seconds(5, retry_connection, data);
+            break;
+
+        case GST_MESSAGE_ERROR: {
+            gchar *debug;
+            GError *error;
+            gst_message_parse_error(msg, &error, &debug);
+            
+            std::cerr << "[Error] " << error->message << std::endl;
+            // DB에 에러 기록
+            data->logger->enqueue("ERROR", error->message);
+
+            g_error_free(error);
+            g_free(debug);
+
+            // ★ 중요: 에러가 나도 프로그램을 끄지 않음 (g_main_loop_quit 제거) ★
+            
+            // 1. 일단 파이프라인 멈춤 (리셋 효과)
+            gst_element_set_state(data->pipeline, GST_STATE_NULL);
+
+            // 2. 5초 뒤에 재연결 시도하도록 예약
+            std::cout << "[System] Waiting 5 seconds before reconnect..." << std::endl;
+            g_timeout_add_seconds(5, retry_connection, data);
+            break;
+        }
+        default:
+            break;
+    }
+    return TRUE;
+}
+
+// [핵심 1] XML 데이터 수신 및 DB 저장
+GstFlowReturn on_new_meta_data(GstElement *sink, CustomData *data) {
+    GstSample *sample;
+    g_signal_emit_by_name(sink, "pull-sample", &sample);
+    
+    if (sample) {
+        GstBuffer *buffer = gst_sample_get_buffer(sample);
+        GstMapInfo map;
+        
+        if (gst_buffer_map(buffer, &map, GST_MAP_READ)) {
+            std::string xmlString((char*)map.data, map.size);
+            data->logger->parseAndLogXML(xmlString.c_str());
+            gst_buffer_unmap(buffer, &map);
+        }
+        gst_sample_unref(sample);
+        return GST_FLOW_OK;
+    }
+    return GST_FLOW_ERROR;
+}
+
+// [핵심 2] 스트림 연결
+static void on_pad_added(GstElement *element, GstPad *pad, gpointer user_data) {
+    CustomData *data = (CustomData *)user_data;
+    GstCaps *caps = gst_pad_get_current_caps(pad);
+    GstStructure *str = gst_caps_get_structure(caps, 0);
+    const gchar *name = gst_structure_get_name(str);
+
+    if (g_str_has_prefix(name, "video/")) {
+        GstElement *depay = gst_bin_get_by_name(GST_BIN(data->pipeline), "video_depay");
+        // 이미 연결되어 있으면 건너뜀 (재연결 시 중요)
+        if (!gst_pad_is_linked(gst_element_get_static_pad(depay, "sink"))) {
+            std::cout << "[Video] Re-linking stream..." << std::endl;
+            gst_element_link_pads(element, gst_pad_get_name(pad), depay, "sink");
+        }
+    }
+    else if (g_str_has_prefix(name, "application")) {
+        GstElement *appsink = gst_bin_get_by_name(GST_BIN(data->pipeline), "meta_sink");
+        if (!gst_pad_is_linked(gst_element_get_static_pad(appsink, "sink"))) {
+             std::cout << "[Metadata] Re-linking stream..." << std::endl;
+             gst_element_link_pads(element, gst_pad_get_name(pad), appsink, "sink");
+        }
+    }
+    gst_caps_unref(caps);
 }
 
 int main(int argc, char *argv[]) {
-    // ---------------------------------------------------------
-    // 1. DB 연결 및 초기화
-    // ---------------------------------------------------------
-    DBLogger myLogger;
-    if (!myLogger.connect()) {
-        std::cerr << "[CRITICAL] DB Connection Failed! Server stops." << std::endl;
-        return -1;
-    }
-    
-    // 서버 시작 로그 기록
-    myLogger.enqueue("SYSTEM", "SFEPS Relay Server Initializing...");
-    std::cout << "DB Connected & Logger Initialized." << std::endl;
-
-    // ---------------------------------------------------------
-    // 2. GStreamer RTSP 서버 설정
-    // ---------------------------------------------------------
-    GMainLoop *loop;
-    GstRTSPServer *server;
-    GstRTSPMountPoints *mounts;
-    GstRTSPMediaFactory *factory;
-
     gst_init(&argc, &argv);
-    loop = g_main_loop_new(NULL, FALSE);
 
-    // 서버 생성
-    server = gst_rtsp_server_new();
-    g_object_set(server, "service", SERVER_PORT, NULL);
+    DBLogger myLogger;
+    if (!myLogger.connect()) return -1;
+    myLogger.enqueue("SYSTEM", "SFEPS Server Started");
 
-    // 마운트 포인트(주소) 관리자 가져오기
-    mounts = gst_rtsp_server_get_mount_points(server);
-
-    // 미디어 공장(Factory) 생성
-    factory = gst_rtsp_media_factory_new();
-
-    // ★ [핵심] 파이프라인 설정 (중계소 모드) ★
-    // 외부 RTSP(rtspsrc) -> 포장 뜯기(depay) -> 정리(parse) -> 다시 포장(pay)
-    // latency=0: 지연시간 최소화
-   gst_rtsp_media_factory_set_launch(factory, 
-        "( "
-        "rtspsrc location=" EXTERNAL_RTSP_URL " protocols=tcp latency=500 ! "
-        "rtph264depay ! "
-        "h264parse ! "
-        "rtph264pay name=pay0 pt=96 "
-        ")");
-
-    // 여러 명이 접속해도 공유하도록 설정
-    gst_rtsp_media_factory_set_shared(factory, TRUE);
-
-    // 주소 등록 (/live)
-    gst_rtsp_mount_points_add_factory(mounts, MOUNT_POINT, factory);
-    g_object_unref(mounts);
-
-    // ---------------------------------------------------------
-    // 3. 접속 감지 설정 (Signal 연결)
-    // ---------------------------------------------------------
-    ServerData data;
+    CustomData data;
+    data.loop = g_main_loop_new(NULL, FALSE);
     data.logger = &myLogger;
 
-    // 'client-connected' 신호가 오면 client_connected 함수 실행
-    g_signal_connect(server, "client-connected", G_CALLBACK(client_connected), &data);
+    data.pipeline = gst_pipeline_new("sfeps-pipeline");
+    GstElement *source = gst_element_factory_make("rtspsrc", "source");
+    GstElement *v_depay = gst_element_factory_make("rtph264depay", "video_depay");
+    GstElement *v_parse = gst_element_factory_make("h264parse", "video_parse");
+    GstElement *v_rec = gst_element_factory_make("splitmuxsink", "video_rec");
+    GstElement *appsink = gst_element_factory_make("appsink", "meta_sink");
 
-    // 서버 시작
-    if (gst_rtsp_server_attach(server, NULL) == 0) {
-        std::cerr << "[ERROR] Failed to attach server to port " << SERVER_PORT << std::endl;
-        myLogger.enqueue("ERROR", "Failed to start RTSP Server");
+    if (!data.pipeline || !source || !v_depay || !v_parse || !v_rec || !appsink) {
+        g_printerr("Elements creation failed.\n");
         return -1;
     }
 
-    std::cout << "------------------------------------------------" << std::endl;
-    std::cout << " SFEPS Relay Server Running at rtsp://127.0.0.1:" << SERVER_PORT << MOUNT_POINT << std::endl;
-    std::cout << " Monitoring External Cam: " << EXTERNAL_RTSP_URL << std::endl;
-    std::cout << "------------------------------------------------" << std::endl;
+    gst_bin_add_many(GST_BIN(data.pipeline), source, v_depay, v_parse, v_rec, appsink, NULL);
+    gst_element_link_many(v_depay, v_parse, v_rec, NULL);
+
+    g_object_set(source, "location", RTSP_URL, "latency", 0, NULL);
     
-    myLogger.enqueue("SYSTEM", "Server Running. Ready for clients.");
+    // [설정 2] 녹화 설정: 60초(1분)마다 자르기
+    // 60초 = 60,000,000,000 나노초
+    g_object_set(v_rec, 
+        "location", "rec_%04d.mp4", 
+        "max-size-time", 60000000000ULL, 
+        NULL);
 
-    // 무한 루프 (서버 가동)
-    g_main_loop_run(loop);
+    g_object_set(appsink, "emit-signals", TRUE, "sync", FALSE, NULL);
+    
+    g_signal_connect(appsink, "new-sample", G_CALLBACK(on_new_meta_data), &data);
+    g_signal_connect(source, "pad-added", G_CALLBACK(on_pad_added), &data);
+    
+    // 청소부 함수는 60초마다 실행
+    g_timeout_add_seconds(60, cleanup_old_files, NULL);
 
+    GstBus *bus = gst_pipeline_get_bus(GST_PIPELINE(data.pipeline));
+    gst_bus_add_watch(bus, bus_call, &data);
+    gst_object_unref(bus);
+
+    std::cout << "Server Running: Recording 1min chunks, Keeping last 5 mins." << std::endl;
+    gst_element_set_state(data.pipeline, GST_STATE_PLAYING);
+    g_main_loop_run(data.loop);
+
+    gst_element_set_state(data.pipeline, GST_STATE_NULL);
+    gst_object_unref(data.pipeline);
+    g_main_loop_unref(data.loop);
     return 0;
 }
