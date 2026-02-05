@@ -5,19 +5,24 @@
 #include <QLineEdit>
 #include <QTcpSocket>
 
+QT_BEGIN_NAMESPACE
+namespace Ui {
+class LoginDialog;
+}
+QT_END_NAMESPACE
+
 class LoginDialog : public QDialog {
-    Q_OBJECT
+  Q_OBJECT
 
 public:
-    LoginDialog(QWidget *parent = nullptr);
+  LoginDialog(QWidget *parent = nullptr);
 
 private slots:
-    void attemptLogin(); // 로그인 버튼 클릭 시 실행
+  void attemptLogin(); // 로그인 버튼 클릭 시 실행
 
 private:
-    QLineEdit *idInput;
-    QLineEdit *pwInput;
-    QTcpSocket *socket;
+  Ui::LoginDialog *ui;
+  QTcpSocket *socket;
 };
 
 #endif
