@@ -1,4 +1,4 @@
-# SFEPS - Subway Fare Evasion Detection System
+# SFEPS - Subway Fare Evasion Prevention System
 
 **SFEPS**는 Qt6 기반의 클라이언트와 라즈베리파이(MariaDB + GStreamer) 서버를 결합하여, 지하철 내 부정 승차 및 이상 징후를 실시간으로 감지하고 관리하는 지능형 통합 보안 시스템입니다.
 본 클라이언트는 **Hanwha Vision** 스타일의 다크 테마와 모듈화된 View 아키텍처를 기반으로, 기존의 TCP 기반 사용자 인증 및 실시간 영상 제어 기능을 완벽히 통합하였습니다.

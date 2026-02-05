@@ -11,7 +11,7 @@
 
 class DBLogger {
 public:
-    DBLogger();
+    DBLogger(const char* db = "CCgbd");
     ~DBLogger();
     
     // DB 연결
@@ -26,10 +26,10 @@ private:
     MYSQL* conn;
     
     // DB 설정 (수정 필요)
-    const char* host = "localhost";
+    const char* host = "192.168.0.92";
     const char* user = "pi";
     const char* pass = "raspberry";     // 비밀번호 변경
-    const char* db_name = "CCgbd";
+    const char* db_name;
 
     // 스레드 관련 변수들
     std::queue<std::pair<std::string, std::string>> logQueue;
