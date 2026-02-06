@@ -161,3 +161,4 @@ credentials.*
 # =====================================
 .github/ISSUE_TEMPLATE/
 .github/PULL_REQUEST_TEMPLATE.md  # 필요 시 커밋하지만 보통은 아니에요
+mediamtx/
