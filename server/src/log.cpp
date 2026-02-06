@@ -66,6 +66,18 @@ void DBLogger::enqueueRecording(const std::string& filename) {
     cv.notify_one();
 }
 
+
+// [신규] DB 청소 요청을 큐에 넣기
+void DBLogger::requestDbCleanup() {
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        // 내용 없는 청소용 시그널 전송
+        logQueue.push({CLEANUP_DB_LOG, "", "", "", 0.0f});
+    }
+    cv.notify_one();
+}
+
+
 // [핵심] XML 파싱 및 필터링 로직
 void DBLogger::parseAndLogXML(const char* xmlData) {
     XMLDocument doc;
@@ -167,6 +179,31 @@ void DBLogger::processQueue() {
              else if (item.type == RECORDING_LOG) {
                 // [신규] 녹화 테이블에 저장
                 query = "INSERT INTO recordings (filename) VALUES ('" + item.str1 + "')";
+            }
+            else if (item.type == CLEANUP_DB_LOG) {
+                // [핵심] 100MB 넘으면 삭제하는 로직
+                // 1. analytics_logs 테이블 용량 계산 (MB 단위)
+                std::string sizeQuery = "SELECT (data_length + index_length) / 1024 / 1024 FROM information_schema.tables WHERE table_schema = '" + std::string(db_name) + "' AND table_name = 'analytics_logs'";
+                
+                if (mysql_query(conn, sizeQuery.c_str()) == 0) {
+                    MYSQL_RES* res = mysql_store_result(conn);
+                    if (res) {
+                        MYSQL_ROW row = mysql_fetch_row(res);
+                        if (row && row[0]) {
+                            double sizeMB = std::stod(row[0]);
+                            
+                            // 2. 100MB 초과 시 삭제
+                            if (sizeMB > 100.0) {
+                                std::cout << "[DB Cleanup] Table size " << sizeMB << "MB > 100MB. Deleting old rows..." << std::endl;
+                                // 가장 오래된 2000개 삭제 (한 번에 많이 지우면 락 걸림 방지)
+                                std::string delQuery = "DELETE FROM analytics_logs ORDER BY id ASC LIMIT 2000";
+                                mysql_query(conn, delQuery.c_str());
+                            }
+                        }
+                        mysql_free_result(res);
+                    }
+                }
+                continue; // 삭제 쿼리는 위에서 실행했으므로 건너뜀
             }
 
             if (mysql_query(conn, query.c_str())) {
