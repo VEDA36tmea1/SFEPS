@@ -11,7 +11,7 @@
 #include <tinyxml2.h> // XML 파싱 라이브러리
 
 // 로그 종류 구분
-enum LogType { SYSTEM_LOG, LOGIN_LOG, ANALYTICS_LOG, RECORDING_LOG };
+enum LogType { SYSTEM_LOG, LOGIN_LOG, ANALYTICS_LOG, RECORDING_LOG, CLEANUP_DB_LOG };
 
 // 큐에 담을 데이터 구조체
 struct LogItem {
@@ -48,6 +48,9 @@ public:
 
     // 4. [신규] 녹화 파일 기록 함수 (이게 없어서 에러난 것임)
     void enqueueRecording(const std::string& filename);
+
+    // [신규] DB 용량 관리(청소) 요청 함수
+    void requestDbCleanup();
 
 
 private:

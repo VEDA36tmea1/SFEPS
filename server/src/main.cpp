@@ -17,10 +17,10 @@ struct CustomData {
     DBLogger *logger;
 };
 
-// [신규 기능] 1시간 지난 녹화 파일 자동 삭제 청소부
+// [신규 기능] 5분 지난 녹화 파일 자동 삭제 청소부
 static gboolean cleanup_old_files(gpointer user_data) {
-    // 보관 기간: 1시간
-    const auto retention_period = std::chrono::hours(1);
+    // 보관 기간: 5분
+    const auto retention_period = std::chrono::minutes(5);
     
     try {
         // 현재 시간 (파일 시스템 시계 기준)
@@ -50,6 +50,15 @@ static gboolean cleanup_old_files(gpointer user_data) {
     }
     
     return TRUE; // TRUE를 반환해야 타이머가 꺼지지 않고 계속 반복됩니다.
+}
+
+
+// [신규 기능] DB 용량 관리 청소부 (1분마다 실행)
+static gboolean cleanup_db_task(gpointer user_data) {
+    CustomData *data = (CustomData *)user_data;
+    // DBLogger 스레드에게 "용량 확인해봐"라고 요청
+    data->logger->requestDbCleanup();
+    return TRUE;
 }
 
 // [신규] 재연결 시도 함수 (5초 뒤 실행됨)
@@ -253,7 +262,9 @@ int main(int argc, char *argv[]) {
     // ★★★ [테스트] 10초마다 가짜 데이터 주입 (나중에 이 줄만 지우면 됨) ★★★
     g_timeout_add_seconds(10, test_fake_xml_injection, &data);
 
-
+    
+    // [신규] DB 청소 (60초마다 실행 -> 100MB 넘으면 삭제)
+    g_timeout_add_seconds(60, cleanup_db_task, &data);
 
     GstBus *bus = gst_pipeline_get_bus(GST_PIPELINE(data.pipeline));
     gst_bus_add_watch(bus, bus_call, &data);
