@@ -28,7 +28,7 @@ struct LogItem {
 
 class DBLogger {
 public:
-    DBLogger(const char* db = "CCgbd");
+    DBLogger();
     ~DBLogger();
     
     // DB 연결
@@ -58,11 +58,11 @@ private:
 
     MYSQL* conn;
     
-    // DB 설정 (수정 필요)
-    const char* host = "192.168.0.92";
+    // ▼▼▼ 본인 DB 설정에 맞게 수정 필수 ▼▼▼
+    const char* host = "localhost";
     const char* user = "pi";
-    const char* pass = "raspberry";     // 비밀번호 변경
-    const char* db_name;
+    const char* pass = "raspberry";     // 비밀번호
+    const char* db_name = "CCgbd"; // DB 이름 (sfeps_db로 바꿨으면 수정)
 
     // 스레드 관련 변수
     std::queue<LogItem> logQueue;
