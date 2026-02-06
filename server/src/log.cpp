@@ -1,9 +1,7 @@
 #include "log.h"
 #include <iostream>
 
-using namespace tinyxml2;
-
-DBLogger::DBLogger() : isRunning(false), conn(NULL) {}
+DBLogger::DBLogger(const char* db) : isRunning(false), conn(NULL), db_name(db) {}
 
 DBLogger::~DBLogger() {
     isRunning = false;
@@ -19,7 +17,7 @@ bool DBLogger::connect() {
     conn = mysql_init(NULL);
     if (conn == NULL) return false;
 
-    if (mysql_real_connect(conn, host, user, pass, db_name, 0, NULL, 0) == NULL) {
+    if (mysql_real_connect(conn, host, user, pass, db_name, 3306, NULL, 0) == NULL) {
         std::cerr << "[DB Error] " << mysql_error(conn) << std::endl;
         return false;
     }
