@@ -65,6 +65,48 @@ static gboolean retry_connection(gpointer user_data) {
     return FALSE; // FALSE를 리턴해야 타이머가 한 번만 실행되고 사라짐
 }
 
+// ★★★ [테스트 함수] 가짜 XML 데이터 생성 및 주입 ★★★
+// 나중에 이 함수 전체를 지우거나 주석 처리하면 됩니다.
+static gboolean test_fake_xml_injection(gpointer user_data) {
+    CustomData *data = (CustomData *)user_data;
+
+    // 현재 시간 구하기
+    auto now = std::chrono::system_clock::now();
+    std::time_t now_time = std::chrono::system_clock::to_time_t(now);
+    char timeBuffer[30];
+    std::strftime(timeBuffer, sizeof(timeBuffer), "%Y-%m-%dT%H:%M:%S.000Z", std::gmtime(&now_time));
+
+    // 가짜 XML 데이터 (사람 감지됨)
+    std::string fakeXML = R"(
+        <tt:MetadataStream>
+          <tt:VideoAnalytics>
+            <tt:Frame UtcTime=")" + std::string(timeBuffer) + R"(">
+              <tt:Object ObjectId="12345">
+                <tt:Appearance>
+                  <tt:Class>
+                    <tt:Type Likelihood="0.99">Human</tt:Type>
+                  </tt:Class>
+                  <tt:HumanBody>
+                     <bd:Gender>Male</bd:Gender>
+                     <bd:Clothing>
+                        <bd:Tops><tt:ColorString>Red</tt:ColorString></bd:Tops>
+                        <bd:Bottoms><tt:ColorString>Black</tt:ColorString></bd:Bottoms>
+                     </bd:Clothing>
+                  </tt:HumanBody>
+                </tt:Appearance>
+              </tt:Object>
+            </tt:Frame>
+          </tt:VideoAnalytics>
+        </tt:MetadataStream>
+    )";
+
+    std::cout << "[TEST] Injecting Fake XML Data (Human Detected)..." << std::endl;
+    
+    // DB 로거에 주입 (카메라에서 온 것처럼 위장)
+    data->logger->parseAndLogXML(fakeXML.c_str());
+
+    return TRUE; // 10초마다 계속 반복
+}
 
 // [수정됨] 파이프라인 감시자 (에러 나도 안 죽고 재시도)
 static gboolean bus_call(GstBus *bus, GstMessage *msg, gpointer user_data) {
@@ -113,8 +155,7 @@ static gboolean bus_call(GstBus *bus, GstMessage *msg, gpointer user_data) {
             g_timeout_add_seconds(5, retry_connection, data);
             break;
         }
-        default:
-            break;
+        default: break;
     }
     return TRUE;
 }
@@ -206,6 +247,13 @@ int main(int argc, char *argv[]) {
     
     // 청소부 함수는 60초마다 실행
     g_timeout_add_seconds(60, cleanup_old_files, NULL);
+
+
+
+    // ★★★ [테스트] 10초마다 가짜 데이터 주입 (나중에 이 줄만 지우면 됨) ★★★
+    g_timeout_add_seconds(10, test_fake_xml_injection, &data);
+
+
 
     GstBus *bus = gst_pipeline_get_bus(GST_PIPELINE(data.pipeline));
     gst_bus_add_watch(bus, bus_call, &data);
