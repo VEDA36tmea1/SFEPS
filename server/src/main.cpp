@@ -7,7 +7,7 @@
 #include "log.h"
 
 // ▼▼▼ 카메라 주소 수정 필수 ▼▼▼
-#define RTSP_URL "rtsp://127.0.0.1:8554/cam1" 
+#define RTSP_URL "rtsp://192.168.0.92:8080/cam1" 
 
 namespace fs = std::filesystem;
 
@@ -262,7 +262,7 @@ int main(int argc, char *argv[]) {
     // ★★★ [테스트] 10초마다 가짜 데이터 주입 (나중에 이 줄만 지우면 됨) ★★★
     g_timeout_add_seconds(10, test_fake_xml_injection, &data);
 
-    
+
     // [신규] DB 청소 (60초마다 실행 -> 100MB 넘으면 삭제)
     g_timeout_add_seconds(60, cleanup_db_task, &data);
 
