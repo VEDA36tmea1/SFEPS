@@ -7,7 +7,7 @@
 #include "log.h"
 
 // ▼▼▼ 카메라 주소 수정 필수 ▼▼▼
-#define RTSP_URL "rtsp://192.168.0.92:8080/cam1" 
+#define RTSP_URL "rtsp://127.0.0.1:8554/cam1" 
 
 namespace fs = std::filesystem;
 
@@ -21,13 +21,14 @@ struct CustomData {
 static gboolean cleanup_old_files(gpointer user_data) {
     // 보관 기간: 5분
     const auto retention_period = std::chrono::minutes(5);
-    
+    // [수정] 청소할 폴더 경로 지정
+    std::string video_dir = "/home/iam/finalProject/SFEPS/videos";
     try {
         // 현재 시간 (파일 시스템 시계 기준)
         auto now = fs::file_time_type::clock::now();
 
         // 현재 폴더(".") 내의 모든 파일을 검사
-        for (const auto& entry : fs::directory_iterator(".")) {
+        for (const auto& entry : fs::directory_iterator(video_dir)) {
             if (entry.is_regular_file()) {
                 std::string filename = entry.path().filename().string();
                 
@@ -73,7 +74,7 @@ static gboolean retry_connection(gpointer user_data) {
     
     return FALSE; // FALSE를 리턴해야 타이머가 한 번만 실행되고 사라짐
 }
-
+/*
 // ★★★ [테스트 함수] 가짜 XML 데이터 생성 및 주입 ★★★
 // 나중에 이 함수 전체를 지우거나 주석 처리하면 됩니다.
 static gboolean test_fake_xml_injection(gpointer user_data) {
@@ -116,7 +117,7 @@ static gboolean test_fake_xml_injection(gpointer user_data) {
 
     return TRUE; // 10초마다 계속 반복
 }
-
+*/
 // [수정됨] 파이프라인 감시자 (에러 나도 안 죽고 재시도)
 static gboolean bus_call(GstBus *bus, GstMessage *msg, gpointer user_data) {
     CustomData *data = (CustomData *) user_data;
@@ -194,20 +195,33 @@ static void on_pad_added(GstElement *element, GstPad *pad, gpointer user_data) {
     CustomData *data = (CustomData *)user_data;
     GstCaps *caps = gst_pad_get_current_caps(pad);
     GstStructure *str = gst_caps_get_structure(caps, 0);
-    const gchar *name = gst_structure_get_name(str);
 
-    if (g_str_has_prefix(name, "video/")) {
+    // 1. 캡슐의 이름(name)과 미디어 타입(media)을 모두 확인
+    const gchar *name = gst_structure_get_name(str);
+    const gchar *media = gst_structure_get_string(str, "media");
+    const gchar *encoding = gst_structure_get_string(str, "encoding-name");
+
+    std::cout << "[DEBUG] Pad added: Name=" << name 
+              << ", Media=" << (media ? media : "null") 
+              << ", Encoding=" << (encoding ? encoding : "null") << std::endl;
+
+    // 2. 영상 스트림 처리 (media가 "video" 이거나 이름이 "video/"로 시작할 때)
+    if (g_str_has_prefix(name, "video/") || (media && g_str_equal(media, "video"))) {
+        std::cout << "[Video] Stream detected! Connecting to Recorder..." << std::endl;
+        
         GstElement *depay = gst_bin_get_by_name(GST_BIN(data->pipeline), "video_depay");
-        // 이미 연결되어 있으면 건너뜀 (재연결 시 중요)
         if (!gst_pad_is_linked(gst_element_get_static_pad(depay, "sink"))) {
-            std::cout << "[Video] Re-linking stream..." << std::endl;
             gst_element_link_pads(element, gst_pad_get_name(pad), depay, "sink");
         }
     }
-    else if (g_str_has_prefix(name, "application")) {
+
+    // 3. 메타데이터 스트림 처리 (media가 "application" 이고 encoding이 없는 경우 등)
+    // 주의: 영상(RTP)도 application/x-rtp라서 헷갈릴 수 있음. media="application"을 꼭 확인.
+    else if (g_str_has_prefix(name, "application") && (media && g_str_equal(media, "application"))) {
+        std::cout << "[Metadata] Stream detected! Connecting to DB..." << std::endl;
+        
         GstElement *appsink = gst_bin_get_by_name(GST_BIN(data->pipeline), "meta_sink");
         if (!gst_pad_is_linked(gst_element_get_static_pad(appsink, "sink"))) {
-             std::cout << "[Metadata] Re-linking stream..." << std::endl;
              gst_element_link_pads(element, gst_pad_get_name(pad), appsink, "sink");
         }
     }
@@ -219,13 +233,13 @@ int main(int argc, char *argv[]) {
 
     DBLogger myLogger;
     if (!myLogger.connect()) return -1;
-    myLogger.enqueue("SYSTEM", "SFEPS Server Started");
+    myLogger.enqueue("SYSTEM", "smart_server Started");
 
     CustomData data;
     data.loop = g_main_loop_new(NULL, FALSE);
     data.logger = &myLogger;
 
-    data.pipeline = gst_pipeline_new("sfeps-pipeline");
+    data.pipeline = gst_pipeline_new("CCgbd-pipeline");
     GstElement *source = gst_element_factory_make("rtspsrc", "source");
     GstElement *v_depay = gst_element_factory_make("rtph264depay", "video_depay");
     GstElement *v_parse = gst_element_factory_make("h264parse", "video_parse");
@@ -240,12 +254,12 @@ int main(int argc, char *argv[]) {
     gst_bin_add_many(GST_BIN(data.pipeline), source, v_depay, v_parse, v_rec, appsink, NULL);
     gst_element_link_many(v_depay, v_parse, v_rec, NULL);
 
-    g_object_set(source, "location", RTSP_URL, "latency", 0, NULL);
+    g_object_set(source, "location", RTSP_URL, "latency", 2000, NULL);
     
     // [설정 2] 녹화 설정: 60초(1분)마다 자르기
     // 60초 = 60,000,000,000 나노초
     g_object_set(v_rec, 
-        "location", "rec_%04d.mp4", 
+        "location", "/home/iam/finalProject/SFEPS/videos/rec_%04d.mp4", 
         "max-size-time", 60000000000ULL, 
         NULL);
 
@@ -260,7 +274,7 @@ int main(int argc, char *argv[]) {
 
 
     // ★★★ [테스트] 10초마다 가짜 데이터 주입 (나중에 이 줄만 지우면 됨) ★★★
-    g_timeout_add_seconds(10, test_fake_xml_injection, &data);
+    //g_timeout_add_seconds(10, test_fake_xml_injection, &data);
 
 
     // [신규] DB 청소 (60초마다 실행 -> 100MB 넘으면 삭제)
