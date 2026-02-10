@@ -8,6 +8,7 @@
 
 // ▼▼▼ 카메라 주소 수정 필수 ▼▼▼
 #define RTSP_URL "rtsp://127.0.0.1:8554/cam1" 
+#define video_dir "/home/iam/finalProject/SFEPS/videos"
 
 namespace fs = std::filesystem;
 
@@ -22,7 +23,7 @@ static gboolean cleanup_old_files(gpointer user_data) {
     // 보관 기간: 5분
     const auto retention_period = std::chrono::minutes(5);
     // [수정] 청소할 폴더 경로 지정
-    std::string video_dir = "/home/iam/finalProject/SFEPS/videos";
+    
     try {
         // 현재 시간 (파일 시스템 시계 기준)
         auto now = fs::file_time_type::clock::now();
@@ -38,10 +39,16 @@ static gboolean cleanup_old_files(gpointer user_data) {
                     // 파일의 마지막 수정 시간 확인
                     auto ftime = fs::last_write_time(entry);
                     
-                    // (현재시간 - 수정시간)이 1시간보다 크면 삭제
+                    // 파일 나이 계산 (분 단위)
+                    auto age = std::chrono::duration_cast<std::chrono::minutes>(now - ftime).count();
+                    
+                    // (현재시간 - 수정시간)이 5분보다 크면 삭제
                     if (now - ftime > retention_period) {
-                        std::cout << "[Auto Cleanup] Deleting old recording: " << filename << std::endl;
+                        std::cout << "  [DELETE] " << filename << " (Age: " << age << "m > 5m)" << std::endl;
                         fs::remove(entry.path());
+                    } else {
+                        // 삭제 안 된 이유 출력 (너무 많으면 주석 처리)
+                        // std::cout << "  [KEEP]   " << filename << " (Age: " << age << "m)" << std::endl;
                     }
                 }
             }
@@ -170,7 +177,7 @@ static gboolean bus_call(GstBus *bus, GstMessage *msg, gpointer user_data) {
     return TRUE;
 }
 
-// [핵심 1] XML 데이터 수신 및 DB 저장
+// [기능 5] XML 데이터 수신 및 DB 저장
 GstFlowReturn on_new_meta_data(GstElement *sink, CustomData *data) {
     GstSample *sample;
     g_signal_emit_by_name(sink, "pull-sample", &sample);
@@ -190,7 +197,7 @@ GstFlowReturn on_new_meta_data(GstElement *sink, CustomData *data) {
     return GST_FLOW_ERROR;
 }
 
-// [핵심 2] 스트림 연결
+// [기능 6] 스트림 연결
 static void on_pad_added(GstElement *element, GstPad *pad, gpointer user_data) {
     CustomData *data = (CustomData *)user_data;
     GstCaps *caps = gst_pad_get_current_caps(pad);
@@ -205,10 +212,11 @@ static void on_pad_added(GstElement *element, GstPad *pad, gpointer user_data) {
               << ", Media=" << (media ? media : "null") 
               << ", Encoding=" << (encoding ? encoding : "null") << std::endl;
 
-    // 2. 영상 스트림 처리 (media가 "video" 이거나 이름이 "video/"로 시작할 때)
+   // 영상 스트림 -> 바로 depay로 연결
     if (g_str_has_prefix(name, "video/") || (media && g_str_equal(media, "video"))) {
         std::cout << "[Video] Stream detected! Connecting to Recorder..." << std::endl;
         
+        // 지터 버퍼 없이 바로 depay로!
         GstElement *depay = gst_bin_get_by_name(GST_BIN(data->pipeline), "video_depay");
         if (!gst_pad_is_linked(gst_element_get_static_pad(depay, "sink"))) {
             gst_element_link_pads(element, gst_pad_get_name(pad), depay, "sink");
@@ -241,6 +249,10 @@ int main(int argc, char *argv[]) {
 
     data.pipeline = gst_pipeline_new("CCgbd-pipeline");
     GstElement *source = gst_element_factory_make("rtspsrc", "source");
+    
+    // [수정 2] 녹화 안정화를 위한 지터 버퍼 추가
+    //GstElement *v_jitter = gst_element_factory_make("rtpjitterbuffer", "video_jitter");
+
     GstElement *v_depay = gst_element_factory_make("rtph264depay", "video_depay");
     GstElement *v_parse = gst_element_factory_make("h264parse", "video_parse");
     GstElement *v_rec = gst_element_factory_make("splitmuxsink", "video_rec");
@@ -252,15 +264,38 @@ int main(int argc, char *argv[]) {
     }
 
     gst_bin_add_many(GST_BIN(data.pipeline), source, v_depay, v_parse, v_rec, appsink, NULL);
-    gst_element_link_many(v_depay, v_parse, v_rec, NULL);
-
-    g_object_set(source, "location", RTSP_URL, "latency", 2000, NULL);
     
+    // 연결 순서: jitter -> depay -> parse -> rec
+    gst_element_link_many( v_depay, v_parse, v_rec, NULL);
+
+    // latency 2초로 설정하여 끊김 방지
+    // DB 데이터는 XML 내용 그대로 저장되므로 영향 없음! 영상 끊김만 해결해 줌.
+    g_object_set(source, 
+        "location", RTSP_URL, 
+        "latency", 2000, 
+        "protocols", 4, 
+        "use-pipeline-clock", TRUE,
+        "do-retransmission", FALSE, // TCP라 재전송 불필요
+        "drop-on-latency", TRUE,    // 늦은 패킷은 버림 (시간 밀림 방지)
+        "timeout", 30000000, 
+    
+        NULL);
+    //?
+    g_object_set(v_parse, "config-interval", -1, NULL);
+    /*
+    g_object_set(v_jitter, 
+        "do-lost", TRUE, 
+        "drop-on-latency", TRUE, // ★ 늦게 온 패킷은 버려서 밀림 방지
+        NULL);
+    */
     // [설정 2] 녹화 설정: 60초(1분)마다 자르기
     // 60초 = 60,000,000,000 나노초
+    std::string file_pattern = std::string(video_dir) + "/rec_%04d.mp4";
     g_object_set(v_rec, 
-        "location", "/home/iam/finalProject/SFEPS/videos/rec_%04d.mp4", 
-        "max-size-time", 60000000000ULL, 
+        "location", file_pattern.c_str(), 
+        "max-size-time", 60000000000ULL,
+        "send-keyframe-requests", TRUE, // 파일 자를 때 키프레임 요청
+        "async-handling", TRUE,         // 비동기 처리로 버벅임 방지
         NULL);
 
     g_object_set(appsink, "emit-signals", TRUE, "sync", FALSE, NULL);
