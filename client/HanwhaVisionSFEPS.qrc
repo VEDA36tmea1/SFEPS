@@ -1,25 +1,5 @@
 <RCC>
-    <!--
-      IMPORTANT:
-      - QML에서 `qrc:/assets/...`로 접근하므로 prefix는 "/" 를 유지합니다.
-      - 실제 존재하는 assets만 포함합니다.
-    -->
-    <qresource prefix="/">
-        <!-- Controls style config (non-native: Basic) -->
-        <file>qtquickcontrols2.conf</file>
-
-        <!-- QML entrypoints (main.cpp: qrc:/src/Main.qml) -->
-        <file>src/Main.qml</file>
-        <file>src/AppTheme.qml</file>
-        <file>src/qmldir</file>
-        <file>src/views/LoginView.qml</file>
-        <file>src/views/MonitoringView.qml</file>
-        <file>src/views/AnalyticsView.qml</file>
-        <file>src/views/DetailView.qml</file>
-        <file>src/views/SettingsView.qml</file>
-        <file>src/views/qmldir</file>
-
-        <!-- Assets -->
+    <qresource>
         <file>assets/Alarm.png</file>
         <file>assets/Alert circle.svg</file>
         <file>assets/alert_detail.png</file>
@@ -71,5 +51,14 @@
         <file>assets/video_stream_logo.png</file>
         <file>assets/video_Stream_logo.svg</file>
         <file>assets/zoom.png</file>
+        <file>HanwhaVisionSFEPS.qmlproject</file>
+        <file>qtquickcontrols2.conf</file>
+        <file>src/AppTheme.qml</file>
+        <file>src/Main.qml</file>
+        <file>src/views/AnalyticsView.qml</file>
+        <file>src/views/DetailView.qml</file>
+        <file>src/views/LoginView.qml</file>
+        <file>src/views/MonitoringView.qml</file>
+        <file>src/views/SettingsView.qml</file>
     </qresource>
 </RCC>

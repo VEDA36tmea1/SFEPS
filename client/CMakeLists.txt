@@ -1,77 +1,54 @@
-cmake_minimum_required(VERSION 3.21)
-project(QtVideoPlayer VERSION 1.0.0 LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.16)
 
-set(CMAKE_PREFIX_PATH "C:/Qt/6.10.0/mingw_64")
+project(HanwhaVisionSFEPS VERSION 0.1 LANGUAGES CXX)
+
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
-set(CMAKE_AUTOUIC ON)
 
-# [1] Find Packages
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Multimedia MultimediaWidgets Network Concurrent)
+# Qt6 찾기 (Quick, QuickControls2, Network 모듈 필수)
+find_package(Qt6 6.4 REQUIRED COMPONENTS Quick QuickControls2 Network)
 
-# [2] OpenCV Configuration
-set(OPENCV_BIN_DIR "${CMAKE_SOURCE_DIR}/../OpenCV-MinGW-Build/x64/mingw/bin")
-set(OPENCV_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/../OpenCV-MinGW-Build/include")
-set(OPENCV_LIB_DIR "${CMAKE_SOURCE_DIR}/../OpenCV-MinGW-Build/x64/mingw/lib")
+# OpenCV 설정 (상위 디렉토리나 시스템 경로에 있다고 가정)
+# 찾지 못하면 에러 발생
+set(OpenCV_DIR "C:/Users/2-08/OpenCV-MinGW-Build")
+find_package(OpenCV REQUIRED)
 
-# --- [3] Output Output ---
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build")
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build")
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build")
+# Qt 리소스 추가
+qt_add_resources(RESOURCES resources.qrc)
 
-# [4] Executable
-add_executable(QtVideoPlayer
+qt_add_executable(appHanwhaVisionSFEPS
     src/main.cpp
-    src/mainwindow.cpp
-    src/mainwindow.h
-    resources.qrc
-    
-    # Views
-    src/views/LoginView.cpp
-    src/views/LoginView.h
-    src/views/MonitoringView.cpp
-    src/views/MonitoringView.h
-    src/views/DetailView.cpp
-    src/views/DetailView.h
-    src/views/SettingsView.cpp
-    src/views/SettingsView.h
-    src/views/AnalyticsView.cpp
-    src/views/AnalyticsView.h
+    src/authmanager.cpp src/authmanager.h
+    src/mainwindow.cpp src/mainwindow.h
+    ${RESOURCES}
 )
 
-target_include_directories(QtVideoPlayer SYSTEM PRIVATE "${OPENCV_INCLUDE_DIR}")
-target_include_directories(QtVideoPlayer PRIVATE "${CMAKE_SOURCE_DIR}/src")
-
-# [5] Libraries
-set(OPENCV_LIBS
-    "${OPENCV_LIB_DIR}/libopencv_highgui455.dll.a"
-    "${OPENCV_LIB_DIR}/libopencv_videoio455.dll.a"
-    "${OPENCV_LIB_DIR}/libopencv_imgcodecs455.dll.a"
-    "${OPENCV_LIB_DIR}/libopencv_imgproc455.dll.a"
-    "${OPENCV_LIB_DIR}/libopencv_core455.dll.a"
+target_link_libraries(appHanwhaVisionSFEPS
+    PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Network
+    ${OpenCV_LIBS}
 )
 
-target_link_libraries(QtVideoPlayer PRIVATE
-    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Multimedia Qt6::MultimediaWidgets Qt6::Network Qt6::Concurrent
-    ${OPENCV_LIBS}
+# QML 리소스 설정
+qt_add_qml_module(appHanwhaVisionSFEPS
+    URI "HanwhaVisionSFEPS"
+    VERSION 1.0
+    QML_FILES
+        src/Main.qml
+        src/AppTheme.qml
+        src/views/LoginView.qml
+        src/views/MonitoringView.qml
+        src/views/DetailView.qml
+        src/views/AnalyticsView.qml
+        src/views/SettingsView.qml
 )
 
-# --- [6] Post Build Copy ---
+# 편의를 위해 자산 폴더를 빌드 디렉토리로 복사 (배포 방식에 따라 선택 사항)
+file(COPY assets DESTINATION ${CMAKE_BINARY_DIR})
 
-# 1. OpenCV DLLs
-add_custom_command(TARGET QtVideoPlayer POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${OPENCV_BIN_DIR}"
-        "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
-    COMMENT "Copying OpenCV DLLs to build directory..."
+install(TARGETS appHanwhaVisionSFEPS
+    BUNDLE DESTINATION .
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
-
-# 2. windeployqt
-find_program(WINDEPLOYQT_EXECUTABLE windeployqt HINTS "C:/Qt/6.10.0/mingw_64/bin")
-if(WINDEPLOYQT_EXECUTABLE)
-    add_custom_command(TARGET QtVideoPlayer POST_BUILD
-        COMMAND "${WINDEPLOYQT_EXECUTABLE}" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/QtVideoPlayer.exe"
-        COMMENT "Running windeployqt in build directory..."
-    )
-endif()
