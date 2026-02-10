@@ -72,4 +72,5 @@ private:
     std::atomic<bool> isRunning;
 };
 
+
 #endif
