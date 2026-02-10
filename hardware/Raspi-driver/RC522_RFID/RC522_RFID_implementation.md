@@ -300,6 +300,72 @@ sudo ./rc522_user
 - `RC522 VersionReg = 0x91` 또는 `0x92` 계열
 - 태그를 가까이 대면 UID 출력
 
+### 3-4. Python `SimpleMFRC522` 스타일 C 래퍼 (`rc522_full.c` / `rc522_full_demo.c`)
+
+위의 예제는 레지스터/프레임을 직접 다루는 최소 예제이고, 실제로는 Python의 `mfrc522.SimpleMFRC522`처럼
+**UID 읽기 / 섹터 단위 텍스트 읽기/쓰기를 한 번에 제공하는 C API**를 쓰면 훨씬 편하다.
+
+- 파일 구조:
+  - `src/rc522_full.h` : 공개 API 헤더
+  - `src/rc522_full.c` : Python `MFRC522`/`BasicMFRC522`를 C로 포팅한 구현
+  - `src/rc522_full_demo.c` : Python `SimpleMFRC522`에 해당하는 데모 프로그램
+
+헤더에서 노출되는 주요 함수:
+
+```c
+// SPI 및 RC522 초기화
+//  spi_ch : 0 -> /dev/spidev0.0(CE0), 1 -> /dev/spidev0.1(CE1)
+//  speed_hz : 예) 1000000
+//  rst_bcm  : RST에 연결된 BCM GPIO (예: 25, RST를 3.3V 고정이면 -1)
+int rc522c_init(int spi_ch, int speed_hz, int rst_bcm);
+
+// UID 한 번만 시도 (태그 없으면 -1)
+int rc522c_read_id_no_block(uint32_t *out_id);
+
+// 태그가 나올 때까지 blocking
+int rc522c_read_id_blocking(uint32_t *out_id);
+
+// 섹터(트레일러 블록 기준, 예: 11)의 3개 데이터 블록(총 48바이트)을 텍스트로 읽기
+int rc522c_read_text_sector_blocking(int trailer_block,
+                                     uint32_t *out_id,
+                                     char *out_text,
+                                     size_t max_len);
+
+// 섹터(3블록)에 텍스트 쓰기 (최대 48바이트, 부족분 0 패딩)
+int rc522c_write_text_sector_blocking(int trailer_block,
+                                      const char *text,
+                                      uint32_t *out_id);
+```
+
+데모 프로그램(`rc522_full_demo.c`)은 위 API를 감싸서 Python의 `SimpleMFRC522`처럼 동작한다:
+
+```bash
+# 기본: trailer=11(섹터 2)의 3개 데이터 블록을 읽어서 ID/TEXT 출력
+./rc522_full_demo
+
+# UID만 읽기 (SimpleMFRC522.read_id()와 유사)
+./rc522_full_demo --id
+
+# 다른 섹터 trailer 지정 (예: 섹터 3의 trailer=15)
+./rc522_full_demo --trailer 15
+
+# 텍스트 쓰기 (섹터 trailer=11 기준)
+./rc522_full_demo --write "hello rc522"
+
+# SPI 채널/속도/RST 핀 변경
+./rc522_full_demo --ch 0 --speed 1000000 --rst 25
+./rc522_full_demo --ch 1 --speed 500000 --rst -1   # RST를 3.3V 고정한 경우
+```
+
+이 구조를 기반으로 애플리케이션에서는
+
+- UID만 필요한 경우: `rc522c_read_id_blocking()` 호출
+- 태그에 사용자 데이터를 저장/조회해야 할 경우:
+  - `rc522c_write_text_sector_blocking()`으로 문자열 쓰기
+  - `rc522c_read_text_sector_blocking()`으로 문자열 읽기
+
+를 사용하면, Python 코드(`SimpleMFRC522`, `BasicMFRC522`, `MFRC522`)와 거의 동일한 추상 수준으로 C에서 RC522를 다룰 수 있다.
+
 ---
 
 ## 4) 1단계 디버깅 체크리스트
