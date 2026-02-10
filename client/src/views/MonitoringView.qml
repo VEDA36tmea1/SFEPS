@@ -41,82 +41,110 @@ Page {
                 }
             }
 
-            // Video Grid (2x2)
-            GridLayout {
+            // Single Camera View (CAM-01)
+            Item {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                columns: 2
-                columnSpacing: 16
-                rowSpacing: 16
 
-                Repeater {
-                    model: 4
-                    delegate: Item {
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
+                // Background
+                Rectangle {
+                    anchors.fill: parent
+                    color: "black"
+                    radius: 4
+                    border.color: "#333"
+                    border.width: 1
+                }
 
-                        // Background
-                        Rectangle {
-                            anchors.fill: parent
-                            color: "black"
-                            radius: 4
-                            border.color: "#333"
-                            border.width: 1
+                // Real Video Stream for Camera 1
+                VideoDisplay {
+                    id: videoDisplay
+                    anchors.fill: parent
+                    anchors.margins: 1 // inside border
+                    brightness: brightnessSlider.value
+                    running: true
+
+                    // Zoom Selection logic
+                    property real startX: 0
+                    property real startY: 0
+                    property bool selecting: false
+                    property bool zoomedIn: false
+
+                    Rectangle {
+                        id: selectionRect
+                        visible: videoDisplay.selecting
+                        color: "#4400aaff"
+                        border.color: "#00aaff"
+                        border.width: 1
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: zoomBtn.checked && !videoDisplay.zoomedIn
+                        cursorShape: enabled ? Qt.CrossCursor : Qt.ArrowCursor
+
+                        onPressed: {
+                            videoDisplay.startX = mouse.x
+                            videoDisplay.startY = mouse.y
+                            videoDisplay.selecting = true
+                            selectionRect.x = mouse.x
+                            selectionRect.y = mouse.y
+                            selectionRect.width = 0
+                            selectionRect.height = 0
                         }
 
-                        // Real Video Stream for Camera 1 (Index 0)
-                        Loader {
-                            anchors.fill: parent
-                            // Only load VideoDisplay for the first item to save resources/bandwidth
-                            active: index === 0
-                            sourceComponent: VideoDisplay {
-                                anchors.fill: parent
-                                anchors.margins: 1 // inside border
-                                // Bind brightness to slider (brightnessSlider is below, we need an id)
-                                brightness: brightnessSlider.value
-                                running: true
+                        onPositionChanged: {
+                            if (videoDisplay.selecting) {
+                                selectionRect.x = Math.min(mouse.x, videoDisplay.startX)
+                                selectionRect.y = Math.min(mouse.y, videoDisplay.startY)
+                                selectionRect.width = Math.abs(mouse.x - videoDisplay.startX)
+                                selectionRect.height = Math.abs(mouse.y - videoDisplay.startY)
                             }
                         }
 
-                        // Placeholder for others
-                        Text {
-                            anchors.centerIn: parent
-                            text: (index === 0) ? "" : "NO SIGNAL"
-                            color: "#555"
-                            visible: index !== 0
-                        }
-
-                        // Camera ID & Name Overlay
-                        RowLayout {
-                            anchors.left: parent.left
-                            anchors.top: parent.top
-                            anchors.margins: 12
-                            spacing: 8
-                            z: 10 // Ensure it's on top of video
-
-                            // Recording Dot
-                            Rectangle {
-                                width: 8
-                                height: 8
-                                radius: 4
-                                color: "#ef4444" // Red
-                            }
-
-                            // Cam Label
-                            Rectangle {
-                                color: "#99000000" // Transparent black
-                                radius: 4
-                                width: camText.implicitWidth + 16
-                                height: 26
-                                Text {
-                                    id: camText
-                                    anchors.centerIn: parent
-                                    text: "CAM-0" + (index + 1) + " • " + getCamName(index)
-                                    color: "white"
-                                    font.bold: true
-                                    font.pixelSize: 11
+                        onReleased: {
+                            if (videoDisplay.selecting) {
+                                if (selectionRect.width > 10 && selectionRect.height > 10) {
+                                    videoDisplay.setZoomFromItem(
+                                        Qt.rect(selectionRect.x, selectionRect.y, selectionRect.width, selectionRect.height),
+                                        Qt.size(videoDisplay.width, videoDisplay.height)
+                                    )
+                                    videoDisplay.zoomedIn = true
                                 }
+                                videoDisplay.selecting = false
                             }
+                        }
+                    }
+                }
+
+                // Camera ID & Name Overlay
+                RowLayout {
+                    anchors.left: parent.left
+                    anchors.top: parent.top
+                    anchors.margins: 12
+                    spacing: 8
+                    z: 10 // Ensure it's on top of video
+
+                    // Recording Dot
+                    Rectangle {
+                        width: 8
+                        height: 8
+                        radius: 4
+                        color: "#ef4444" // Red
+                    }
+
+                    // Cam Label
+                    Rectangle {
+                        color: "#99000000" // Transparent black
+                        radius: 4
+                        width: camText.implicitWidth + 16
+                        height: 26
+                        Text {
+                            id: camText
+                            anchors.centerIn: parent
+                            text: "CAM-01 • MAIN"
+                            color: "white"
+                            font.bold: true
+                            font.pixelSize: 11
                         }
                     }
                 }
@@ -165,7 +193,7 @@ Page {
                             Layout.fillWidth: true
                             from: 0
                             to: 100
-                            value: 75
+                            value: 50
                             background: Rectangle {
                                 x: parent.leftPadding
                                 y: parent.topPadding + parent.availableHeight / 2 - height / 2
@@ -218,7 +246,7 @@ Page {
                             Layout.fillWidth: true
                             from: 0
                             to: 100
-                            value: 60
+                            value: 50
                             background: Rectangle {
                                 x: parent.leftPadding
                                 y: parent.topPadding + parent.availableHeight / 2 - height / 2
@@ -250,13 +278,15 @@ Page {
                         Layout.fillWidth: true
                     } // Spacer
 
-                    // Zoom Out Button
+                    // Zoom IN/OUT Button
                     Button {
+                        id: zoomBtn
                         Layout.preferredWidth: 120
                         Layout.preferredHeight: 48
                         flat: true
+                        checkable: true
                         background: Rectangle {
-                            color: parent.down ? "#1a1a1a" : (parent.hovered ? "#3a3a3a" : "#2a2a2a")
+                            color: zoomBtn.checked ? AppTheme.primaryOrange : (zoomBtn.down ? "#1a1a1a" : (zoomBtn.hovered ? "#3a3a3a" : "#2a2a2a"))
                             radius: 6
                         }
                         contentItem: RowLayout {
@@ -266,12 +296,19 @@ Page {
                                 source: "../../assets/expand_zoom.svg"
                                 sourceSize.width: 20
                                 sourceSize.height: 20
+                                // 버튼이 체크되었을 때 아이콘 색상 (필요시)
                             }
                             Text {
-                                text: "Zoom In"
-                                color: AppTheme.primaryOrange
+                                text: "Zoom In/Out"
+                                color: zoomBtn.checked ? "white" : AppTheme.primaryOrange
                                 font.bold: true
                                 font.pixelSize: 12
+                            }
+                        }
+                        onCheckedChanged: {
+                            if (!checked) {
+                                videoDisplay.resetZoom()
+                                videoDisplay.zoomedIn = false
                             }
                         }
                     }
@@ -372,14 +409,6 @@ Page {
                     clip: true
                     spacing: 8
                     model: ListModel {
-                        ListElement {
-                            eventId: "1"
-                            eventType: "FARE EVASION DETECTED"
-                            title: "Gate 04 - Tailgating"
-                            camera: "Camera: CAM-04 North Entry"
-                            timestamp: "14:51:58"
-                            confidence: "98.2%"
-                        }
                         ListElement {
                             eventId: "2"
                             eventType: "GATE ACCESS"
@@ -625,7 +654,7 @@ Page {
     }
 
     function getCamName(idx) {
-        var names = ["MAIN ENTRANCE WEST", "TICKET GATES NORTH", "CONCOURSE A", "PLATFORM B SOUTH"];
+        var names = ["MAIN"];
         return names[idx];
     }
 
