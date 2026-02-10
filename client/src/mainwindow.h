@@ -61,6 +61,9 @@ public:
     QRectF zoomRect() const { return m_zoomRect; }
     void setZoomRect(const QRectF &rect);
 
+    Q_INVOKABLE void resetZoom();
+    Q_INVOKABLE void setZoomFromItem(const QRectF &itemRect, const QSizeF &itemSize);
+
 signals:
     void runningChanged();
     void brightnessChanged();

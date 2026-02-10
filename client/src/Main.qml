@@ -5,8 +5,8 @@ import src 1.0
 import src.views 1.0
 
 Window {
-    width: 1600
-    height: 900
+    width: 1250
+    height: 750
     visible: true
     title: "Hanwha Vision SFEPS"
     color: AppTheme.background

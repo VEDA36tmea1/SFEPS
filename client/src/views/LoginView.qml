@@ -5,8 +5,8 @@ import src 1.0
 
 Window {
     id: root
-    width: 1280
-    height: 800
+    width: 1000
+    height: 600
     visible: true
     title: "SFEPS Login"
     color: AppTheme.background
@@ -20,7 +20,7 @@ Window {
         // ─── Header (CCTV Management Dashboard login-page.tsx 스타일)
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 64
+            Layout.preferredHeight: 54
             color: AppTheme.navBarBg
             Rectangle {
                 anchors.bottom: parent.bottom
@@ -121,8 +121,8 @@ Window {
                 Layout.fillWidth: true
             }
             Rectangle {
-                Layout.preferredWidth: 440
-                Layout.preferredHeight: 560
+                Layout.preferredWidth: 380
+                Layout.preferredHeight: 480
                 color: AppTheme.surfaceCardAlt
                 radius: 12
                 border.color: AppTheme.borderCard
@@ -134,7 +134,7 @@ Window {
 
                     Rectangle {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 140
+                        Layout.preferredHeight: 100
                         color: "transparent"
                         Rectangle {
                             anchors.bottom: parent.bottom
@@ -148,14 +148,14 @@ Window {
                             Text {
                                 text: "Secure Access"
                                 color: "white"
-                                font.pixelSize: 24
+                                font.pixelSize: 20
                                 font.weight: Font.DemiBold
                                 Layout.alignment: Qt.AlignHCenter
                             }
                             Text {
                                 text: "Smart Fare Evasion Prevention"
                                 color: "#9ca3af"
-                                font.pixelSize: 13
+                                font.pixelSize: 12
                                 Layout.alignment: Qt.AlignHCenter
                             }
                         }
@@ -165,11 +165,11 @@ Window {
                     ColumnLayout {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        Layout.leftMargin: 40
-                        Layout.rightMargin: 40
-                        Layout.topMargin: 32
-                        Layout.bottomMargin: 32
-                        spacing: 24
+                        Layout.leftMargin: 30
+                        Layout.rightMargin: 30
+                        Layout.topMargin: 20
+                        Layout.bottomMargin: 20
+                        spacing: 16
 
                         // Manager ID
                         ColumnLayout {
@@ -178,12 +178,12 @@ Window {
                             Text {
                                 text: "Manager ID"
                                 color: "#dddddd"
-                                font.pixelSize: 14
+                                font.pixelSize: 13
                                 font.bold: true
                             }
                             Rectangle {
                                 Layout.fillWidth: true
-                                Layout.preferredHeight: 48
+                                Layout.preferredHeight: 40
                                 color: AppTheme.inputBg
                                 radius: 8
                                 border.color: AppTheme.inputBorder
@@ -205,7 +205,7 @@ Window {
                                         placeholderText: "Enter your ID"
                                         color: "white"
                                         background: Item {}
-                                        font.pixelSize: 14
+                                        font.pixelSize: 13
                                     }
                                 }
                             }
@@ -219,7 +219,7 @@ Window {
                                 Text {
                                     text: "Password"
                                     color: "#dddddd"
-                                    font.pixelSize: 14
+                                    font.pixelSize: 13
                                     font.bold: true
                                 }
                                 Item {
@@ -241,7 +241,7 @@ Window {
                             }
                             Rectangle {
                                 Layout.fillWidth: true
-                                Layout.preferredHeight: 48
+                                Layout.preferredHeight: 40
                                 color: AppTheme.inputBg
                                 radius: 8
                                 border.color: AppTheme.inputBorder
@@ -263,7 +263,7 @@ Window {
                                         echoMode: showPass.checked ? TextInput.Normal : TextInput.Password
                                         color: "white"
                                         background: Item {}
-                                        font.pixelSize: 14
+                                        font.pixelSize: 13
                                     }
                                     Button {
                                         id: showPass
@@ -316,21 +316,25 @@ Window {
 
                         Button {
                             Layout.fillWidth: true
-                            Layout.preferredHeight: 56
+                            Layout.preferredHeight: 44
                             contentItem: RowLayout {
-                                spacing: 10
+                                anchors.centerIn: parent
+                                spacing: 8
+                                Item { Layout.fillWidth: true }
                                 Text {
-                                    text: "LOG IN TO SFEPS"
+                                    text: "Login"
                                     color: "white"
-                                    font.pixelSize: 16
+                                    font.pixelSize: 14
                                     font.bold: true
                                     Layout.alignment: Qt.AlignVCenter
                                 }
                                 Image {
                                     source: "../../assets/log-in.svg"
-                                    sourceSize: Qt.size(20, 20)
+                                    sourceSize: Qt.size(18, 18)
                                     Layout.alignment: Qt.AlignVCenter
+                                    opacity: 0.9
                                 }
+                                Item { Layout.fillWidth: true }
                             }
                             background: Rectangle {
                                 color: parent.hovered ? "#6e3512" : "#9c4a1b"
@@ -375,7 +379,7 @@ Window {
         // ─── Footer
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 80
+            Layout.preferredHeight: 50
             color: AppTheme.background
             border.width: 1
             border.color: AppTheme.surface

@@ -61,6 +61,31 @@ void MainWindow::setZoomRect(const QRectF &rect)
     update(); // 다시 그리기 요청
 }
 
+void MainWindow::resetZoom()
+{
+    setZoomRect(QRectF());
+}
+
+void MainWindow::setZoomFromItem(const QRectF &itemRect, const QSizeF &itemSize)
+{
+    QMutexLocker locker(&m_mutex);
+    if (m_image.isNull() || itemSize.width() <= 0 || itemSize.height() <= 0) return;
+
+    // Item 내의 상대적 비율 계산 (0.0 ~ 1.0)
+    double rx = itemRect.x() / itemSize.width();
+    double ry = itemRect.y() / itemSize.height();
+    double rw = itemRect.width() / itemSize.width();
+    double rh = itemRect.height() / itemSize.height();
+
+    // 실제 이미지 좌표로 변환
+    double imgX = rx * m_image.width();
+    double imgY = ry * m_image.height();
+    double imgW = rw * m_image.width();
+    double imgH = rh * m_image.height();
+
+    setZoomRect(QRectF(imgX, imgY, imgW, imgH));
+}
+
 void MainWindow::processFrame(const cv::Mat &frame)
 {
     QMutexLocker locker(&m_mutex);
