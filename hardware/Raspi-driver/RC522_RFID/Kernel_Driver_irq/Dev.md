@@ -134,22 +134,109 @@ dmesg | grep rc522
 [  125.324695] rc522 spi0.0: rc522_irq/probed successfully, /dev/rc522 created
 ```
 
+- **주의 (GPIO24 풀업)**:
+  - RC522 IRQ 핀은 보드에 따라 오픈드레인 형태라, 풀업이 없으면 엣지가 깨끗하게 안 잡힘
+  - 아래처럼 **내부 풀업을 켜줘야** IRQ 로그가 안정적으로 들어옴:
+
+```bash
+gpio -g mode 24 up
+```
+
+- 이후에는 DTO에 pinctrl로 풀업을 넣어 자동화:
+  - `rc522-overlay-irq.dts` 에 `rc522_irq_pins` + `pinctrl-0 = <&rc522_irq_pins>;` 추가
 - 결론:
   - DTO에서 GPIO24 → IRQ 연결이 정상적으로 설정됨
-  - 커널에서 `spi->irq = 57`로 보이고, 향후 `devm_request_threaded_irq()`에 사용할 수 있는 상태
+  - 커널에서 `spi->irq = 57`로 보이고, `gpio -g mode 24 up` 또는 pinctrl 설정 이후 카드 태깅 시 IRQ 로그가 찍힘 (향후 waitqueue 연동에 사용)
 
 ---
 
-## 4. 다음 단계 계획 (요약)
+## 4. IRQ 요청 + waitqueue 기반 블로킹 읽기 (구현 완료)
 
-여기까지는 **폴링 로직은 유지한 채 IRQ용 틀만 만든 상태**이고, 다음 단계는:
+### 4-1. 드라이버 구조 요약
 
-1. **IRQ 요청 + waitqueue 도입**
-   - `rc522_spi.c`에서 `devm_request_threaded_irq()`로 IRQ 요청
-   - IRQ 핸들러에서 이벤트 플래그 set + `wake_up_interruptible()`
-   - `rc522_core.c`의 블로킹 루프(`rc522_read_uid_blocking` 등)를 `wait_event_interruptible()` 기반으로 전환
+- **IRQ 요청 (`rc522_spi.c`)**
+  - `spi->irq > 0` 일 때:
 
-2. **폴백/정리**
-   - IRQ가 없는 환경이면 기존 폴링 루틴 사용
-   - `Dev.md` / `Work.md` / `RC522_RFID_implementation.md`에 최종 구조/동작 기록
+```c
+ret = devm_request_threaded_irq(&spi->dev, spi->irq,
+				NULL, rc522_spi_irq_thread,
+				IRQF_ONESHOT |
+				IRQF_TRIGGER_FALLING,
+				"rc522-irq", rspi);
+```
+
+  - 트리거는 **FALLING만 사용** (pull-up + active-low IRQ → 한 번 태깅당 한 번만 발생하도록)
+
+- **IRQ 핸들러 (`rc522_spi_irq_thread`)**
+
+```c
+static irqreturn_t rc522_spi_irq_thread(int irq, void *dev_id)
+{
+	struct rc522_spi *rspi = dev_id;
+
+	atomic_set(&rspi->chip.irq_event, 1);
+	wake_up_interruptible(&rspi->chip.waitq);
+	dev_info(&rspi->spi->dev, "rc522_irq: interrupt received (irq=%d)\n", irq);
+	return IRQ_HANDLED;
+}
+```
+
+- **코어 상태 (`rc522.h` / `rc522_core_init`)**
+  - `struct rc522_dev` 에:
+    - `wait_queue_head_t waitq;`
+    - `atomic_t irq_event;`
+  - `rc522_core_init()`에서:
+
+```c
+memcpy(dev->default_key, default_key, sizeof(dev->default_key));
+init_waitqueue_head(&dev->waitq);
+atomic_set(&dev->irq_event, 0);
+rc522_init_chip(dev, 1);
+```
+
+### 4-2. 블로킹 UID 읽기(`rc522_read_uid_blocking`) 동작
+
+```c
+int rc522_read_uid_blocking(struct rc522_dev *dev, u32 *out_uid)
+{
+	int ret;
+
+	while (1) {
+		if (signal_pending(current))
+			return -ERESTARTSYS;
+
+		/* 먼저 폴링으로 한 번 시도 (IRQ 없을 때 대비) */
+		if (rc522_read_uid_no_block(dev, out_uid) == 0) {
+			atomic_set(&dev->irq_event, 0);
+			return 0;
+		}
+
+		/* IRQ 이벤트를 최대 500ms까지 대기 */
+		ret = wait_event_interruptible_timeout(
+			dev->waitq,
+			atomic_read(&dev->irq_event),
+			msecs_to_jiffies(500));
+		if (ret < 0)
+			return ret; /* 신호로 깨어난 경우 */
+
+		/* timeout 또는 irq_event=1 후, 다음 루프에서 다시 no_block 시도 */
+		atomic_set(&dev->irq_event, 0);
+	}
+}
+```
+
+- **요약**
+  - **IRQ가 잘 들어오는 환경**:
+    - IRQ가 오면 `irq_event`=1, waitqueue가 즉시 깨고 → 다음 루프에서 UID를 바로 읽음
+  - **IRQ가 없거나 일시적으로 안 들어올 때**:
+    - 500ms 타임아웃 후 다시 `rc522_read_uid_no_block()` 폴링 시도
+  - 사용자 API(`read()`, `ioctl(RC522_READ_CARD)`)는 그대로인데, 내부 구현만 **IRQ+타임아웃 폴백 구조**로 변경됨.
+
+---
+
+## 5. 남은 고려사항 / TODO
+
+- [ ] `rc522_to_card`/텍스트 읽기/쓰기 경로도 IRQ 기반으로 더 세밀하게 연동할지 여부 (현재는 UID 블로킹 중심)
+- [ ] 여러 RC522 모듈(다중 디바이스) 지원 필요 시 `misc` → 수동 cdev/class 전환
+- [ ] `Work.md`, 상위 `RC522_RFID_implementation.md`에 IRQ 구조 다이어그램/흐름도 추가 (개발자 문서 보강용)
 
