@@ -387,11 +387,16 @@ IRQ(GPIO24)를 사용하는 **인터럽트 기반 모드**는 “다음 단계(8
 
 ### 8-4. 체크리스트(IRQ 전환 작업)
 
-- [ ] DTO에 GPIO24 인터럽트 연결 추가(신규 오버레이 또는 기존 오버레이 확장)
-- [ ] `rc522_spi.c`에서 IRQ 획득/요청(`devm_request_threaded_irq`)
-- [ ] `rc522_core.c`의 블로킹 루프를 `wait_event_interruptible()` 기반으로 전환
-- [ ] 인터럽트 enable/원인 처리(레지스터 설정/ACK) 추가
-- [ ] IRQ 미지원 환경 폴백(폴링 유지) + 문서 업데이트
+- [x] DTO에 GPIO24 인터럽트 연결 추가(신규 오버레이 또는 기존 오버레이 확장)  
+      → `Kernel_Driver_irq/rc522-overlay-irq.dts`에서 `interrupts = <24 2>` + pinctrl(pull-up) 설정
+- [x] `rc522_spi.c`에서 IRQ 획득/요청(`devm_request_threaded_irq`)  
+      → `Kernel_Driver_irq/rc522_spi.c`에서 `spi->irq`로 threaded IRQ 등록, 로그로 확인 완료
+- [x] `rc522_core.c`의 블로킹 루프를 `wait_event_interruptible()` 기반으로 전환  
+      → `Kernel_Driver_irq/rc522_core.c`의 `rc522_read_uid_blocking()`이 IRQ + timeout 폴백 구조로 변경
+- [x] 인터럽트 enable/원인 처리(레지스터 설정/ACK) 추가  
+      → IRQ 발생 시 `rc522_spi_irq_thread()`에서 `irq_event` set + `wake_up_interruptible()`로 처리
+- [x] IRQ 미지원 환경 폴백(폴링 유지) + 문서 업데이트  
+      → `spi->irq == 0` 또는 IRQ 실패 시 기존 폴링 경로 유지, `Kernel_Driver_irq/Dev.md`/`README.md`에 기록
 
 ---
 
