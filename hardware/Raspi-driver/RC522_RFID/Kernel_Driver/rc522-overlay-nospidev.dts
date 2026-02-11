@@ -1,0 +1,29 @@
+/*
+ * RC522 오버레이 (spidev 비활성화 없음)
+ * "Failed to apply overlay" 시 이 버전 시도.
+ * 적용 후 /dev/spidev0.0 이 있으면 CE0가 spidev와 겹치므로
+ * config.txt 에서 dtparam=spi=on 만 하고 별도로 spidev 비활성화 필요할 수 있음.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2711", "brcm,bcm2835";
+
+	fragment@0 {
+		target = <&spi0>;
+		__overlay__ {
+			status = "okay";
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			rc522: rc522@0 {
+				compatible = "nxp,rc522";
+				reg = <0>;
+				spi-max-frequency = <1000000>;
+				reset-gpios = <&gpio 25 0>;
+			};
+		};
+	};
+};

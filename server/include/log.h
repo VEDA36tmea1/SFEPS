@@ -28,7 +28,7 @@ struct LogItem {
 
 class DBLogger {
 public:
-    DBLogger();
+    DBLogger(const char* db = "CCgbd");
     ~DBLogger();
     
     // DB 연결
@@ -59,7 +59,7 @@ private:
     MYSQL* conn;
     
     // ▼▼▼ 본인 DB 설정에 맞게 수정 필수 ▼▼▼
-    const char* host = "localhost";
+    const char* host = "192.168.0.92";
     const char* user = "pi";
     const char* pass = "raspberry";     // 비밀번호
     const char* db_name = "CCgbd"; // DB 이름 (sfeps_db로 바꿨으면 수정)

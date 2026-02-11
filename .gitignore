@@ -84,6 +84,7 @@ CMakeCache.txt
 CMakeFiles/
 Makefile
 cmake_install.cmake
+build-mingw/
 *.cmake
 *.qmlc
 *.qmltypes

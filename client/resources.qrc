@@ -1,6 +1,75 @@
-<!DOCTYPE RCC>
-<RCC version="1.0">
+<RCC>
+    <!--
+      IMPORTANT:
+      - QML에서 `qrc:/assets/...`로 접근하므로 prefix는 "/" 를 유지합니다.
+      - 실제 존재하는 assets만 포함합니다.
+    -->
     <qresource prefix="/">
-        <file>styles.qss</file>
+        <!-- Controls style config (non-native: Basic) -->
+        <file>qtquickcontrols2.conf</file>
+
+        <!-- QML entrypoints (main.cpp: qrc:/src/Main.qml) -->
+        <file>src/Main.qml</file>
+        <file>src/AppTheme.qml</file>
+        <file>src/qmldir</file>
+        <file>src/views/LoginView.qml</file>
+        <file>src/views/MonitoringView.qml</file>
+        <file>src/views/AnalyticsView.qml</file>
+        <file>src/views/DetailView.qml</file>
+        <file>src/views/SettingsView.qml</file>
+        <file>src/views/qmldir</file>
+
+        <!-- Assets -->
+        <file>assets/Alarm.png</file>
+        <file>assets/Alert circle.svg</file>
+        <file>assets/alert_detail.png</file>
+        <file>assets/Analyze.png</file>
+        <file>assets/bar-chart-square-03.svg</file>
+        <file>assets/bell-filled.svg</file>
+        <file>assets/bell-gray.svg</file>
+        <file>assets/Card.png</file>
+        <file>assets/card_01_backup.png</file>
+        <file>assets/card_02_backup.png</file>
+        <file>assets/category.png</file>
+        <file>assets/Dashboard.png</file>
+        <file>assets/escape.png</file>
+        <file>assets/event_list_logo.png</file>
+        <file>assets/expand_zoom.svg</file>
+        <file>assets/Eye.svg</file>
+        <file>assets/glyph.svg</file>
+        <file>assets/hard-drive-filled.svg</file>
+        <file>assets/icon_voice.png</file>
+        <file>assets/ID_logo.png</file>
+        <file>assets/ID_logo.svg</file>
+        <file>assets/image_08.png</file>
+        <file>assets/image_13.png</file>
+        <file>assets/List.svg</file>
+        <file>assets/log-in.svg</file>
+        <file>assets/Log.png</file>
+        <file>assets/login.png</file>
+        <file>assets/login_logo.png</file>
+        <file>assets/login_logo.svg</file>
+        <file>assets/logout.png</file>
+        <file>assets/Maximize.svg</file>
+        <file>assets/Mic.svg</file>
+        <file>assets/monitor.svg</file>
+        <file>assets/password.png</file>
+        <file>assets/Password.svg</file>
+        <file>assets/password_visible.png</file>
+        <file>assets/question.png</file>
+        <file>assets/search.svg</file>
+        <file>assets/server-filled.svg</file>
+        <file>assets/setting.png</file>
+        <file>assets/Settings.svg</file>
+        <file>assets/SFEPS_Logo.png</file>
+        <file>assets/SFEPS_Logo_no_background.PNG</file>
+        <file>assets/statistic.png</file>
+        <file>assets/statistic.svg</file>
+        <file>assets/storage.png</file>
+        <file>assets/user-avatar.svg</file>
+        <file>assets/user-filled.svg</file>
+        <file>assets/video_stream_logo.png</file>
+        <file>assets/video_Stream_logo.svg</file>
+        <file>assets/zoom.png</file>
     </qresource>
 </RCC>

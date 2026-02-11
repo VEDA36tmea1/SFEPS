@@ -1,0 +1,49 @@
+/*
+ * Device tree overlay for RC522 (MFRC522) on Raspberry Pi SPI0
+ *
+ * Wiring (default):
+ *   RC522 SDA(SS) -> RPi CE0 (GPIO8, Pin 24)
+ *   RC522 SCK     -> RPi SCLK (GPIO11, Pin 23)
+ *   RC522 MOSI    -> RPi MOSI (GPIO10, Pin 19)
+ *   RC522 MISO    -> RPi MISO (GPIO9, Pin 21)
+ *   RC522 RST     -> RPi GPIO25 (Pin 22)
+ *   RC522 3.3V    -> RPi 3.3V
+ *   RC522 GND     -> RPi GND
+ *
+ * Enable SPI: raspi-config -> Interface Options -> SPI -> Enable
+ * Install: sudo cp rc522-overlay.dtbo /boot/overlays/
+ * Add to /boot/config.txt: dtoverlay=rc522-overlay
+ * Reboot.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/* Pi 4 (bcm2711) / Pi 5 호환. Pi 1~3은 brcm,bcm2835 사용 시 동작 */
+/ {
+	compatible = "brcm,bcm2711", "brcm,bcm2835";
+
+	fragment@0 {
+		target = <&spi0>;
+		__overlay__ {
+			status = "okay";
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			rc522: rc522@0 {
+				compatible = "nxp,rc522";
+				reg = <0>;           /* CE0 */
+				spi-max-frequency = <1000000>;
+				reset-gpios = <&gpio 25 0>;  /* GPIO25, active low */
+			};
+		};
+	};
+
+	/* CE0에 붙는 기본 spidev 비활성화 (rc522가 CE0 사용). 오버레이 적용 실패 시 이 fragment 삭제 후 재시도 */
+	fragment@1 {
+		target = <&spidev0>;
+		__overlay__ {
+			status = "disabled";
+		};
+	};
+};
