@@ -28,7 +28,7 @@ struct LogItem {
 
 class DBLogger {
 public:
-    DBLogger();
+    DBLogger(const char* db = "CCgbd");
     ~DBLogger();
     
     // DB 연결

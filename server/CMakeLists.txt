@@ -9,6 +9,7 @@ add_executable(smart_server
     src/log.cpp
     src/recorder.cpp
     src/cleanup.cpp
+    src/auth.cpp
 )
 
 # 2. 헤더 파일 경로 설정
