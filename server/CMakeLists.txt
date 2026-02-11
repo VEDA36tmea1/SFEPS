@@ -24,8 +24,8 @@ find_package(Threads REQUIRED)
 # 4. 헤더 파일 경로 설정 (include 폴더)
 include_directories(include)
 
-# 5. 실행 파일 생성 (소스 파일 목록: main.cpp, log.cpp)
-add_executable(smart_server src/main.cpp src/log.cpp)
+# 5. 실행 파일 생성
+add_executable(smart_server src/main.cpp src/log.cpp src/auth.cpp)
 
 # 6. 라이브러리 연결 (Link)
 # 찾은 라이브러리들을 실행 파일에 붙입니다.
