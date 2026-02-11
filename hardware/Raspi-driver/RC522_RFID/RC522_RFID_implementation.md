@@ -513,79 +513,90 @@ MODULE_DESCRIPTION("MFRC522 SPI driver");
 
 이 체크리스트는 제안한 3개의 모듈 파일과 헤더 파일을 중심으로, 개발 환경 설정부터 최종 테스트까지의 흐름을 다룹니다.
 
+**현재 구현 상태 요약** (Kernel_Driver 기준):  
+- ✅ 완료: 1(빌드), 2(DTS), 4(SPI), 5(코어), 6(Chardev) 대부분  
+ 
+- ⚠️ 미구현/다른 방식: 3(IOCTL API), 6(ioctl 대신 `read()`로 UID), 7(실기 테스트·테스트 앱)
+    
+2026-02-11 기준 .
+
+---
+
 #### 1. 개발 환경 및 빌드 설정 (Environment Setup)
 
 라즈베리 파이 커널 헤더 설치 및 빌드 시스템을 구축합니다.
 
-- [ ] **커널 헤더 설치**: 현재 실행 중인 커널 버전에 맞는 헤더 파일 설치 (`sudo apt install raspberrypi-kernel-headers`)
-- [ ] **Makefile 작성**:
-  - [ ] `obj-m` 변수에 모듈 오브젝트 지정 (`rc522_driver.o`)
-  - [ ] 멀티 파일 컴파일 설정 (`rc522_driver-y := rc522_core.o rc522_spi.o rc522_chardev.o`)
-  - [ ] `KDIR` (커널 소스 경로) 지정
+- [x] **커널 헤더 설치**: 현재 실행 중인 커널 버전에 맞는 헤더 파일 설치 (`sudo apt install raspberrypi-kernel-headers`)
+- [x] **Makefile 작성**:
+  - [x] `obj-m` 변수에 모듈 오브젝트 지정 (`rc522.o` — 문서의 `rc522_driver.o`와 동일 역할)
+  - [x] 멀티 파일 컴파일 설정 (`rc522-y := rc522_core.o rc522_spi.o rc522_chardev.o`)
+  - [x] 커널 소스 경로 지정 (`KERNEL_SRC`, 문서의 `KDIR`에 해당)
 
 #### 2. 디바이스 트리 오버레이 작성 (Device Tree Overlay)
 
 라즈베리 파이에게 "SPI 버스에 RC522라는 장치가 연결되었다"고 알려주기 위해 필요합니다. SPI 드라이버의 probe 함수를 호출하는 트리거가 됩니다.
 
-- [ ] **DTS 파일 작성** (`rc522-overlay.dts`):
-  - [ ] SPI0 (또는 사용 중인 SPI 버스) 노드 타겟팅
-  - [ ] `compatible` 속성 정의 (예: `"my,rc522"`) → 드라이버의 `of_match_table`과 일치해야 함
-  - [ ] SPI 속성 설정 (`max-frequency`, `cs-gpio` 등)
-- [ ] **DTS 컴파일 및 적용**: `dtc`로 `.dtbo` 생성 후 `/boot/config.txt`에 등록
+- [x] **DTS 파일 작성** (`rc522-overlay.dts`):
+  - [x] SPI0 (또는 사용 중인 SPI 버스) 노드 타겟팅
+  - [x] `compatible` 속성 정의 (`"nxp,rc522"`) → 드라이버의 `of_match_table`과 일치
+  - [x] SPI 속성 설정 (`spi-max-frequency`, `reset-gpios`)
+- [ ] **DTS 컴파일 및 적용**: `make dtbo`로 `.dtbo` 생성 가능. `/boot/overlays/` 복사 및 `/boot/config.txt` 등록은 수동 수행
 
-#### 3. 유저 API 정의 (`include/uapi/linux/rc522_ioctl.h`)
+#### 3. 유저 API 정의 (`rc522_ioctl.h`)
 
 커널과 유저 애플리케이션이 공통으로 사용할 명령어를 정의합니다.
 
-- [ ] **Magic Number 정의**: IOCTL 명령 생성을 위한 고유 문자 선택
-- [ ] **IOCTL 매크로 정의**:
-  - [ ] `RC522_RESET`: 리더기 초기화
-  - [ ] `RC522_READ_CARD`: 카드 감지 및 UID 읽기 (Block 가능성 고려)
-  - [ ] `RC522_WRITE_REG` / `RC522_READ_REG`: 디버깅용 레지스터 직접 접근
+- [x] **Magic Number 정의**: `RC522_IOC_MAGIC` = `'R'`
+- [x] **IOCTL 매크로 정의**:
+  - [x] `RC522_RESET`: 리더기 소프트 리셋
+  - [x] `RC522_READ_CARD`: 카드 감지 및 UID 읽기 (블로킹), 인자 `__u32` 포인터
+  - [x] `RC522_WRITE_REG` / `RC522_READ_REG`: 디버깅용 레지스터 직접 접근 (`struct rc522_reg_data`)
+
+**참고**: `Kernel_Driver/rc522_ioctl.h`에 정의. 유저 앱은 이 헤더를 포함한 뒤 `ioctl(fd, RC522_READ_CARD, &uid)` 등으로 사용합니다. **`read(fd, buf, 4)`** 로도 UID 블로킹 읽기 가능합니다.
 
 #### 4. SPI 서브시스템 구현 (`drivers/misc/rc522/rc522_spi.c`)
 
 하드웨어 버스와 드라이버를 연결합니다.
 
-- [ ] **SPI Driver 구조체 선언**: `struct spi_driver`
-- [ ] **Device ID Table**: 디바이스 트리 `compatible` 속성과 매칭될 문자열 정의
-- [ ] **Probe 함수 구현** (`rc522_probe`):
-  - [ ] `spi_setup()` 호출
-  - [ ] 디바이스 메모리 할당 (`devm_kzalloc`)
-  - [ ] `rc522_core_init()` 호출 (코어 로직 초기화 연결)
-- [ ] **Remove 함수 구현**: 리소스 해제 루틴
+- [x] **SPI Driver 구조체 선언**: `struct spi_driver`
+- [x] **Device ID Table**: 디바이스 트리 `compatible`과 매칭 (`of_match_table`, `spi_device_id`)
+- [x] **Probe 함수 구현** (`rc522_spi_probe`):
+  - [x] SPI 전송은 `spi_write_then_read` 사용 (기본 `spi_setup()`으로 동작)
+  - [x] 디바이스 메모리 할당 (`devm_kzalloc`)
+  - [x] RST GPIO 제어 후 `rc522_core_init()` 호출
+- [x] **Remove 함수 구현**: `rc522_chardev_unregister`, `rc522_core_cleanup`
 
 #### 5. 코어 로직 구현 (`drivers/misc/rc522/rc522_core.c`)
 
 실제 RC522 칩을 제어하는 로직입니다. (기존 C++ 코드를 이식)
 
-- [ ] **SPI 전송 래퍼 함수**: `spi_write_then_read` 등을 사용하여 레지스터 읽기/쓰기 함수 구현
-- [ ] **초기화 루틴**: SoftReset, Timer 설정, Antenna On
-- [ ] **RFID 프로토콜 함수**:
-  - [ ] `PCD_Request` (태그 요청)
-  - [ ] `PCD_Anticoll` (충돌 방지 및 UID 획득)
-  - [ ] CRC 계산 로직
+- [x] **SPI 전송 래퍼 함수**: `rc522_spi.c`에서 `spi_write_then_read`로 레지스터 읽기/쓰기 구현, 코어는 `rc522_ops`로 호출
+- [x] **초기화 루틴**: SoftReset, Timer 설정, Antenna On (`rc522_init_chip`)
+- [x] **RFID 프로토콜 함수**:
+  - [x] `rc522_request` (PCD_Request / 태그 요청)
+  - [x] `rc522_anticoll` (PCD_Anticoll / UID 획득)
+  - [x] CRC 계산 (`rc522_calculate_crc`), Select/Auth/Read/Write 블록
 
 #### 6. 캐릭터 디바이스 구현 (`drivers/misc/rc522/rc522_chardev.c`)
 
-유저 공간(`/dev/rc5220`)과의 다리 역할을 합니다.
+유저 공간(`/dev/rc522`)과의 다리 역할을 합니다.
 
-- [ ] **Chardev 등록**:
-  - [ ] `alloc_chrdev_region` (Major 번호 동적 할당)
-  - [ ] `cdev_init` 및 `cdev_add`
-  - [ ] Class 및 Device 생성: `class_create`, `device_create` (udev가 `/dev` 노드를 자동 생성하도록 함)
-- [ ] **File Operations (fops) 구현**:
-  - [ ] `open`: 장치 사용 카운트 증가 또는 Mutex 잠금
-  - [ ] `release`: 정리
-  - [ ] `unlocked_ioctl`: `copy_from_user`로 인자 수신 → `rc522_core` 함수 호출 → `copy_to_user`로 결과 반환
+- [x] **Chardev 등록**:
+  - [x] `misc_register` 사용 (`/dev/rc522` 자동 생성, 문서의 cdev/class 방식과 동등)
+  - [ ] `alloc_chrdev_region` / `cdev_init` / `cdev_add` / `class_create` / `device_create` — 현재 미사용
+- [x] **File Operations (fops) 구현**:
+  - [x] `open`: Mutex로 보호, `private_data`에 `rc522_dev` 설정
+  - [x] `release`: 정리
+  - [x] `unlocked_ioctl`: `RC522_RESET`, `RC522_READ_CARD`, `RC522_READ_REG`, `RC522_WRITE_REG` 처리. **`read()`** 로도 UID 4바이트 블로킹 읽기 가능
 
 #### 7. 통합 및 테스트
 
-- [ ] **모듈 빌드 및 로드**: `make`, `sudo insmod rc522_driver.ko`
+- [x] **모듈 빌드**: `make` → `rc522.ko` 생성
+- [ ] **모듈 로드**: `sudo insmod rc522.ko` (또는 DTO 적용 후 부팅 시 자동)
 - [ ] **커널 로그 확인**: `dmesg | grep rc522` (Probe 성공 여부 확인)
 - [ ] **테스트 앱 작성** (C언어):
-  - [ ] `/dev/rc5220` open
-  - [ ] `ioctl` 호출하여 UID 읽기 시도
+  - [ ] `/dev/rc522` open
+  - [ ] `read(fd, buf, 4)` 로 UID 4바이트 읽기 (현재 구현은 ioctl 대신 read 사용)
   - [ ] 결과 출력
 
 ---
