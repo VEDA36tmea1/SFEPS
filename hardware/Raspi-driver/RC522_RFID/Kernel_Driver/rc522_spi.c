@@ -29,11 +29,20 @@ static int rc522_spi_read_reg(void *ctx, u8 addr, u8 *val)
 {
 	struct rc522_spi *rspi = ctx;
 	u8 tx[2], rx[2];
+	struct spi_transfer t = {
+		.tx_buf = tx,
+		.rx_buf = rx,
+		.len    = 2,
+	};
+	struct spi_message m;
 	int ret;
 
+	/* RC522는 풀듀플렉스: 보내는 2바이트와 동시에 받는 2바이트. spi_write_then_read는 쓰기/읽기 분리라 값이 0으로 옴 */
 	tx[0] = (u8)(((addr << 1) & 0x7E) | 0x80);
 	tx[1] = 0x00;
-	ret = spi_write_then_read(rspi->spi, tx, 2, rx, 2);
+	spi_message_init(&m);
+	spi_message_add_tail(&t, &m);
+	ret = spi_sync(rspi->spi, &m);
 	if (ret == 0)
 		*val = rx[1];
 	return ret;
@@ -61,6 +70,9 @@ static int rc522_spi_probe(struct spi_device *spi)
 	struct rc522_spi *rspi;
 	int ret;
 
+	dev_info(&spi->dev, "rc522_spi_probe: called\n");
+	dev_info(&spi->dev, "  chip_select: %d, max_speed: %d Hz\n", spi->chip_select, spi->max_speed_hz);
+
 	rspi = devm_kzalloc(&spi->dev, sizeof(*rspi), GFP_KERNEL);
 	if (!rspi)
 		return -ENOMEM;
@@ -87,10 +99,14 @@ static int rc522_spi_probe(struct spi_device *spi)
 		return ret;
 
 	ret = rc522_chardev_register(&spi->dev, &rspi->chip);
-	if (ret)
+	if (ret) {
+		dev_err(&spi->dev, "rc522_chardev_register failed: %d\n", ret);
 		rc522_core_cleanup(&rspi->chip);
+		return ret;
+	}
 
-	return ret;
+	dev_info(&spi->dev, "rc522 probed successfully, /dev/rc522 created\n");
+	return 0;
 }
 
 static void rc522_spi_remove(struct spi_device *spi)

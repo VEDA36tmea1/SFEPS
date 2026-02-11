@@ -1,1 +1,0 @@
-cmd_/home/physical-100/SFEPS/hardware/Raspi-driver/RC522_RFID/Kernel_Driver/modules.order := {   echo /home/physical-100/SFEPS/hardware/Raspi-driver/RC522_RFID/Kernel_Driver/rc522.ko; :; } > /home/physical-100/SFEPS/hardware/Raspi-driver/RC522_RFID/Kernel_Driver/modules.order

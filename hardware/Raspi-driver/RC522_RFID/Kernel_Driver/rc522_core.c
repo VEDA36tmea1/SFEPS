@@ -67,7 +67,6 @@ static void rc522_calculate_crc(struct rc522_dev *dev, const u8 *data,
 {
 	size_t i;
 	u8 n;
-	u8 val;
 
 	rc522_clear_bitmask(dev, DivIrqReg, 0x04);
 	rc522_set_bitmask(dev, FIFOLevelReg, 0x80);
@@ -124,6 +123,8 @@ static int rc522_to_card(struct rc522_dev *dev, u8 command,
 
 	i = 2000;
 	while (1) {
+		if (signal_pending(current))
+			return MI_ERR;
 		if (dev->ops->read_reg(dev->ctx, CommIrqReg, &n) != 0)
 			break;
 		i--;
@@ -389,6 +390,8 @@ int rc522_read_text_sector_blocking(struct rc522_dev *dev, int trailer_block,
 	memcpy(key, dev->default_key, sizeof(key));
 
 	for (;;) {
+		if (signal_pending(current))
+			return -ERESTARTSYS;
 		status = rc522_request(dev, PICC_REQIDL, tag_type);
 		if (status != MI_OK) {
 			dev->ops->msleep(50);
@@ -455,6 +458,8 @@ int rc522_write_text_sector_blocking(struct rc522_dev *dev, int trailer_block,
 	memcpy(data, text, text_len);
 
 	for (;;) {
+		if (signal_pending(current))
+			return -ERESTARTSYS;
 		status = rc522_request(dev, PICC_REQIDL, tag_type);
 		if (status != MI_OK) {
 			dev->ops->msleep(50);

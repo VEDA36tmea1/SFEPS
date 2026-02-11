@@ -65,229 +65,22 @@ RC522 SPI 프레임:
 - 주소 전송 시 `((addr << 1) & 0x7E)` 형식 사용
 - 읽기는 MSB(`0x80`) set
 
-```c
-#include <stdio.h>
-#include <stdint.h>
-#include <string.h>
-#include <unistd.h>
-#include <wiringPi.h>
-#include <wiringPiSPI.h>
+샘플 코드는 길이가 길어져서 여기서는 생략합니다.
 
-#define SPI_CH      0
-#define SPI_SPEED   1000000
-#define RC522_RST   25   // BCM
+- 최소 테스트/데모 코드는 저장소의 아래 파일을 참고하세요.
+  - `Kernel_Driver/`로 포팅하기 전에 사용자 공간에서 bring-up 확인:  
+    `User_Space_test_src/rc522_full.c`, `User_Space_test_src/rc522_full_demo.c`
+  - 커널 드라이버 구현(현재):  
+    `Kernel_Driver/rc522_spi.c`, `Kernel_Driver/rc522_core.c`, `Kernel_Driver/rc522_chardev.c`
 
-// RC522 registers (일부)
-#define CommandReg      0x01
-#define ComIEnReg       0x02
-#define DivIEnReg       0x03
-#define ComIrqReg       0x04
-#define DivIrqReg       0x05
-#define ErrorReg        0x06
-#define Status1Reg      0x07
-#define Status2Reg      0x08
-#define FIFODataReg     0x09
-#define FIFOLevelReg    0x0A
-#define ControlReg      0x0C
-#define BitFramingReg   0x0D
-#define ModeReg         0x11
-#define TxControlReg    0x14
-#define TxASKReg        0x15
-#define TModeReg        0x2A
-#define TPrescalerReg   0x2B
-#define TReloadRegH     0x2C
-#define TReloadRegL     0x2D
-#define VersionReg      0x37
-
-// PCD command
-#define PCD_IDLE            0x00
-#define PCD_TRANSCEIVE      0x0C
-#define PCD_SOFTRESET       0x0F
-
-// PICC command
-#define PICC_REQIDL         0x26
-#define PICC_ANTICOLL       0x93
-
-static void rc522_write_reg(uint8_t reg, uint8_t val)
-{
-    uint8_t buf[2];
-    buf[0] = (uint8_t)((reg << 1) & 0x7E);
-    buf[1] = val;
-    wiringPiSPIDataRW(SPI_CH, buf, 2);
-}
-
-static uint8_t rc522_read_reg(uint8_t reg)
-{
-    uint8_t buf[2];
-    buf[0] = (uint8_t)(((reg << 1) & 0x7E) | 0x80);
-    buf[1] = 0x00;
-    wiringPiSPIDataRW(SPI_CH, buf, 2);
-    return buf[1];
-}
-
-static void rc522_set_bitmask(uint8_t reg, uint8_t mask)
-{
-    uint8_t tmp = rc522_read_reg(reg);
-    rc522_write_reg(reg, tmp | mask);
-}
-
-static void rc522_clear_bitmask(uint8_t reg, uint8_t mask)
-{
-    uint8_t tmp = rc522_read_reg(reg);
-    rc522_write_reg(reg, tmp & (uint8_t)(~mask));
-}
-
-static void rc522_antenna_on(void)
-{
-    uint8_t v = rc522_read_reg(TxControlReg);
-    if ((v & 0x03) != 0x03) {
-        rc522_set_bitmask(TxControlReg, 0x03);
-    }
-}
-
-static void rc522_reset(void)
-{
-    digitalWrite(RC522_RST, LOW);
-    delay(10);
-    digitalWrite(RC522_RST, HIGH);
-    delay(50);
-
-    rc522_write_reg(CommandReg, PCD_SOFTRESET);
-    delay(50);
-}
-
-static void rc522_init(void)
-{
-    rc522_reset();
-
-    rc522_write_reg(TModeReg, 0x8D);
-    rc522_write_reg(TPrescalerReg, 0x3E);
-    rc522_write_reg(TReloadRegL, 30);
-    rc522_write_reg(TReloadRegH, 0);
-    rc522_write_reg(TxASKReg, 0x40);
-    rc522_write_reg(ModeReg, 0x3D);
-
-    rc522_antenna_on();
-}
-
-// 상태값: 0 success, 1 no tag, -1 error
-static int rc522_request(uint8_t req_mode, uint8_t *tag_type)
-{
-    int i;
-    uint8_t irq_en = 0x77;
-    uint8_t wait_irq = 0x30;
-    uint8_t n;
-
-    rc522_write_reg(ComIEnReg, irq_en | 0x80);
-    rc522_clear_bitmask(ComIrqReg, 0x80);
-    rc522_set_bitmask(FIFOLevelReg, 0x80);
-    rc522_write_reg(CommandReg, PCD_IDLE);
-    rc522_write_reg(FIFODataReg, req_mode);
-    rc522_write_reg(CommandReg, PCD_TRANSCEIVE);
-    rc522_set_bitmask(BitFramingReg, 0x80);
-
-    for (i = 2000; i > 0; i--) {
-        n = rc522_read_reg(ComIrqReg);
-        if (n & wait_irq) break;
-        if (n & 0x01) break; // timer irq
-    }
-
-    rc522_clear_bitmask(BitFramingReg, 0x80);
-
-    if (i == 0) return 1;
-    if (rc522_read_reg(ErrorReg) & 0x1B) return -1;
-
-    tag_type[0] = rc522_read_reg(FIFODataReg);
-    tag_type[1] = rc522_read_reg(FIFODataReg);
-    return 0;
-}
-
-static int rc522_anticoll(uint8_t *uid)
-{
-    int i;
-    uint8_t n;
-
-    rc522_write_reg(BitFramingReg, 0x00);
-    rc522_write_reg(ComIEnReg, 0xF7);
-    rc522_clear_bitmask(ComIrqReg, 0x80);
-    rc522_set_bitmask(FIFOLevelReg, 0x80);
-    rc522_write_reg(CommandReg, PCD_IDLE);
-    rc522_write_reg(FIFODataReg, PICC_ANTICOLL);
-    rc522_write_reg(FIFODataReg, 0x20);
-    rc522_write_reg(CommandReg, PCD_TRANSCEIVE);
-    rc522_set_bitmask(BitFramingReg, 0x80);
-
-    for (i = 2000; i > 0; i--) {
-        n = rc522_read_reg(ComIrqReg);
-        if (n & 0x30) break;
-        if (n & 0x01) break;
-    }
-    rc522_clear_bitmask(BitFramingReg, 0x80);
-    if (i == 0) return -1;
-    if (rc522_read_reg(ErrorReg) & 0x1B) return -1;
-
-    for (i = 0; i < 5; i++) uid[i] = rc522_read_reg(FIFODataReg);
-    return 0;
-}
-
-int main(void)
-{
-    uint8_t version;
-    uint8_t tag_type[2];
-    uint8_t uid[5];
-
-    if (wiringPiSetupGpio() < 0) {
-        perror("wiringPiSetupGpio");
-        return 1;
-    }
-
-    pinMode(RC522_RST, OUTPUT);
-    digitalWrite(RC522_RST, HIGH);
-
-    if (wiringPiSPISetup(SPI_CH, SPI_SPEED) < 0) {
-        perror("wiringPiSPISetup");
-        return 1;
-    }
-
-    rc522_init();
-    version = rc522_read_reg(VersionReg);
-    printf("RC522 VersionReg = 0x%02X\n", version);
-    if (version == 0x00 || version == 0xFF) {
-        printf("SPI wiring check needed.\n");
-        return 1;
-    }
-
-    printf("Waiting tag...\n");
-    while (1) {
-        if (rc522_request(PICC_REQIDL, tag_type) == 0) {
-            if (rc522_anticoll(uid) == 0) {
-                printf("UID: %02X %02X %02X %02X\n",
-                    uid[0], uid[1], uid[2], uid[3]);
-                delay(1000);
-            }
-        }
-        delay(100);
-    }
-
-    return 0;
-}
-```
+핵심은 “레지스터 접근이 **2바이트 full-duplex** 프레임으로 이뤄진다”는 점입니다(읽기 시 TX+RX 동시).
 
 ### 3-2. Makefile 예시
 
-```make
-CC=gcc
-CFLAGS=-O2 -Wall
-TARGET=rc522_user
-SRC=src/rc522_user.c
-LIBS=-lwiringPi
+Makefile 샘플은 생략합니다. 현재 저장소에서는 다음을 참고하세요.
 
-all:
-	$(CC) $(CFLAGS) -o $(TARGET) $(SRC) $(LIBS)
-
-clean:
-	rm -f $(TARGET)
-```
+- 사용자 공간 데모 빌드: `User_Space_test_src/Makefile`
+- 커널 모듈/테스트/DTBO 빌드: `Kernel_Driver/Makefile`
 
 ### 3-3. 빌드/실행
 
@@ -395,105 +188,22 @@ int rc522c_write_text_sector_blocking(int trailer_block,
 
 ### 5-1. 최소 커널 드라이버 골격
 
-```c
-#include <linux/module.h>
-#include <linux/spi/spi.h>
-#include <linux/mutex.h>
+커널 드라이버 골격 예시 코드는 생략합니다. 현재 저장소의 실제 구현은 아래를 기준으로 보시면 됩니다.
 
-struct rc522_dev {
-    struct spi_device *spi;
-    struct mutex lock;
-    int rst_gpio;
-    int irq_gpio; // optional
-};
-
-static int rc522_spi_read_reg(struct rc522_dev *d, u8 reg, u8 *val)
-{
-    u8 tx[2] = { (u8)(((reg << 1) & 0x7E) | 0x80), 0x00 };
-    u8 rx[2] = { 0, };
-    struct spi_transfer t[] = {
-        { .tx_buf = tx, .rx_buf = rx, .len = 2, },
-    };
-    int ret;
-    struct spi_message m;
-
-    spi_message_init(&m);
-    spi_message_add_tail(&t[0], &m);
-    ret = spi_sync(d->spi, &m);
-    if (ret < 0)
-        return ret;
-    *val = rx[1];
-    return 0;
-}
-
-static int rc522_probe(struct spi_device *spi)
-{
-    struct rc522_dev *d;
-
-    d = devm_kzalloc(&spi->dev, sizeof(*d), GFP_KERNEL);
-    if (!d)
-        return -ENOMEM;
-
-    d->spi = spi;
-    mutex_init(&d->lock);
-    spi_set_drvdata(spi, d);
-
-    dev_info(&spi->dev, "rc522 probed\n");
-    return 0;
-}
-
-static void rc522_remove(struct spi_device *spi)
-{
-    dev_info(&spi->dev, "rc522 removed\n");
-}
-
-static const struct of_device_id rc522_of_match[] = {
-    { .compatible = "nxp,mfrc522" },
-    { }
-};
-MODULE_DEVICE_TABLE(of, rc522_of_match);
-
-static struct spi_driver rc522_driver = {
-    .driver = {
-        .name = "rc522",
-        .of_match_table = rc522_of_match,
-    },
-    .probe = rc522_probe,
-    .remove = rc522_remove,
-};
-module_spi_driver(rc522_driver);
-
-MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("MFRC522 SPI driver");
-```
+- SPI 버스/디바이스 등록: `Kernel_Driver/rc522_spi.c`
+- MFRC522 코어 로직: `Kernel_Driver/rc522_core.c`
+- `/dev/rc522` chardev + ioctl: `Kernel_Driver/rc522_chardev.c`
 
 ### 5-2. Device Tree Overlay 예시
 
 `CE0 + GPIO25(RST) + GPIO24(IRQ)` 기준:
 
-```dts
-/dts-v1/;
-/plugin/;
+DTO 샘플 코드는 생략합니다. 현재 저장소의 오버레이는 아래를 사용합니다.
 
-/ {
-    compatible = "brcm,bcm2711";
+- 기본 오버레이: `Kernel_Driver/rc522-overlay.dts` / `Kernel_Driver/rc522-overlay.dtbo`
+- 대안 오버레이: `Kernel_Driver/rc522-overlay-nospidev.dts` / `Kernel_Driver/rc522-overlay-nospidev.dtbo`
 
-    fragment@0 {
-        target = <&spi0>;
-        __overlay__ {
-            status = "okay";
-            rc522@0 {
-                compatible = "nxp,mfrc522";
-                reg = <0>; /* CE0 */
-                spi-max-frequency = <10000000>;
-                rst-gpios = <&gpio 25 0>;
-                irq-gpios = <&gpio 24 0>;
-                status = "okay";
-            };
-        };
-    };
-};
-```
+IRQ(GPIO24)를 사용하는 **인터럽트 기반 모드**는 “다음 단계(8장)”에서 적용할 예정입니다(아래 “## 8) IRQ 기반 인터럽트 모드로 전환” 참고).
 
 ---
 
@@ -514,11 +224,10 @@ MODULE_DESCRIPTION("MFRC522 SPI driver");
 이 체크리스트는 제안한 3개의 모듈 파일과 헤더 파일을 중심으로, 개발 환경 설정부터 최종 테스트까지의 흐름을 다룹니다.
 
 **현재 구현 상태 요약** (Kernel_Driver 기준):  
-- ✅ 완료: 1(빌드), 2(DTS), 4(SPI), 5(코어), 6(Chardev) 대부분  
- 
-- ⚠️ 미구현/다른 방식: 3(IOCTL API), 6(ioctl 대신 `read()`로 UID), 7(실기 테스트·테스트 앱)
-    
-2026-02-11 기준 .
+- ✅ 완료(코드/테스트 포함): 빌드/DTO/드라이버(SPI+코어+chardev)/IOCTL+read()/UID+텍스트 읽기/지속 폴링 테스트/시그널(EINTR) 처리  
+- 🧩 다음 단계(계획): **IRQ(GPIO24) 기반 인터럽트 모드**로 전환(폴링 최소화)
+
+2026-02-11 기준.
 
 ---
 
@@ -540,7 +249,8 @@ MODULE_DESCRIPTION("MFRC522 SPI driver");
   - [x] SPI0 (또는 사용 중인 SPI 버스) 노드 타겟팅
   - [x] `compatible` 속성 정의 (`"nxp,rc522"`) → 드라이버의 `of_match_table`과 일치
   - [x] SPI 속성 설정 (`spi-max-frequency`, `reset-gpios`)
-- [ ] **DTS 컴파일 및 적용**: `make dtbo`로 `.dtbo` 생성 가능. `/boot/overlays/` 복사 및 `/boot/config.txt` 등록은 수동 수행
+- [x] **DTS 컴파일**: `make dtbo`로 `.dtbo` 생성
+- [ ] **오버레이 적용(보드에서 수동)**: `/boot/overlays/` 복사 + `/boot/config.txt` 등록 + 재부팅
 
 #### 3. 유저 API 정의 (`rc522_ioctl.h`)
 
@@ -551,6 +261,7 @@ MODULE_DESCRIPTION("MFRC522 SPI driver");
   - [x] `RC522_RESET`: 리더기 소프트 리셋
   - [x] `RC522_READ_CARD`: 카드 감지 및 UID 읽기 (블로킹), 인자 `__u32` 포인터
   - [x] `RC522_WRITE_REG` / `RC522_READ_REG`: 디버깅용 레지스터 직접 접근 (`struct rc522_reg_data`)
+  - [x] `RC522_READ_TEXT_SECTOR`: 섹터 텍스트 읽기 (`struct rc522_read_text`)
 
 **참고**: `Kernel_Driver/rc522_ioctl.h`에 정의. 유저 앱은 이 헤더를 포함한 뒤 `ioctl(fd, RC522_READ_CARD, &uid)` 등으로 사용합니다. **`read(fd, buf, 4)`** 로도 UID 블로킹 읽기 가능합니다.
 
@@ -561,7 +272,7 @@ MODULE_DESCRIPTION("MFRC522 SPI driver");
 - [x] **SPI Driver 구조체 선언**: `struct spi_driver`
 - [x] **Device ID Table**: 디바이스 트리 `compatible`과 매칭 (`of_match_table`, `spi_device_id`)
 - [x] **Probe 함수 구현** (`rc522_spi_probe`):
-  - [x] SPI 전송은 `spi_write_then_read` 사용 (기본 `spi_setup()`으로 동작)
+  - [x] SPI 레지스터 R/W 구현. 읽기는 **2바이트 full-duplex(spi_sync + transfer)** 방식으로 안정화
   - [x] 디바이스 메모리 할당 (`devm_kzalloc`)
   - [x] RST GPIO 제어 후 `rc522_core_init()` 호출
 - [x] **Remove 함수 구현**: `rc522_chardev_unregister`, `rc522_core_cleanup`
@@ -571,6 +282,7 @@ MODULE_DESCRIPTION("MFRC522 SPI driver");
 실제 RC522 칩을 제어하는 로직입니다. (기존 C++ 코드를 이식)
 
 - [x] **SPI 전송 래퍼 함수**: `rc522_spi.c`에서 `spi_write_then_read`로 레지스터 읽기/쓰기 구현, 코어는 `rc522_ops`로 호출
+- [x] **SPI full-duplex 읽기 이슈 해결**: 커널에서 0x00만 읽히던 문제를 2바이트 동시 전송으로 수정(VersionReg 정상)
 - [x] **초기화 루틴**: SoftReset, Timer 설정, Antenna On (`rc522_init_chip`)
 - [x] **RFID 프로토콜 함수**:
   - [x] `rc522_request` (PCD_Request / 태그 요청)
@@ -587,17 +299,43 @@ MODULE_DESCRIPTION("MFRC522 SPI driver");
 - [x] **File Operations (fops) 구현**:
   - [x] `open`: Mutex로 보호, `private_data`에 `rc522_dev` 설정
   - [x] `release`: 정리
-  - [x] `unlocked_ioctl`: `RC522_RESET`, `RC522_READ_CARD`, `RC522_READ_REG`, `RC522_WRITE_REG` 처리. **`read()`** 로도 UID 4바이트 블로킹 읽기 가능
+  - [x] `unlocked_ioctl`: `RC522_RESET`, `RC522_READ_CARD`, `RC522_READ_REG`, `RC522_WRITE_REG`, `RC522_READ_TEXT_SECTOR` 처리. **`read()`** 로도 UID 4바이트 블로킹 읽기 가능
+
+##### 6-A. `misc_register` vs 수동 `cdev/class` 방식 정리
+
+- **현재 방식(`misc_register`)**
+  - 장점: 구현이 단순하고(`/dev/rc522` 1개 기준) 커널에서 많은 보일러플레이트를 대신 처리해줌
+  - 의미: `miscdevice`는 내부적으로 문자 디바이스 등록 흐름(major/minor 할당, cdev 등록 등)을 묶어 제공하는 “간편 등록 API”에 가깝다.
+  - 결론: **단일 디바이스(예: `/dev/rc522`)면 충분**하며, “안 써도 되나?” → **안 써도 됨(현재 방식 유지 가능)**.
+
+- **수동 방식(`alloc_chrdev_region` + `cdev_init/add` + `class_create` + `device_create`)**
+  - 장점: major/minor 및 sysfs(class) 노출을 직접 제어 가능
+  - 필요해지는 경우:
+    - **RC522 여러 개**를 붙여서 `/dev/rc5220`, `/dev/rc5221`처럼 “다중 인스턴스”를 만들고 싶을 때
+    - 특정 class 기반 udev 규칙/권한/네이밍 정책이 필요할 때
+    - sysfs에 별도 속성(디바이스별 정보)을 더 노출하고 싶을 때
+
+##### 6-B. 추후 RFID 모듈 추가 시(다중 디바이스) 수동 방식 전환 단계(요약)
+
+- [ ] **minor 관리 전략 수립**: `ida`/`idr`로 minor 할당(디바이스 여러 개 대응)
+- [ ] **chrdev 영역 확보**: `alloc_chrdev_region()`로 major/minor 범위 확보
+- [ ] **cdev 등록**: 디바이스별 `cdev_init()` + `cdev_add()`
+- [ ] **class 생성**: `class_create()`로 `/sys/class/rc522/` 생성
+- [ ] **device 노드 생성**: 디바이스마다 `device_create()`로 `/dev/rc522<N>` 생성
+- [ ] **fops private_data 구조 변경**: 전역 1개 포인터가 아니라 “디바이스 인스턴스별 private”로 연결
+- [ ] **정리 경로**: remove 시 `device_destroy()` → `cdev_del()` → `unregister_chrdev_region()` 순서로 해제
 
 #### 7. 통합 및 테스트
 
 - [x] **모듈 빌드**: `make` → `rc522.ko` 생성
-- [ ] **모듈 로드**: `sudo insmod rc522.ko` (또는 DTO 적용 후 부팅 시 자동)
-- [ ] **커널 로그 확인**: `dmesg | grep rc522` (Probe 성공 여부 확인)
-- [ ] **테스트 앱 작성** (C언어):
-  - [ ] `/dev/rc522` open
-  - [ ] `read(fd, buf, 4)` 로 UID 4바이트 읽기 (현재 구현은 ioctl 대신 read 사용)
-  - [ ] 결과 출력
+- [x] **모듈 로드**: `sudo insmod build/rc522.ko` (DTO 적용 후)
+- [x] **커널 로그 확인**: `dmesg | grep rc522` (Probe 성공 여부 확인)
+- [x] **테스트 앱 작성/검증** (C언어):
+  - [x] `/dev/rc522` open
+  - [x] `read(fd, buf, 4)` 로 UID 4바이트 읽기 (`test_rc522`)
+  - [x] `ioctl(fd, RC522_READ_CARD, &uid)` 로 UID 읽기 (`test_rc522`, `test_rc522_poll`)
+  - [x] `ioctl(fd, RC522_READ_TEXT_SECTOR, ...)` 로 섹터 텍스트 읽기 (`test_rc522_poll`)
+  - [x] Ctrl+C 시 블로킹 동작이 `EINTR`로 깨지도록 처리(커널 루프 + 유저 앱 `sigaction`)
 
 ---
 
@@ -614,7 +352,50 @@ MODULE_DESCRIPTION("MFRC522 SPI driver");
 
 ---
 
-## 8) 참고 및 권장사항
+## 8) IRQ 기반 인터럽트 모드로 전환 (다음 단계)
+
+현재 드라이버는 UID/텍스트 읽기에서 **폴링 방식**(주기적으로 REQA/anticoll 시도)으로 동작합니다.  
+다음 단계에서는 RC522의 **IRQ 핀(GPIO24)**을 사용해 “이벤트가 있을 때만 깨는” 구조로 전환합니다.
+
+### 8-1. 목표
+
+- 유저 공간 API는 그대로 유지:
+  - `read()` / `ioctl(RC522_READ_CARD)`는 여전히 “카드가 올 때까지 블로킹”
+- 내부 구현을 변경:
+  - “while+sleep 폴링” → “IRQ 발생 시 wakeup + 처리”
+
+### 8-2. Device Tree (DTO) 변경 포인트
+
+- 현재 오버레이는 RST만 포함(IRQ 미사용). IRQ 모드에서는 아래 중 하나를 추가해야 합니다.
+  - **방법 A(권장)**: 표준 DT 방식으로 GPIO interrupt 연결
+    - `interrupt-parent = <&gpio>;`
+    - `interrupts = <24 2>;`  (보드/커널에 따라 Edge Falling 등 값이 달라질 수 있음)
+  - **방법 B**: 커스텀 프로퍼티(예: `irq-gpios`)로 GPIO를 받아서 드라이버에서 `gpiod_to_irq()` 처리
+
+### 8-3. 커널 드라이버 변경 포인트(설계)
+
+- **irq 요청**
+  - `spi->irq` 또는 DT로부터 얻은 IRQ 번호로 `devm_request_threaded_irq()` 호출
+- **대기/깨우기**
+  - `wait_queue_head_t` + `wait_event_interruptible()`로 블로킹 read/ioctl을 “sleep” 상태로 두고,
+  - IRQ 핸들러(또는 threaded handler)에서 “이벤트 발생” 플래그 설정 후 `wake_up_interruptible()`
+- **RC522 내부 IRQ 설정**
+  - `ComIEnReg`(CommIEnReg) 등의 인터럽트 enable 레지스터를 설정하고,
+  - 인터럽트 원인은 `CommIrqReg`/`DivIrqReg` 등을 읽어서 확인 및 클리어
+- **폴백**
+  - IRQ가 DT에 없거나 request 실패 시에는 **기존 폴링 모드로 폴백**(bring-up/호환성 유지)
+
+### 8-4. 체크리스트(IRQ 전환 작업)
+
+- [ ] DTO에 GPIO24 인터럽트 연결 추가(신규 오버레이 또는 기존 오버레이 확장)
+- [ ] `rc522_spi.c`에서 IRQ 획득/요청(`devm_request_threaded_irq`)
+- [ ] `rc522_core.c`의 블로킹 루프를 `wait_event_interruptible()` 기반으로 전환
+- [ ] 인터럽트 enable/원인 처리(레지스터 설정/ACK) 추가
+- [ ] IRQ 미지원 환경 폴백(폴링 유지) + 문서 업데이트
+
+---
+
+## 9) 참고 및 권장사항
 
 - `wiringPi`는 유지보수가 제한적이므로, 최종 제품은 `spidev + libgpiod` 또는 커널 드라이버 방식 권장.
 - 초기 성공 기준은 단순하다:
