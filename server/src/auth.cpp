@@ -27,8 +27,11 @@ bool Authenticator::authenticate(const std::string& id, const std::string& pw) {
 
     // [중요] SQL Injection 방지를 위해서는 실제 프로젝트 시 준비된 문장(Prepared Statement)을 권장합니다.
     // 현재는 기본 요구사항에 맞춘 단순 쿼리 방식입니다.
-    std::string query = "SELECT id FROM clients WHERE id = '" + id + "' AND password = '" + pw + "'";
+    std::string query = "SELECT id FROM users WHERE id = '" + id + "' AND password = '" + pw + "'";
     
+    // [DEBUG] 쿼리문 출력
+    std::cout << "[Auth Debug] Query: " << query << std::endl;
+
     std::lock_guard<std::mutex> dbLock(dbMutex); // 동시 쿼리 발생 시 순차 처리 보장
     if (mysql_query(conn, query.c_str())) {
         std::cerr << "[Auth DB Error] Query Failed: " << mysql_error(conn) << std::endl;
@@ -37,10 +40,16 @@ bool Authenticator::authenticate(const std::string& id, const std::string& pw) {
 
     // 결과 셋 가져오기
     MYSQL_RES* res = mysql_store_result(conn);
-    if (res == NULL) return false;
+    if (res == NULL) {
+        std::cerr << "[Auth DB Error] Result is NULL" << std::endl;
+        return false;
+    }
 
     // 행(row)의 개수가 0보다 크면 일치하는 회원이 있는 것
-    bool found = (mysql_num_rows(res) > 0);
+    int num_rows = mysql_num_rows(res);
+    std::cout << "[Auth Debug] Rows found: " << num_rows << std::endl;
+    
+    bool found = (num_rows > 0);
     mysql_free_result(res); // 메모리 해제 필수
 
     return found;

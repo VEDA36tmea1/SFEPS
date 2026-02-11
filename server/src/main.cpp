@@ -58,14 +58,23 @@ void run_login_auth() {
 
             // 구분자(:)가 있을 경우에만 분석 진행
             if (sep != std::string::npos) {
-                user = data.substr(0, sep);                 // ID 추출
-                std::string pass = data.substr(sep + 1);    // PW 추출
-                success = auth.authenticate(user, pass);     // DB 조회 및 검증
+                user = data.substr(0, sep);
+                std::string pass = data.substr(sep + 1);
+                
+                // 불필요한 공백/개행 제거
+                user.erase(user.find_last_not_of(" \n\r\t") + 1);
+                pass.erase(pass.find_last_not_of(" \n\r\t") + 1);
+                
+                success = auth.authenticate(user, pass);
             }  
               
-            // 검증 결과 전송 및 로그 기록 (삼항 연산자로 간소화)
+            // 검증 결과 전송
             send(client_fd, success ? "PASS" : "FAIL", 4, 0);
-            db.enqueue(success ? "LOGIN_SUCCESS" : "LOGIN_FAIL", user);
+
+            // [로그 기록] 새로 만든 login_logs 테이블에 기록
+            // 사용자의 IP 주소를 가져오기 위해 sockaddr_in 정보를 같이 활용할 수도 있으나,
+            // 현재는 구조상 간단하게 유저 정보와 성공여부만 기록합니다. (IP는 로그 클래스 내부 처리 유도)
+            db.enqueueLogin(user, "Unknown_IP", success);
         }
         close(client_fd); // 세션 종료
     }
@@ -109,11 +118,13 @@ int main() {
     });
     t2.detach();
 
-    // 6. 녹화 시작
-    // 여기서 g_running이 false가 되면 recorder.run() 내부의 루프가 끝나고
-    // 자동으로 close_current_file()이 호출되어 파일이 정상 저장됩니다.
-    RTSPRecorder recorder(logger, g_running);
-    recorder.run();
+    // 6. 로그인 인증 스레드 시작
+    std::thread t3(run_login_auth);
+    t3.detach();
+
+    // 7. 녹화 시작
+    RTSPRecorder recorder(logger, running);
+    recorder.run(); // 메인 스레드 블로킹
 
     std::cout << "[System] 서버가 안전하게 종료되었습니다." << std::endl;
     return 0;
