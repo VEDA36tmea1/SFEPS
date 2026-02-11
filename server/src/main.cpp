@@ -12,7 +12,7 @@
 
 // ▼▼▼ 경로 및 주소 설정 ▼▼▼
 #define VIDEO_SAVE_DIR "/home/iam/finalProject/SFEPS/videos"
-#define RTSP_URL "rtsp://127.0.0.1:8554/cam1"
+#define RTSP_URL "rtsp://192.168.0.92/cam1"
 
 namespace fs = std::filesystem;
 
