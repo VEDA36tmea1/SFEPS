@@ -1,1 +1,0 @@
-cmd_/home/physical-100/SFEPS/hardware/Raspi-driver/RC522_RFID/Kernel_Driver/rc522.o := ld -EL  -maarch64elf -z noexecstack   -r -o /home/physical-100/SFEPS/hardware/Raspi-driver/RC522_RFID/Kernel_Driver/rc522.o @/home/physical-100/SFEPS/hardware/Raspi-driver/RC522_RFID/Kernel_Driver/rc522.mod 

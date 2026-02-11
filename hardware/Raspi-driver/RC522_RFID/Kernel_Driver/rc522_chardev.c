@@ -103,6 +103,20 @@ static long rc522_chardev_ioctl(struct file *filp, unsigned int cmd, unsigned lo
 		return rc522_write_reg(dev, d.reg, d.val);
 	}
 
+	case RC522_READ_TEXT_SECTOR: {
+		struct rc522_read_text d;
+
+		if (copy_from_user(&d, uarg, sizeof(d)))
+			return -EFAULT;
+		ret = rc522_read_text_sector_blocking(dev, d.trailer_block,
+						      &d.uid, d.text, sizeof(d.text));
+		if (ret)
+			return ret;
+		if (copy_to_user(uarg, &d, sizeof(d)))
+			return -EFAULT;
+		return 0;
+	}
+
 	default:
 		return -ENOTTY;
 	}

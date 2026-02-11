@@ -25,9 +25,18 @@
 /* 레지스터 1바이트 쓰기. 인자: struct rc522_reg_data (reg, val 입력) */
 #define RC522_WRITE_REG  _IOW(RC522_IOC_MAGIC, 3, struct rc522_reg_data)
 
+/* 섹터 텍스트 읽기. 인자: struct rc522_read_text (trailer_block 입력, uid/text 출력) */
+#define RC522_READ_TEXT_SECTOR  _IOWR(RC522_IOC_MAGIC, 4, struct rc522_read_text)
+
 struct rc522_reg_data {
 	__u8 reg;
 	__u8 val;
+};
+
+struct rc522_read_text {
+	__s32 trailer_block;  /* 입력: 섹터 트레일러 블록 (예: 11, 15, 19...) */
+	__u32 uid;            /* 출력: UID */
+	char text[48];        /* 출력: 텍스트 (널 종료) */
 };
 
 /*
