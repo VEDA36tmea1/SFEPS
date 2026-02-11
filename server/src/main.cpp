@@ -7,10 +7,7 @@
 #include "cleanup.h" // 분리된 cleanup 헤더 추가
 #include "auth.h"
 #include <arpa/inet.h>
-
-// ▼▼▼ 경로 및 주소 설정 ▼▼▼
-#define VIDEO_SAVE_DIR "/home/iam/finalProject/SFEPS/videos"
-#define RTSP_URL "rtsp://192.168.0.92/cam1"
+#include <unistd.h>
 
 namespace fs = std::filesystem;
 
