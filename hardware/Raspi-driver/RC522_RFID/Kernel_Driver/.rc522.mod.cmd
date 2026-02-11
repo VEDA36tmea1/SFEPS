@@ -1,0 +1,1 @@
+cmd_/home/physical-100/SFEPS/hardware/Raspi-driver/RC522_RFID/Kernel_Driver/rc522.mod := printf '%s\n'   rc522_core.o rc522_spi.o rc522_chardev.o | awk '!x[$$0]++ { print("/home/physical-100/SFEPS/hardware/Raspi-driver/RC522_RFID/Kernel_Driver/"$$0) }' > /home/physical-100/SFEPS/hardware/Raspi-driver/RC522_RFID/Kernel_Driver/rc522.mod

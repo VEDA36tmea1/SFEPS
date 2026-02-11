@@ -1,0 +1,1 @@
+cmd_/home/physical-100/SFEPS/hardware/Raspi-driver/RC522_RFID/Kernel_Driver/Module.symvers :=  sed 's/ko$$/o/'  /home/physical-100/SFEPS/hardware/Raspi-driver/RC522_RFID/Kernel_Driver/modules.order | scripts/mod/modpost -m -a    -o /home/physical-100/SFEPS/hardware/Raspi-driver/RC522_RFID/Kernel_Driver/Module.symvers -e -i Module.symvers -T - 
