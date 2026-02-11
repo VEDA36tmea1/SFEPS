@@ -403,7 +403,8 @@ Page {
                 }
 
                 // Event List (mockEvents 스타일, 기본 행 형태)
-                View {
+                ListView {
+                    id: eventListView
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
@@ -436,7 +437,7 @@ Page {
                     }
 
                     delegate: Rectangle {
-                        width: View.view ? View.view.width : 0
+                        width: eventListView.width
                         color: hovered ? "#262626" : "transparent"
                         implicitHeight: contentCol.implicitHeight + 16
 

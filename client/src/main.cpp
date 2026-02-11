@@ -8,6 +8,8 @@
 #include <QFile>
 #include <QTextStream>
 #include <QDateTime>
+#include "authmanager.h"
+#include "mainwindow.h"
 
 void myMessageOutput(QtMsgType type, const QMessageLogContext &context, const QString &msg)
 {
@@ -19,9 +21,6 @@ void myMessageOutput(QtMsgType type, const QMessageLogContext &context, const QS
     QTextStream out(&file);
     out << QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz ") << msg << "\n";
 }
-
-#include "authmanager.h"
-#include "mainwindow.h"
 
 int main(int argc, char *argv[]) {
   qInstallMessageHandler(myMessageOutput);
