@@ -12,8 +12,8 @@ find_package(Threads REQUIRED) # 스레드 필수
 # 2. 헤더 파일 경로 (include 폴더)
 include_directories(include)
 
-# 3. 실행 파일 생성 (src/log.cpp 로 변경됨)
-add_executable(smart_server src/main.cpp src/log.cpp)
+# 3. 실행 파일 생성
+add_executable(smart_server src/main.cpp src/log.cpp src/auth.cpp)
 
 # 4. 라이브러리 연결
 target_link_libraries(smart_server 

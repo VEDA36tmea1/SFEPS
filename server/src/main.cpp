@@ -2,6 +2,7 @@
 #include <gst/rtsp-server/rtsp-server.h>
 #include <iostream>
 #include "log.h"
+#include "auth.h"
 #include <thread>
 #include <arpa/inet.h>
 
@@ -12,47 +13,63 @@
 #define SERVER_PORT "8554"
 #define MOUNT_POINT "/live"
 
+// [설정] 로그인 인증 전용 포트 및 DB 접속 정보
+#define AUTH_PORT 5555           // Qt 클라이언트와 통신할 포트
+#define DB_HOST "192.168.0.92"   // MariaDB 서버 IP
+#define DB_USER "pi"             // DB 사용자 아이디
+#define DB_PASS "raspberry"      // DB 비밀번호
+#define DB_NAME "Client_db"      // 사용할 데이터베이스 이름
+
 // 데이터를 콜백 함수로 넘기기 위한 구조체
 struct ServerData {
     DBLogger *logger;
 };
 
 // [추가] 로그인만 담당하는 전용 함수
+// 로그인 인증 전용 스레드 함수
 void run_login_auth() {
-    DBLogger db("test_db");
-    if (!db.connect()) return;
+    DBLogger db(DB_NAME); // 로그 기록용 객체
+    Authenticator auth(DB_HOST, DB_USER, DB_PASS, DB_NAME); // ID/PW 검증용 객체
+    
+    // DB 연결 확인 (로그용, 인증용 각각 연결)
+    if (!db.connect() || !auth.connect()) {
+        std::cerr << "[Fatal] Auth-related DB connection failed." << std::endl;
+        return;
+    }
 
+    // TCP 소켓 서버 설정
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     int opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
-    struct sockaddr_in addr;
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(5555); // Qt 클라이언트와 약속한 포트
-
+    // 주소 및 포트 바인딩 (간결한 구조체 초기화 방식 사용)
+    struct sockaddr_in addr = {AF_INET, htons(AUTH_PORT), {INADDR_ANY}};
     bind(server_fd, (struct sockaddr *)&addr, sizeof(addr));
-    listen(server_fd, 5);
+    listen(server_fd, 5); // 최대 5개 대기열
 
     while (true) {
+        // 클라이언트 접속 대기
         int client_fd = accept(server_fd, NULL, NULL);
-        char buffer[1024] = {0};
-        int len = read(client_fd, buffer, 1024);
+        char buf[1024] = {0};
 
-        if (len > 0) {
-            std::string data(buffer);
-            // "ID:PW" 형식에서 ID 추출 및 검증
+        // 데이터 수신 ("ID:PW" 형식 예상)
+        if (read(client_fd, buf, sizeof(buf)) > 0) {
+            std::string data(buf), user = "Unknown";
             size_t sep = data.find(':');
+            bool success = false;
+
+            // 구분자(:)가 있을 경우에만 분석 진행
             if (sep != std::string::npos) {
-                std::string user = data.substr(0, sep);
-                // 일단 들어오면 무조건 PASS로 보낸 뒤 DB에 기록 (검증 로직은 필요시 추가)
-                send(client_fd, "PASS", 4, 0);
-                db.enqueue("LOGIN", user);
-            } else {
-                send(client_fd, "FAIL", 4, 0);
+                user = data.substr(0, sep);                 // ID 추출
+                std::string pass = data.substr(sep + 1);    // PW 추출
+                success = auth.authenticate(user, pass);     // DB 조회 및 검증
             }
+
+            // 검증 결과 전송 및 로그 기록 (삼항 연산자로 간소화)
+            send(client_fd, success ? "PASS" : "FAIL", 4, 0);
+            db.enqueue(success ? "LOGIN_SUCCESS" : "LOGIN_FAIL", user);
         }
-        close(client_fd);
+        close(client_fd); // 세션 종료
     }
 }
 
