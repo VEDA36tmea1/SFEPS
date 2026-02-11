@@ -3,7 +3,7 @@
 
 using namespace tinyxml2;
 
-DBLogger::DBLogger() : isRunning(false), conn(NULL) {}
+DBLogger::DBLogger(const char* db) : isRunning(false), conn(NULL), db_name(db) {}
 
 DBLogger::~DBLogger() {
     isRunning = false;
