@@ -129,10 +129,10 @@ Playback Thread 시작 시 **한 번만**:
 
 - 패키지:
   - `sudo apt install libasound2-dev`
-- 컴파일/링크 예시:
-  - `g++ -o audio_speaker_test main.cpp audio_playback.cpp -lasound -std=c++17`
+- 컴파일/링크 예시 (Makefile 기준 실제 구현):
+  - `g++ -o audio_speaker_test main.cpp audio_ring_buffer.cpp audio_playback.cpp -lasound -pthread -std=c++17`
 - (CMake를 도입한다면):
-  - `target_link_libraries(audio_speaker_test asound)`
+  - `target_link_libraries(audio_speaker_test asound pthread)`
 
 ---
 
@@ -151,13 +151,40 @@ Playback Thread 시작 시 **한 번만**:
 
 ## 10. 단계별 체크리스트
 
-1. **공통 오디오 상수 정의** (`audio_common.h`)
-2. **간단한 링 버퍼 구현** (`audio_ring_buffer.*`) – mutex/condvar 기반
-3. **libasound Playback Thread 작성** (`audio_playback.*`)
-4. **main.cpp 에서**:
-   - Playback Thread 시작
-   - 테스트 입력(파일 또는 TCP 수신) → 링 버퍼 `push()` 로 연결
-5. 라즈베리 파이에서 **실제 스피커/헤드셋으로 레이턴시 테스트**
-6. 충분히 만족스러우면:
-   - 이 모듈들을 `server/` 로 옮겨서 `run_audio_receiver()` 대신 사용하도록 통합
+| 단계 | 내용 | 상태 | 구현 위치 |
+|------|------|------|-----------|
+| 1 | 공통 오디오 상수 정의 (`audio_common.h`) | ✅ 완료 | `audio_common.h` |
+| 2 | 간단한 링 버퍼 구현 (`audio_ring_buffer.*`) – mutex/condvar 기반 | ✅ 완료 | `audio_ring_buffer.h/.cpp` (`AudioRingBuffer`) |
+| 3 | libasound Playback Thread 작성 (`audio_playback.*`) | ✅ 완료 | `audio_playback.h/.cpp` (`AudioPlayback::initPcm`, `playbackThreadFunc`) |
+| 4 | main.cpp: Playback Thread 시작 + 테스트 입력(TCP 수신) → 링 버퍼 `push()` | ✅ 완료 | `main.cpp` (`AudioPlayback playback`, `run_tcp_receiver_raw`) |
+| 5 | 라즈베리 파이에서 실제 스피커/헤드셋으로 레이턴시 테스트 | ⏳ 진행 중 | 수동 테스트 (RAW/MP3 모드 테스트) |
+| 6 | 모듈을 `server/` 로 옮겨 `run_audio_receiver()` 대신 사용하도록 통합 | ⏸ 계획 | 추후 `server/src/main.cpp` 통합 예정 |
+
+---
+
+## 11. 구현된 코드 위치 요약
+
+- **Step 1 – 오디오 상수**
+  - 파일: `audio_common.h`
+  - 내용: `AUDIO_SAMPLE_RATE`, `AUDIO_CHANNELS`, `AUDIO_FRAME_BYTES` 등 정의.
+
+- **Step 2 – 링 버퍼**
+  - 파일: `audio_ring_buffer.h/.cpp`
+  - 클래스: `AudioRingBuffer`
+    - 내부 버퍼(`std::vector<char>`) + `std::mutex` + `std::condition_variable`
+    - `push()` / `pop()` / `stop()` 구현.
+
+- **Step 3 – Playback Thread (libasound)**
+  - 파일: `audio_playback.h/.cpp`
+  - 클래스: `AudioPlayback`
+    - `initPcm()` 에서 `snd_pcm_open("default")` + `snd_pcm_set_params(...)`
+    - `playbackThreadFunc()` 에서 `ring.pop()` → `snd_pcm_writei()` 루프 + XRUN(`-EPIPE`) 처리.
+
+- **Step 4 – main.cpp (TCP 수신 + 모드 선택)**
+  - 파일: `main.cpp`
+  - RAW 모드:
+    - `AudioRingBuffer ring(...)`, `AudioPlayback playback(ring);`
+    - `run_tcp_receiver_raw(ring)` 에서 TCP 수신 → `ring.push()`
+  - MP3 모드:
+    - `run_tcp_receiver_mp3()` 에서 TCP 수신 → `mpg123 -q -` 파이프로 전달.
 
