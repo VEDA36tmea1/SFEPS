@@ -80,8 +80,18 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /* 초기화 직후 주요 레지스터 값 출력 (SPI/칩 연결 확인) */
+    {
+        uint8_t version = rc522c_read_reg(0x37);  /* VersionReg */
+        uint8_t cmd     = rc522c_read_reg(0x01);  /* CommandReg */
+        uint8_t txctl   = rc522c_read_reg(0x14);  /* TxControlReg */
+        printf("[init] VersionReg(0x37)=0x%02X (0x91/0x92=정상) CommandReg(0x01)=0x%02X TxControlReg(0x14)=0x%02X\n",
+               version, cmd, txctl);
+    }
+
     if (only_id) {
         uint32_t id;
+        fprintf(stderr, "[카드를 리더에 대세요...]\n");
         rc522c_read_id_blocking(&id);
         printf("%u\n", id);
         return 0;
@@ -101,6 +111,7 @@ int main(int argc, char **argv)
     {
         uint32_t id;
         char text[64];
+        fprintf(stderr, "[카드를 리더에 대세요...]\n");
         if (rc522c_read_text_sector_blocking(trailer, &id, text, sizeof(text)) != 0) {
             fprintf(stderr, "read failed\n");
             return 1;

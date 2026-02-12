@@ -3,6 +3,16 @@ import RPi.GPIO as GPIO
 
 from mfrc522 import SimpleMFRC522
 
+spi = spidev.SpiDev()
+spi.open(0, 0) # /dev/spidev0.0 열기
+
+print(f"SPI 모드: {spi.mode}")
+print(f"최대 속도: {spi.max_speed_hz} Hz")
+print(f"비트당 비트 수: {spi.bits_per_word}")
+print(f"CS 활성 수준 (Low/High): {spi.cshigh}")
+
+spi.close()
+
 reader = SimpleMFRC522()
 
 try:

@@ -369,7 +369,8 @@ int rc522_read_uid_blocking(struct rc522_dev *dev, u32 *out_uid)
 			return -ERESTARTSYS;  /* Ctrl+C 등으로 read()가 EINTR 반환 */
 		if (rc522_read_uid_no_block(dev, out_uid) == 0)
 			return 0;
-		dev->ops->msleep(50);
+		/* 100ms: 일부 모듈에서 REQA 간격이 너무 짧으면 감지 불안정 */
+		dev->ops->msleep(100);
 	}
 }
 
