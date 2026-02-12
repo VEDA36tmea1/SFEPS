@@ -1,4 +1,4 @@
-ㅊㅊ## 1. 커널 드라이버 (rc522_full.c/h 기반)
+## 1. 커널 드라이버 (rc522_full.c/h 기반)
 ### 추가된 파일
 - rc522.h – MFRC522 레지스터/명령 정의, `structrc522_ops`, `struct rc522_dev`, `코어/chardev API` 선언
 

@@ -78,7 +78,18 @@ sudo raspi-config
 - `Interface Options` → `SPI` → `Enable`
 - 재부팅 후 `ls /dev/spi*` 로 `/dev/spidev0.0` 등이 보이는지 확인
 
-### 2-3. RFID용 기본 디바이스 드라이버(커널 모듈) 초안 개념
+### 2-3. IRQ 모드 사용 시 풀업 확인
+
+RC522를 **IRQ 모드**(`Kernel_Driver_irq`, `dtoverlay=rc522-overlay-irq`)로 사용할 경우, IRQ 핀(GPIO24, Pin 18)은 보드에 따라 오픈드레인 형식이라 **풀업이 없으면 엣지가 잘 잡히지 않을 수 있습니다.**
+
+- Device Tree 오버레이(`rc522-overlay-irq.dts`)에서 pinctrl로 GPIO24 풀업을 걸어 두었지만, 카드 태깅 시 반응이 없거나 `spi->irq: 0` 이면 풀업을 확인하세요.
+- 수동으로 풀업을 주려면 (라즈베리 파이에서):
+  ```bash
+  gpio -g mode 24 up
+  ```
+- 자세한 내용은 `RC522_RFID/README.md` 및 `RC522_RFID/Kernel_Driver_irq/README.md`, `Dev.md` 를 참고하세요.
+
+### 2-4. RFID용 기본 디바이스 드라이버(커널 모듈) 초안 개념
 
 실제 커널 드라이버를 작성하기 전에, 구조를 먼저 정의합니다.
 
