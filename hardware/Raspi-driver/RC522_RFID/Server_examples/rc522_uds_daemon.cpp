@@ -150,8 +150,11 @@ int main(int argc, char** argv) {
     int client_fd = accept(listen_fd, nullptr, nullptr);
     if (client_fd < 0) {
       if (!g_running) break;
+      if (errno != EINTR) perror("UDS accept");
       continue;
     }
+
+    fprintf(stderr, "UDS: client connected (fd=%d)\n", client_fd);
 
     while (g_running) {
       uint32_t uid = 0;
@@ -172,6 +175,7 @@ int main(int argc, char** argv) {
       std::string line = format_tag_event(text_data.uid, text_data.text, ts);
       ssize_t n = write(client_fd, line.data(), line.size());
       if (n <= 0 || static_cast<size_t>(n) != line.size()) {
+        perror("UDS write");
         close(client_fd);
         client_fd = -1;
         break;
