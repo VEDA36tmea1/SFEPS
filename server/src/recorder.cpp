@@ -37,7 +37,7 @@ bool RTSPRecorder::open_output_file(AVCodecParameters* par) {
     std::cout << "[Rec] Start: " << current_filename << std::endl;
     start_time = std::time(nullptr);
     
-    // [중요] 새 파일 시작 시 상태 초기화
+    // 새 파일 시작 시 타임스탬프 상태 초기화
     last_dts = AV_NOPTS_VALUE;
     start_dts_offset = AV_NOPTS_VALUE;
     is_first_packet = true;
@@ -61,8 +61,17 @@ bool RTSPRecorder::connect_and_record() {
     av_dict_set(&opts, "rtsp_transport", "tcp", 0);
     av_dict_set(&opts, "stimeout", "5000000", 0); 
 
-    std::cout << "[System] Connecting..." << std::endl;
-    if (avformat_open_input(&input_ctx, RTSP_URL, nullptr, &opts) != 0) return false;
+    // ★ [보안 핵심] 자가 서명 인증서(Self-Signed) 허용 옵션
+    // 이 줄이 없으면 "SSL certificate problem" 에러가 뜨면서 접속이 안 됩니다.
+    av_dict_set(&opts, "tls_verify", "0", 0); 
+    
+    std::cout << "[System] Connecting to " << RTSP_URL << " (Secure Mode)..." << std::endl;
+    
+    if (avformat_open_input(&input_ctx, RTSP_URL, nullptr, &opts) != 0) {
+        std::cerr << "[Error] Failed to connect! Check IP, Port(8332), or Cert." << std::endl;
+        return false;
+    }
+    
     if (avformat_find_stream_info(input_ctx, nullptr) < 0) return false;
 
     video_stream_idx = av_find_best_stream(input_ctx, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
@@ -70,7 +79,10 @@ bool RTSPRecorder::connect_and_record() {
         if(input_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_DATA) meta_stream_idx = i;
 
     if (video_stream_idx < 0) return false;
-    logger.enqueue("SYSTEM", "RTSP Connected");
+    
+    // 연결 성공 로그
+    logger.enqueue("SYSTEM", "RTSP Connected via TLS (Secure)");
+    std::cout << "[System] Connected! Video Stream Index: " << video_stream_idx << std::endl;
 
     if (!open_output_file(input_ctx->streams[video_stream_idx]->codecpar)) return false;
 
@@ -88,8 +100,7 @@ bool RTSPRecorder::connect_and_record() {
             }
 
             if (output_ctx) {
-                // [핵심] 타임스탬프 0초로 리셋 (Offsetting)
-                // 첫 패킷의 시간(DTS)을 기준점으로 잡습니다.
+                // 타임스탬프 0초 리셋 로직 (Offsetting)
                 if (is_first_packet) {
                     if (pkt.dts != AV_NOPTS_VALUE) {
                         start_dts_offset = pkt.dts;
@@ -97,17 +108,15 @@ bool RTSPRecorder::connect_and_record() {
                     }
                 }
 
-                // 기준점만큼 시간을 뺍니다. (Input Timebase 기준)
                 if (start_dts_offset != AV_NOPTS_VALUE) {
                     if (pkt.dts != AV_NOPTS_VALUE) pkt.dts -= start_dts_offset;
                     if (pkt.pts != AV_NOPTS_VALUE) pkt.pts -= start_dts_offset;
                 }
 
-                // 타임스탬프 변환 (Input -> Output Timebase)
                 av_packet_rescale_ts(&pkt, input_ctx->streams[video_stream_idx]->time_base, output_ctx->streams[0]->time_base);
                 pkt.stream_index = 0;
 
-                // DTS 역행 방지 및 보정
+                // DTS 보정
                 if (last_dts != AV_NOPTS_VALUE && pkt.dts <= last_dts) {
                     int64_t diff = last_dts + 1 - pkt.dts;
                     pkt.dts += diff;
@@ -130,7 +139,7 @@ bool RTSPRecorder::connect_and_record() {
 
 void RTSPRecorder::run() {
     while (running_flag) {
-        if (!connect_and_record()) std::cerr << "[System] Connection Retry..." << std::endl;
+        if (!connect_and_record()) std::cerr << "[System] Connection Retry in 5s..." << std::endl;
         cleanup();
         std::this_thread::sleep_for(std::chrono::seconds(5));
     }
