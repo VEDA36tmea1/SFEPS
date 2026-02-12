@@ -9,11 +9,15 @@
 #include "auth.h"
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <fstream>
+#include <vector>
 
 namespace fs = std::filesystem;
 
 // [설정] 로그인 인증 전용 포트 및 DB 접속 정보
 #define AUTH_PORT 5555           // Qt 클라이언트와 통신할 포트
+#define AUDIO_PORT 5556          // 음성 데이터 수신 포트
+#define VOICE_SAVE_DIR "voice_recs"
 #define DB_HOST "192.168.0.92"   // MariaDB 서버 IP
 #define DB_USER "pi"             // DB 사용자 아이디
 #define DB_PASS "raspberry"      // DB 비밀번호
@@ -23,6 +27,39 @@ namespace fs = std::filesystem;
 struct ServerData {
     DBLogger *logger;
 };
+
+// 음성 수신 스레드 함수
+void run_audio_receiver() {
+    if (!fs::exists(VOICE_SAVE_DIR)) fs::create_directories(VOICE_SAVE_DIR);
+
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    int opt = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    struct sockaddr_in addr = {AF_INET, htons(AUDIO_PORT), {INADDR_ANY}};
+    bind(server_fd, (struct sockaddr *)&addr, sizeof(addr));
+    listen(server_fd, 5);
+
+    while (true) {
+        int client_fd = accept(server_fd, NULL, NULL);
+        
+        // 현재 시간을 파일명으로 사용
+        auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        char time_buf[64];
+        std::strftime(time_buf, sizeof(time_buf), "%Y%m%d_%H%M%S", std::localtime(&now));
+        std::string filename = std::string(VOICE_SAVE_DIR) + "/voice_" + time_buf + ".raw";
+
+        std::ofstream outfile(filename, std::ios::binary);
+        char buf[4096];
+        ssize_t bytes;
+        while ((bytes = read(client_fd, buf, sizeof(buf))) > 0) {
+            outfile.write(buf, bytes);
+        }
+        outfile.close();
+        close(client_fd);
+        std::cout << "[Audio] Received and saved: " << filename << std::endl;
+    }
+}
 
 // 로그인 인증 전용 스레드 함수
 void run_login_auth() {
@@ -122,7 +159,11 @@ int main() {
     std::thread t3(run_login_auth);
     t3.detach();
 
-    // 7. 녹화 시작
+    // 7. 음성 수신 스레드 시작
+    std::thread t4(run_audio_receiver);
+    t4.detach();
+
+    // 8. 녹화 시작
     RTSPRecorder recorder(logger, running);
     recorder.run(); // 메인 스레드 블로킹
 
