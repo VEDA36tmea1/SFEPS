@@ -14,45 +14,24 @@ AuthManager::AuthManager(QObject *parent) : QObject(parent)
 
 void AuthManager::login(const QString &id, const QString &pw)
 {
-    if (socket->state() == QAbstractSocket::ConnectedState) {
+    socket->abort();
+    socket->connectToHost("192.168.0.89", 5555);
+
+    bool authenticated = false;
+    if (socket->waitForConnected(3000)) {
+        socket->write(QString("%1:%2").arg(id, pw).toUtf8());
+        socket->flush();
+        
+        if (socket->waitForReadyRead(3000)) {
+            authenticated = (socket->readAll().trimmed() == "PASS");
+        }
         socket->disconnectFromHost();
     }
 
-    // 기존 LoginDialog의 IP와 Port 설정
-    socket->connectToHost("192.168.0.89", 5555);
-
-    if (socket->waitForConnected(3000)) {
-        QString msg = id + ":" + pw;
-        socket->write(msg.toUtf8());
-        socket->flush();
-        // 응답 처리는 onReadyRead에서 하거나 여기서 블로킹 대기를 할 수 있습니다.
-        // QML의 비동기성을 위해서는 시그널 방식이 좋지만, 기존 로직이 트랜잭션 방식이었으므로
-        // 편의상 여기서 짧게 대기합니다. (기존 코드: 3초 대기)
-        
-        if (socket->waitForReadyRead(3000)) {
-            QByteArray response = socket->readAll().trimmed();
-            if (response == "PASS") {
-                emit loginSuccess();
-            } else {
-                emit loginFailed("ID/PW를 확인하세요");
-            }
-            socket->disconnectFromHost();
-        } else {
-             // 타임아웃 또는 데이터 없음
-             // 기존 코드의 관리자 우회(bypass) 로직 유지
-             if (id == "admin") {
-                 emit loginSuccess();
-             } else {
-                 emit loginFailed("서버 응답 없음 (Timeout)");
-             }
-        }
+    if (authenticated) {
+        emit loginSuccess();
     } else {
-        // 연결 실패
-        if (id == "admin") {
-            emit loginSuccess();
-        } else {
-            emit loginFailed("서버 연결 실패");
-        }
+        emit loginFailed("ID/PW를 확인하세요");
     }
 }
 

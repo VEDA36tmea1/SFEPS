@@ -7,8 +7,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-# Qt6 찾기 (Quick, QuickControls2, Network 모듈 필수)
-find_package(Qt6 6.4 REQUIRED COMPONENTS Quick QuickControls2 Network)
+# Qt6 찾기 (Quick, QuickControls2, Network, Multimedia 모듈 필수)
+find_package(Qt6 6.4 REQUIRED COMPONENTS Quick QuickControls2 Network Multimedia)
 
 # OpenCV 설정 (상위 디렉토리나 시스템 경로에 있다고 가정)
 # 찾지 못하면 에러 발생
@@ -22,11 +22,12 @@ qt_add_executable(appHanwhaVisionSFEPS
     src/main.cpp
     src/authmanager.cpp src/authmanager.h
     src/mainwindow.cpp src/mainwindow.h
+    src/voicemanager.cpp src/voicemanager.h
     ${RESOURCES}
 )
 
 target_link_libraries(appHanwhaVisionSFEPS
-    PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Network
+    PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Network Qt6::Multimedia
     ${OpenCV_LIBS}
 )
 

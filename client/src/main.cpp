@@ -8,6 +8,9 @@
 #include <QFile>
 #include <QTextStream>
 #include <QDateTime>
+#include "authmanager.h"
+#include "mainwindow.h"
+#include "voicemanager.h"
 
 void myMessageOutput(QtMsgType type, const QMessageLogContext &context, const QString &msg)
 {
@@ -19,9 +22,6 @@ void myMessageOutput(QtMsgType type, const QMessageLogContext &context, const QS
     QTextStream out(&file);
     out << QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz ") << msg << "\n";
 }
-
-#include "authmanager.h"
-#include "mainwindow.h"
 
 int main(int argc, char *argv[]) {
   qInstallMessageHandler(myMessageOutput);
@@ -46,6 +46,10 @@ int main(int argc, char *argv[]) {
   // AuthManager를 컨텍스트 속성으로 등록 (싱글톤처럼 사용)
   AuthManager authManager;
   engine.rootContext()->setContextProperty("authManager", &authManager);
+
+  // VoiceManager를 컨텍스트 속성으로 등록
+  VoiceManager voiceManager;
+  engine.rootContext()->setContextProperty("voiceManager", &voiceManager);
 
   // QML 파일 URL 정의
   const QUrl loginUrl(QStringLiteral("qrc:/src/views/LoginView.qml"));

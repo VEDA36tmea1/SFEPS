@@ -1,0 +1,60 @@
+/*
+ * RC522 IRQ 오버레이 (실험용)
+ *
+ * Wiring:
+ *   CE0  -> GPIO8
+ *   RST  -> GPIO25
+ *   IRQ  -> GPIO24 (Pin 18)
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2711", "brcm,bcm2835";
+
+	fragment@0 {
+		target = <&spi0>;
+		__overlay__ {
+			status = "okay";
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			rc522: rc522@0 {
+				compatible = "nxp,rc522";
+				reg = <0>;
+				spi-max-frequency = <1000000>;
+				reset-gpios = <&gpio 25 0>;
+
+				/* GPIO24를 입력 + pull-up 상태로 사용하기 위한 pinctrl */
+				pinctrl-names = "default";
+				pinctrl-0 = <&rc522_irq_pins>;
+
+				/* IRQ line: GPIO24 falling edge */
+				interrupt-parent = <&gpio>;
+				interrupts = <24 2>;
+			};
+		};
+	};
+
+	/* GPIO24 pinctrl 설정 (INPUT + pull-up) */
+	fragment@1 {
+		target = <&gpio>;
+		__overlay__ {
+			rc522_irq_pins: rc522_irq_pins {
+				brcm,pins = <24>;
+				brcm,function = <0>; /* INPUT */
+				brcm,pull = <2>;     /* 2 = pull-up */
+			};
+		};
+	};
+
+	/* CE0 spidev 비활성화 */
+	fragment@2 {
+		target = <&spidev0>;
+		__overlay__ {
+			status = "disabled";
+		};
+	};
+};
+

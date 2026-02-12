@@ -9,11 +9,15 @@
 #include "auth.h"
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <fstream>
+#include <vector>
 
 namespace fs = std::filesystem;
 
 // [설정] 로그인 인증 전용 포트 및 DB 접속 정보
 #define AUTH_PORT 5555           // Qt 클라이언트와 통신할 포트
+#define AUDIO_PORT 5556          // 음성 데이터 수신 포트
+#define VOICE_SAVE_DIR "voice_recs"
 #define DB_HOST "192.168.0.92"   // MariaDB 서버 IP
 #define DB_USER "pi"             // DB 사용자 아이디
 #define DB_PASS "raspberry"      // DB 비밀번호
@@ -23,6 +27,39 @@ namespace fs = std::filesystem;
 struct ServerData {
     DBLogger *logger;
 };
+
+// 음성 수신 스레드 함수
+void run_audio_receiver() {
+    if (!fs::exists(VOICE_SAVE_DIR)) fs::create_directories(VOICE_SAVE_DIR);
+
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    int opt = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    struct sockaddr_in addr = {AF_INET, htons(AUDIO_PORT), {INADDR_ANY}};
+    bind(server_fd, (struct sockaddr *)&addr, sizeof(addr));
+    listen(server_fd, 5);
+
+    while (true) {
+        int client_fd = accept(server_fd, NULL, NULL);
+        
+        // 현재 시간을 파일명으로 사용
+        auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        char time_buf[64];
+        std::strftime(time_buf, sizeof(time_buf), "%Y%m%d_%H%M%S", std::localtime(&now));
+        std::string filename = std::string(VOICE_SAVE_DIR) + "/voice_" + time_buf + ".raw";
+
+        std::ofstream outfile(filename, std::ios::binary);
+        char buf[4096];
+        ssize_t bytes;
+        while ((bytes = read(client_fd, buf, sizeof(buf))) > 0) {
+            outfile.write(buf, bytes);
+        }
+        outfile.close();
+        close(client_fd);
+        std::cout << "[Audio] Received and saved: " << filename << std::endl;
+    }
+}
 
 // 로그인 인증 전용 스레드 함수
 void run_login_auth() {
@@ -58,14 +95,23 @@ void run_login_auth() {
 
             // 구분자(:)가 있을 경우에만 분석 진행
             if (sep != std::string::npos) {
-                user = data.substr(0, sep);                 // ID 추출
-                std::string pass = data.substr(sep + 1);    // PW 추출
-                success = auth.authenticate(user, pass);     // DB 조회 및 검증
+                user = data.substr(0, sep);
+                std::string pass = data.substr(sep + 1);
+                
+                // 불필요한 공백/개행 제거
+                user.erase(user.find_last_not_of(" \n\r\t") + 1);
+                pass.erase(pass.find_last_not_of(" \n\r\t") + 1);
+                
+                success = auth.authenticate(user, pass);
             }  
               
-            // 검증 결과 전송 및 로그 기록 (삼항 연산자로 간소화)
+            // 검증 결과 전송
             send(client_fd, success ? "PASS" : "FAIL", 4, 0);
-            db.enqueue(success ? "LOGIN_SUCCESS" : "LOGIN_FAIL", user);
+
+            // [로그 기록] 새로 만든 login_logs 테이블에 기록
+            // 사용자의 IP 주소를 가져오기 위해 sockaddr_in 정보를 같이 활용할 수도 있으나,
+            // 현재는 구조상 간단하게 유저 정보와 성공여부만 기록합니다. (IP는 로그 클래스 내부 처리 유도)
+            db.enqueueLogin(user, "Unknown_IP", success);
         }
         close(client_fd); // 세션 종료
     }
@@ -109,11 +155,17 @@ int main() {
     });
     t2.detach();
 
-    // 6. 녹화 시작
-    // 여기서 g_running이 false가 되면 recorder.run() 내부의 루프가 끝나고
-    // 자동으로 close_current_file()이 호출되어 파일이 정상 저장됩니다.
-    RTSPRecorder recorder(logger, g_running);
-    recorder.run();
+    // 6. 로그인 인증 스레드 시작
+    std::thread t3(run_login_auth);
+    t3.detach();
+
+    // 7. 음성 수신 스레드 시작
+    std::thread t4(run_audio_receiver);
+    t4.detach();
+
+    // 8. 녹화 시작
+    RTSPRecorder recorder(logger, running);
+    recorder.run(); // 메인 스레드 블로킹
 
     std::cout << "[System] 서버가 안전하게 종료되었습니다." << std::endl;
     return 0;
