@@ -315,12 +315,16 @@ Page {
 
                     // Mic Button
                     Button {
+                        id: micBtn
                         Layout.preferredWidth: 35
                         Layout.preferredHeight: 35
                         flat: true
+                        checkable: true
+                        checked: voiceManager.active
+                        
                         background: Rectangle {
-                            color: "transparent"
-                            border.color: parent.hovered ? AppTheme.accent : "#333"
+                            color: micBtn.checked ? "#ef4444" : "transparent"
+                            border.color: micBtn.hovered ? AppTheme.accent : (micBtn.checked ? "#ef4444" : "#333")
                             radius: 6
                         }
                         contentItem: Image {
@@ -329,6 +333,7 @@ Page {
                             sourceSize.width: 20
                             sourceSize.height: 20
                         }
+                        onClicked: voiceManager.toggleMicrophone()
                     }
                 }
             }
