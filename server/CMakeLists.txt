@@ -20,6 +20,7 @@ add_executable(smart_server
     src/recorder.cpp
     src/cleanup.cpp
     src/auth.cpp
+    src/rfid_monitor.cpp
 )
 
 # 4. 헤더 경로

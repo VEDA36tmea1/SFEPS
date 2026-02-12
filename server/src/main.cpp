@@ -179,6 +179,16 @@ int main() {
     t4.detach();
 
     // 8. 녹화 시작
+    // [NEW] 9. RFID 모니터링 스레드 시작 (recorder.run() 이전에 시작)
+    RfidMonitor rfid_monitor(g_running, DB_HOST, DB_USER, DB_PASS, DB_NAME);
+    std::thread t5(&RfidMonitor::start, &rfid_monitor);
+    t5.detach();
+
+    std::cout << "[System] RFID 모니터링 서비스 시작됨." << std::endl;
+
+    // detach된 스레드들이 정리될 시간을 약간 줄 수 있음
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
     RTSPRecorder recorder(logger, g_running);
     recorder.run(); // 메인 스레드 블로킹
 
