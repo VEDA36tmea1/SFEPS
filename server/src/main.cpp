@@ -164,7 +164,7 @@ int main() {
     t4.detach();
 
     // 8. 녹화 시작
-    RTSPRecorder recorder(logger, running);
+    RTSPRecorder recorder(logger, g_running);
     recorder.run(); // 메인 스레드 블로킹
 
     std::cout << "[System] 서버가 안전하게 종료되었습니다." << std::endl;
