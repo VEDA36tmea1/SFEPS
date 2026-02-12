@@ -23,6 +23,7 @@ qt_add_executable(appHanwhaVisionSFEPS
     src/authmanager.cpp src/authmanager.h
     src/mainwindow.cpp src/mainwindow.h
     src/voicemanager.cpp src/voicemanager.h
+    src/fraudmanager.cpp src/fraudmanager.h
     ${RESOURCES}
 )
 

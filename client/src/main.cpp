@@ -11,6 +11,7 @@
 #include "authmanager.h"
 #include "mainwindow.h"
 #include "voicemanager.h"
+#include "fraudmanager.h"
 
 void myMessageOutput(QtMsgType type, const QMessageLogContext &context, const QString &msg)
 {
@@ -50,6 +51,11 @@ int main(int argc, char *argv[]) {
   // VoiceManager를 컨텍스트 속성으로 등록
   VoiceManager voiceManager;
   engine.rootContext()->setContextProperty("voiceManager", &voiceManager);
+
+  // FraudManager를 컨텍스트 속성으로 등록
+  FraudManager fraudManager;
+  engine.rootContext()->setContextProperty("fraudManager", &fraudManager);
+  fraudManager.connectToServer("192.168.0.89", 5557);
 
   // QML 파일 URL 정의
   const QUrl loginUrl(QStringLiteral("qrc:/src/views/LoginView.qml"));
