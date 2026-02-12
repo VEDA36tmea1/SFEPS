@@ -3,15 +3,17 @@
 #include <thread>
 #include <atomic>
 #include <csignal> // 시그널 처리를 위해 필요
-#include "log.h"
-#include "recorder.h" 
-#include "cleanup.h" 
-#include "auth.h"
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <fstream>
 #include <vector>
 #include <cstdio>
+
+#include "log.h"
+#include "recorder.h" 
+#include "cleanup.h" 
+#include "auth.h"
+#include "rfid_monitor.h" // [NEW] RFID 모니터링 헤더 추가
 
 namespace fs = std::filesystem;
 
