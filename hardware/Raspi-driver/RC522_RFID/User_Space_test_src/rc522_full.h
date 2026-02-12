@@ -25,6 +25,10 @@ extern "C" {
 // 반환: 0 성공, -1 실패
 int rc522c_init(int spi_ch, int speed_hz, int rst_bcm);
 
+// 레지스터 1바이트 읽기 (rc522c_init 호출 후 사용)
+// reg: MFRC522 레지스터 주소 (예: 0x37 = VersionReg)
+uint8_t rc522c_read_reg(uint8_t reg);
+
 // UID를 한 번만 시도해 읽기 (태그 없으면 실패)
 // 반환: 0 성공, -1 실패
 int rc522c_read_id_no_block(uint32_t *out_id);

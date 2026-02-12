@@ -104,7 +104,7 @@ static void rc522c_write_reg(uint8_t addr, uint8_t val)
     wiringPiSPIDataRW(g_spi_ch, buf, 2);
 }
 
-static uint8_t rc522c_read_reg(uint8_t addr)
+uint8_t rc522c_read_reg(uint8_t addr)
 {
     uint8_t buf[2];
     buf[0] = (uint8_t)(((addr << 1) & 0x7E) | 0x80);
@@ -133,17 +133,9 @@ static void rc522c_antenna_on(void)
     }
 }
 
+/* Python MFRC522_Reset()와 동일: 소프트 리셋만. RST 핀은 rc522c_init()에서 한 번 HIGH로 설정 */
 static void rc522c_reset(void)
 {
-    // 하드웨어 RST 핀 토글
-    if (g_rst_pin >= 0) {
-        digitalWrite(g_rst_pin, LOW);
-        delay(10);
-        digitalWrite(g_rst_pin, HIGH);
-        delay(50);
-    }
-
-    // 소프트 리셋
     rc522c_write_reg(CommandReg, PCD_RESETPHASE);
     delay(50);
 }
