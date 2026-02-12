@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <fstream>
 #include <vector>
+#include <cstdio>
 
 namespace fs = std::filesystem;
 
@@ -30,8 +31,6 @@ struct ServerData {
 
 // 음성 수신 스레드 함수
 void run_audio_receiver() {
-    if (!fs::exists(VOICE_SAVE_DIR)) fs::create_directories(VOICE_SAVE_DIR);
-
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     int opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
@@ -43,21 +42,35 @@ void run_audio_receiver() {
     while (true) {
         int client_fd = accept(server_fd, NULL, NULL);
         
-        // 현재 시간을 파일명으로 사용
-        auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-        char time_buf[64];
-        std::strftime(time_buf, sizeof(time_buf), "%Y%m%d_%H%M%S", std::localtime(&now));
-        std::string filename = std::string(VOICE_SAVE_DIR) + "/voice_" + time_buf + ".raw";
-
-        std::ofstream outfile(filename, std::ios::binary);
+        // 메모리 버퍼에 오디오 데이터 수집
+        std::vector<char> audio_buffer;
         char buf[4096];
         ssize_t bytes;
         while ((bytes = read(client_fd, buf, sizeof(buf))) > 0) {
-            outfile.write(buf, bytes);
+            audio_buffer.insert(audio_buffer.end(), buf, buf + bytes);
         }
-        outfile.close();
         close(client_fd);
-        std::cout << "[Audio] Received and saved: " << filename << std::endl;
+
+        if (audio_buffer.empty()) {
+            std::cout << "[Audio] Received empty data, skipping playback" << std::endl;
+            continue;
+        }
+
+        std::cout << "[Audio] Received " << audio_buffer.size() << " bytes, playing..." << std::endl;
+
+        // ALSA로 바로 재생 (16000 Hz, 모노, S16_LE)
+        FILE* aplay = popen("aplay -f S16_LE -r 16000 -c 1 -D default", "w");
+        if (aplay) {
+            size_t written = fwrite(audio_buffer.data(), 1, audio_buffer.size(), aplay);
+            pclose(aplay);
+            if (written == audio_buffer.size()) {
+                std::cout << "[Audio] Playback completed" << std::endl;
+            } else {
+                std::cerr << "[Audio] Playback error: wrote " << written << " / " << audio_buffer.size() << " bytes" << std::endl;
+            }
+        } else {
+            std::cerr << "[Audio] Failed to start aplay" << std::endl;
+        }
     }
 }
 
