@@ -46,7 +46,7 @@ public:
     // [핵심] XML 문자열을 받아서 파싱 후 DB에 저장하는 함수
     void parseAndLogXML(const char* xmlData);
 
-    // 4. [신규] 녹화 파일 기록 함수 (이게 없어서 에러난 것임)
+    // 4. [신규] 녹화 파일 기록 함수
     void enqueueRecording(const std::string& filename);
 
     // [신규] DB 용량 관리(청소) 요청 함수
