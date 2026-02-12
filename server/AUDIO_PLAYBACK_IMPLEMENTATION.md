@@ -181,3 +181,87 @@ aplay -f S16_LE -r 16000 -c 1 -D default voice_recs/voice_20250101_120000.raw
 ```
 
 현재 구현에서는 파일 저장 없이 메모리 버퍼를 파이프로 직접 전달합니다.
+
+---
+
+## 다음 구현 계획: 링 버퍼 + Playback Thread (libasound)
+
+`aplay + popen` 방식은 **프로세스 생성/종료 오버헤드**와 **디폴트 버퍼링** 때문에 “버튼 누르면 바로 들리는” UX에서 지연이 체감될 수 있습니다.  
+다음 단계로 **libasound(=ALSA API)** 를 사용해 **수신과 재생을 분리**하고, 재생 버퍼를 직접 튜닝하는 구조로 개선합니다.
+
+### 목표
+
+- 수신된 오디오를 **받는 즉시(스트리밍)** 오디오 잭으로 재생
+- `snd_pcm_*` 설정으로 **latency(버퍼/period)** 를 줄여 체감 지연 감소
+
+### 전체 구조
+
+- **Receiver Thread (Producer)**: TCP로 받은 RAW PCM(S16_LE, 16kHz, mono)을 **링 버퍼**에 push
+- **Playback Thread (Consumer)**: 링 버퍼에서 frame을 꺼내 **`snd_pcm_writei()`** 로 계속 출력
+
+### Step A: 공용 오디오 설정 상수화
+
+- `AUDIO_SAMPLE_RATE = 16000`
+- `AUDIO_CHANNELS = 1`
+- `AUDIO_FORMAT = SND_PCM_FORMAT_S16_LE`
+- `FRAME_BYTES = 2 * AUDIO_CHANNELS` (Int16 1샘플 = 2바이트)
+
+### Step B: 링 버퍼(Producer/Consumer) 설계
+
+- **단위**: “바이트”가 아니라 **프레임 단위**(frame = sample * channels)로 다루는 것을 권장
+- **동기화**:
+  - 간단히: `std::mutex + std::condition_variable` 로 보호
+  - 성능 우선: lock-free ring buffer(추후)
+- **정책**:
+  - 오디오 잭이 느리거나 순간적으로 burst가 크면 버퍼가 찰 수 있음 → **drop(최신 유지/최초 유지)** 중 하나를 명시
+
+### Step C: ALSA(PCM) 초기화 (Playback Thread 시작 시 1회)
+
+1. `snd_pcm_open(&pcm, "default", SND_PCM_STREAM_PLAYBACK, 0)`
+2. `snd_pcm_set_params(...)` 또는 `snd_pcm_hw_params_*` 로 포맷/레이트/채널 설정
+3. **latency 튜닝**:
+   - period/buffer를 작게(예: period 10~20ms, buffer 40~80ms 수준부터 시작)
+4. underrun(XRUN) 대응:
+   - `snd_pcm_writei` 가 `-EPIPE` 반환 시 `snd_pcm_prepare(pcm)` 후 재시도
+
+### Step D: Playback Thread 루프 (Consumer)
+
+- 목표: 항상 “period frames” 만큼 확보해서 `snd_pcm_writei()` 호출
+- 흐름:
+  1. 링 버퍼에서 **필요 프레임만큼** 꺼내 local buffer에 채움
+  2. 부족하면:
+     - 잠깐 대기(조건변수) 또는
+     - “무음(0)” padding으로 underrun 방지 (UX 선택)
+  3. `snd_pcm_writei(pcm, frames, frame_count)` 호출
+
+### Step E: Receiver Thread 수정 (Producer)
+
+- 현재처럼 `accept()` 후 `read()`로 받은 `buf`를:
+  - 링 버퍼에 push (프레임 정렬: `bytes % FRAME_BYTES == 0` 확인/보정)
+- “버튼 누르면 바로 들리게”를 목표로 하면:
+  - **수신 즉시 push**(파일/메모리 전체 누적 금지)
+  - 서버는 클라이언트가 연결된 동안 스트리밍, 끊기면 playback은 drain 후 idle
+
+### Step F: 종료/상태 전파
+
+- SIGINT 등 종료 시:
+  - receiver thread 종료
+  - playback thread에 종료 플래그 + condition notify
+  - `snd_pcm_drain()` 또는 `snd_pcm_drop()` 후 `snd_pcm_close()`
+
+### Step G: 빌드 설정
+
+- 패키지: `sudo apt install libasound2-dev`
+- 링크: **`-lasound`**
+- CMake를 쓰는 경우 `target_link_libraries(<server> asound)` 추가
+
+### 구현 산출물(권장 파일 분리)
+
+- `server/include/audio_playback.h`
+- `server/src/audio_playback.cpp`  (ALSA init + playback thread + ring buffer)
+- `server/src/main.cpp` 는 “수신 → 링버퍼 push” 와 “playback start/stop”만 호출
+
+### 커스텀 오디오 디바이스 드라이버(커널) 구현은?
+
+현재 요구사항(오디오 잭 출력, PCM 재생, latency 튜닝) 기준으로는 **커널 드라이버를 새로 만드는 건 난이도/시간 대비 이득이 거의 없고 유지보수 부담이 큽니다.**  
+대부분의 경우 **ALSA(libasound) 레벨**에서 충분히 해결 가능합니다.
