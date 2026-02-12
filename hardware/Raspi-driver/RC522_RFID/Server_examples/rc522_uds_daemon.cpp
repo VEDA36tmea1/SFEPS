@@ -135,7 +135,7 @@ int main(int argc, char** argv) {
 
   int rc522_fd = open(DEV_RC522, O_RDWR);
   if (rc522_fd < 0) {
-    perror("open " DEV_RC522);
+    perror("open DEV_RC522");
     return 1;
   }
 
