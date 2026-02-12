@@ -415,29 +415,20 @@ Page {
                     clip: true
                     spacing: 8
                     model: ListModel {
-                        ListElement {
-                            eventId: "2"
-                            eventType: "GATE ACCESS"
-                            title: "Standard Entry - Gate 01"
-                            camera: "ID: #USR-5621 (Staff)"
-                            timestamp: "14:50:17"
-                            confidence: ""
-                        }
-                        ListElement {
-                            eventId: "3"
-                            eventType: "FARE EVASION DETECTED"
-                            title: "Gate 12 - Forcing Gate"
-                            camera: "Camera: CAM-01 West Entry"
-                            timestamp: "14:28:44"
-                            confidence: "96.5%"
-                        }
-                        ListElement {
-                            eventId: "4"
-                            eventType: "CROWD ALERT"
-                            title: "Platform B - High Density"
-                            camera: "Occupancy: 82%"
-                            timestamp: "14:25:30"
-                            confidence: ""
+                        id: monitoringEventModel
+                    }
+
+                    Connections {
+                        target: fraudManager
+                        function onFraudDetected(cardId, ageGroup, gateId, estAge) {
+                            monitoringEventModel.insert(0, {
+                                eventId: cardId,
+                                eventType: "FARE EVASION DETECTED",
+                                title: "Gate " + gateId + " - " + ageGroup.toUpperCase() + " CARD",
+                                camera: "Card ID: " + cardId + " (Est. Age: " + estAge + ")",
+                                timestamp: Qt.formatDateTime(new Date(), "HH:mm:ss"),
+                                confidence: "98.5%"
+                            })
                         }
                     }
 
@@ -565,45 +556,8 @@ Page {
                     }
                 }
 
-                // Spacer to push stats section to bottom
-                Item {
-                    Layout.fillHeight: true
-                }
+                // Removed Stats Button and Spacer to expand Event Log
 
-                // STATS BUTTON (THE FIX)
-                Button {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 48
-                    flat: true
-
-                    // Custom Background
-                    background: Rectangle {
-                        color: parent.hovered ? AppTheme.primaryOrangeHover : AppTheme.primaryOrange
-                        radius: 8
-                    }
-
-                    // Explicit Content Item (Transparent Backgrounds)
-                    contentItem: RowLayout {
-                        anchors.centerIn: parent
-                        spacing: 10
-
-                        Image {
-                            source: "../../assets/statistic.svg"
-                            sourceSize.width: 20
-                            sourceSize.height: 20
-                            // No background set, so transparent by default
-                        }
-                        Text {
-                            text: "OPEN SYSTEM STATISTICS"
-                            color: "white"
-                            font.bold: true
-                            font.pixelSize: 10
-                            // No background set, so transparent by default
-                        }
-                    }
-
-                    onClicked: viewDetailRequest()
-                }
 
                 // Bottom Stats
                 RowLayout {

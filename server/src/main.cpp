@@ -25,6 +25,11 @@ namespace fs = std::filesystem;
 #define DB_USER "pi"             // DB 사용자 아이디
 #define DB_PASS "raspberry"      // DB 비밀번호
 #define DB_NAME "Client_db"      // 사용할 데이터베이스 이름
+#define ALERT_PORT 5557          // 부정승차 알림 포트
+
+// 알림 전송용 클라이언트 소켓 관리
+std::vector<int> g_client_sockets;
+std::mutex g_sockets_mutex;
 
 // 데이터를 콜백 함수로 넘기기 위한 구조체
 struct ServerData {
@@ -73,6 +78,52 @@ void run_audio_receiver() {
         } else {
             std::cerr << "[Audio] Failed to start aplay" << std::endl;
         }
+    }
+}
+
+// 부정승차 알림 서버 (클라이언트 연결 관리)
+void run_fraud_notifier() {
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    int opt = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    struct sockaddr_in addr = {AF_INET, htons(ALERT_PORT), {INADDR_ANY}};
+    bind(server_fd, (struct sockaddr *)&addr, sizeof(addr));
+    listen(server_fd, 5);
+
+    while (true) {
+        int client_fd = accept(server_fd, NULL, NULL);
+        if (client_fd >= 0) {
+            std::lock_guard<std::mutex> lock(g_sockets_mutex);
+            g_client_sockets.push_back(client_fd);
+            std::cout << "[Alert] Client connected for fraud notifications." << std::endl;
+        }
+    }
+}
+
+// 더미 부정승차 데이터 생성기
+void run_dummy_fraud_generator() {
+    while (true) {
+        std::this_thread::sleep_for(std::chrono::seconds(5)); // 5초마다 발생
+
+        // 1. 더미 데이터 생성
+        std::string cardId = "CARD_" + std::to_string(rand() % 9000 + 1000);
+        std::string ageGroup = (rand() % 2 == 0) ? "Senior" : "Youth";
+        int gateId = rand() % 5 + 1;
+        int estAge = rand() % 40 + 15; // 15~55세
+
+        // 2. 클라이언트에 전송 (형식: "FRAUD|CardID|AgeGroup|Gate|EstAge")
+        std::string msg = "FRAUD|" + cardId + "|" + ageGroup + "|" + std::to_string(gateId) + "|" + std::to_string(estAge) + "\n";
+        
+        std::lock_guard<std::mutex> lock(g_sockets_mutex);
+        for (auto it = g_client_sockets.begin(); it != g_client_sockets.end(); ) {
+            if (send(*it, msg.c_str(), msg.length(), 0) <= 0) {
+                close(*it);
+                it = g_client_sockets.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        std::cout << "[Alert] Fraud detected and broadcasted (5s interval): " << cardId << std::endl;
     }
 }
 
@@ -186,11 +237,22 @@ int main() {
 
     std::cout << "[System] RFID 모니터링 서비스 시작됨." << std::endl;
 
-    // detach된 스레드들이 정리될 시간을 약간 줄 수 있음
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    
 
+    // 8. 부정승차 알림 서버 시작
+    std::thread t6(run_fraud_notifier);
+    t6.detach();
+
+    // 9. 더미 부정승차 생성기 시작
+    std::thread t7(run_dummy_fraud_generator);
+    t7.detach();
+
+    // 10. 녹화 시작
     RTSPRecorder recorder(logger, g_running);
     recorder.run(); // 메인 스레드 블로킹
+  
+    // detach된 스레드들이 정리될 시간을 약간 줄 수 있음
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
     std::cout << "[System] 서버가 안전하게 종료되었습니다." << std::endl;
     return 0;

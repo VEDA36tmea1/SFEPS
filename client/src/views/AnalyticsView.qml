@@ -44,8 +44,40 @@ Page {
                     color: AppTheme.textPrimary
                     font: AppTheme.fontTitle
                 }
-                Item {
+            }
+
+            // Search Bar Area
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.topMargin: 16
+                Layout.leftMargin: 24
+                Layout.rightMargin: 24
+                
+                Rectangle {
                     Layout.fillWidth: true
+                    Layout.preferredHeight: 44
+                    color: AppTheme.surface
+                    radius: 8
+                    border.color: AppTheme.inputBorder
+                    border.width: 1
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.margins: 12
+                        spacing: 12
+                        Image {
+                            source: "qrc:/assets/search.svg"
+                            sourceSize: Qt.size(16, 16)
+                            opacity: 0.7
+                        }
+                        TextField {
+                            Layout.fillWidth: true
+                            placeholderText: "Search analytics data..."
+                            color: "white"
+                            background: Item {}
+                            font.pixelSize: 14
+                        }
+                    }
                 }
             }
 
@@ -306,10 +338,23 @@ Page {
                     anchors.margins: 20
                     spacing: 16
 
+                    Connections {
+                        target: fraudManager
+                        function onFraudDetected(cardId, ageGroup, gateId, estAge) {
+                            alertsModel.insert(0, {
+                                ts: Qt.formatDateTime(new Date(), "HH:mm:ss"),
+                                location: "Gate " + gateId,
+                                type: ageGroup.toUpperCase() + " CARD",
+                                confidence: cardId,
+                                action: "Footage"
+                            })
+                        }
+                    }
+
                     RowLayout {
                         Layout.fillWidth: true
                         Text {
-                            text: "Recent Evasion Alerts"
+                            text: "Recent Fraud Alerts"
                             color: "white"
                             font.bold: true
                             font.pixelSize: 16
@@ -341,25 +386,25 @@ Page {
                             Layout.preferredWidth: 80
                         }
                         Text {
-                            text: "GATE / LOCATION"
+                            text: "LOCATION"
                             color: AppTheme.textSecondary
                             font.pixelSize: 11
                             font.bold: true
-                            Layout.preferredWidth: 200
+                            Layout.preferredWidth: 150
                         }
                         Text {
-                            text: "TYPE"
+                            text: "CARD TYPE"
+                            color: AppTheme.textSecondary
+                            font.pixelSize: 11
+                            font.bold: true
+                            Layout.preferredWidth: 120
+                        }
+                        Text {
+                            text: "CARD ID"
                             color: AppTheme.textSecondary
                             font.pixelSize: 11
                             font.bold: true
                             Layout.preferredWidth: 100
-                        }
-                        Text {
-                            text: "CONFIDENCE"
-                            color: AppTheme.textSecondary
-                            font.pixelSize: 11
-                            font.bold: true
-                            Layout.preferredWidth: 80
                         }
                         Text {
                             text: "ACTION"
@@ -381,25 +426,12 @@ Page {
                         Layout.fillHeight: true
                         clip: true
                         model: ListModel {
+                            id: alertsModel
                             ListElement {
                                 ts: "14:23:05"
-                                location: "Terminal A - Gate 04"
-                                type: "TAILGATING"
-                                confidence: "98.2%"
-                                action: "Footage"
-                            }
-                            ListElement {
-                                ts: "14:21:58"
-                                location: "Terminal B - Gate 12"
-                                type: "JUMP OVER"
-                                confidence: "96.5%"
-                                action: "Footage"
-                            }
-                            ListElement {
-                                ts: "14:18:12"
-                                location: "Main Hub - North Gate"
-                                type: "FORCED ENTRY"
-                                confidence: "99.8%"
+                                location: "Gate 04"
+                                type: "SENIOR CARD"
+                                confidence: "CARD_8291"
                                 action: "Footage"
                             }
                         }
@@ -421,13 +453,13 @@ Page {
                                 Text {
                                     text: location
                                     color: "white"
-                                    Layout.preferredWidth: 200
+                                    Layout.preferredWidth: 150
                                     font.pixelSize: 13
                                 }
                                 Rectangle {
                                     radius: 4
-                                    color: type === "TAILGATING" ? "#9a3412" : (type === "JUMP OVER" ? "#92400e" : "#b45309")
-                                    Layout.preferredWidth: 100
+                                    color: "#9a3412"
+                                    Layout.preferredWidth: 120
                                     Layout.preferredHeight: 24
                                     RowLayout {
                                         anchors.centerIn: parent
@@ -442,7 +474,7 @@ Page {
                                 Text {
                                     text: confidence
                                     color: "white"
-                                    Layout.preferredWidth: 80
+                                    Layout.preferredWidth: 100
                                     font.pixelSize: 13
                                 }
                                 Button {
