@@ -29,7 +29,6 @@ bool DBManager::insertLog(std::string obj_id, std::string type, float x, float y
     if (!conn) return false;
 
     char query[512];
-    // SQL 쿼리 만들기: INSERT INTO 테이블명 VALUES (...)
     sprintf(query, 
         "INSERT INTO access_logs (object_id, obj_type, pos_x, pos_y, rtp_timestamp) VALUES ('%s', '%s', %.4f, %.4f, %u)", 
         obj_id.c_str(), type.c_str(), x, y, rtp);

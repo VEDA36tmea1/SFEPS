@@ -9,9 +9,13 @@ Page {
         color: AppTheme.background
     }
 
-    signal viewDetailRequest
+    signal viewDetailRequest(string cardId, string ageGroup, int gateId, int estAge)
 
-    // Main Layout: Left (Video + Controls) | Right (Events)
+    // Properties for live stats
+    property int alertsToday: 0
+    property real detectionRate: 94.2
+
+    // Main Layout...
     RowLayout {
         anchors.fill: parent
         anchors.margins: 24
@@ -180,7 +184,7 @@ Page {
                                 Layout.fillWidth: true
                             }
                             Text {
-                                text: "75%"
+                                text: Math.round(brightnessSlider.value) + "%"
                                 color: AppTheme.primaryOrange
                                 font.bold: true
                                 font.pixelSize: 11
@@ -236,13 +240,14 @@ Page {
                                 Layout.fillWidth: true
                             }
                             Text {
-                                text: "60%"
+                                text: Math.round(contrastSlider.value) + "%"
                                 color: AppTheme.primaryOrange
                                 font.bold: true
                                 font.pixelSize: 11
                             }
                         }
                         Slider {
+                            id: contrastSlider
                             Layout.fillWidth: true
                             from: 0
                             to: 100
@@ -341,68 +346,68 @@ Page {
 
         // RIGHT SECTION (SIDEBAR)
         Rectangle {
-            Layout.preferredWidth: 360
+            Layout.preferredWidth: 380 // Slightly wider matching drawer
             Layout.fillHeight: true
-            color: "transparent" // Matches parent bg, but sidebar usually has structure
+            color: AppTheme.surfaceCardAlt
+            border.color: AppTheme.borderCard
+            radius: 12
 
             ColumnLayout {
                 anchors.fill: parent
+                anchors.margins: 20
                 spacing: 16
 
                 // Header (Event Log + LIVE FEED)
                 RowLayout {
-                    Image {
-                        source: "qrc:/assets/List.svg"
-                        sourceSize.width: 24
-                        sourceSize.height: 24
+                    Layout.fillWidth: true
+                    spacing: 12
+                    Rectangle {
+                        width: 4; height: 24
+                        color: AppTheme.accent
+                        radius: 2
                     }
                     Text {
                         text: "Event Log"
                         color: "white"
                         font: AppTheme.fontHeader
                     }
-                    Item {
-                        Layout.fillWidth: true
-                    }
+                    Item { Layout.fillWidth: true }
                     Rectangle {
-                        color: AppTheme.accent
-                        width: 80
-                        height: 24
-                        radius: 4
+                        color: "#2d160a"
+                        border.color: AppTheme.accent
+                        width: 70; height: 22; radius: 4
                         Text {
                             anchors.centerIn: parent
                             text: "LIVE FEED"
-                            color: "white"
-                            font.bold: true
-                            font.pixelSize: 10
+                            color: AppTheme.accent
+                            font.bold: true; font.pixelSize: 9
                         }
                     }
                 }
 
-                // Search Box (Filter events...)
+                // Search Box
                 Rectangle {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 40
-                    color: AppTheme.inputBg
-                    radius: 4
-                    border.color: AppTheme.inputBorder
+                    Layout.preferredHeight: 38
+                    color: AppTheme.surfaceCardAlt
+                    radius: 6
+                    border.color: AppTheme.borderCard
 
                     RowLayout {
                         anchors.fill: parent
                         anchors.leftMargin: 12
-                        anchors.rightMargin: 12
-                        spacing: 8
+                        spacing: 10
                         Image {
                             source: "qrc:/assets/search.svg"
-                            sourceSize.width: 16
-                            sourceSize.height: 16
+                            sourceSize: Qt.size(16, 16)
+                            opacity: 0.7
                         }
                         TextField {
                             Layout.fillWidth: true
                             placeholderText: "Filter events..."
                             color: "white"
-                            background: null
                             font.pixelSize: 12
+                            background: null
                         }
                     }
                 }
@@ -427,8 +432,14 @@ Page {
                                 title: "Gate " + gateId + " - " + ageGroup.toUpperCase() + " CARD",
                                 camera: "Card ID: " + cardId + " (Est. Age: " + estAge + ")",
                                 timestamp: Qt.formatDateTime(new Date(), "HH:mm:ss"),
-                                confidence: "98.5%"
+                                confidence: "98.5%",
+                                // Raw data for DetailView
+                                cardId: cardId,
+                                ageGroup: ageGroup,
+                                gateId: gateId,
+                                estAge: estAge
                             })
+                            alertsToday++
                         }
                     }
 
@@ -508,13 +519,13 @@ Page {
                                         radius: 4
                                     }
                                     contentItem: Text {
-                                        text: "View Clip"
+                                        text: "Detail View"
                                         color: "white"
                                         font.pixelSize: 11
                                         horizontalAlignment: Text.AlignHCenter
                                         verticalAlignment: Text.AlignVCenter
                                     }
-                                    onClicked: viewDetailRequest()
+                                    onClicked: viewDetailRequest(cardId, ageGroup, gateId, estAge)
                                 }
 
                                 Button {
@@ -528,12 +539,13 @@ Page {
                                         border.width: 1
                                     }
                                     contentItem: Text {
-                                        text: "Acknowledge"
+                                        text: "delete"
                                         color: "white"
                                         font.pixelSize: 11
                                         horizontalAlignment: Text.AlignHCenter
                                         verticalAlignment: Text.AlignVCenter
                                     }
+                                    onClicked: monitoringEventModel.remove(index)
                                 }
                             }
 
@@ -579,7 +591,7 @@ Page {
                             Layout.alignment: Qt.AlignHCenter
                         }
                         Text {
-                            text: "94.2%"
+                            text: (94.0 + (alertsToday % 20) / 10.0).toFixed(1) + "%"
                             color: AppTheme.primaryOrange
                             font.bold: true
                             font.pixelSize: 20
@@ -598,7 +610,7 @@ Page {
                             Layout.alignment: Qt.AlignHCenter
                         }
                         Text {
-                            text: "128"
+                            text: alertsToday
                             color: "white"
                             font.bold: true
                             font.pixelSize: 20
