@@ -13,7 +13,7 @@ static std::string get_time_str() {
     return std::string(buf);
 }
 
-RTSPRecorder::RTSPRecorder(DBLogger& l, std::atomic<bool>& f) : logger(l), running_flag(f) {}
+RTSPRecorder::RTSPRecorder(DBLogger& l, std::atomic<bool>& f, AnalyticsProcessor& a) : logger(l), running_flag(f), analytics(a) {}
 RTSPRecorder::~RTSPRecorder() { cleanup(); }
 
 void RTSPRecorder::cleanup() {
@@ -127,9 +127,10 @@ bool RTSPRecorder::connect_and_record() {
 
                 av_interleaved_write_frame(output_ctx, &pkt);
             }
-        } else if (pkt.stream_index == meta_stream_idx) {
+            } else if (pkt.stream_index == meta_stream_idx) {
             std::string xml((char*)pkt.data, pkt.size);
-            if (xml.find("MetadataStream") != std::string::npos) logger.parseAndLogXML(xml.c_str());
+            // publish raw metadata to analytics processor (may contain multiple lines)
+            analytics.publishRaw(xml);
         }
         av_packet_unref(&pkt);
     }

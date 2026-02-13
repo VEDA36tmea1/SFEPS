@@ -8,6 +8,8 @@
 #include <thread>
 #include <chrono>
 #include <poll.h>
+#include <errno.h>
+#include "event_matcher.h"
 
 // 생성자: 멤버 변수 초기화
 RfidMonitor::RfidMonitor(std::atomic<bool>& running_flag,
@@ -52,12 +54,14 @@ std::string RfidMonitor::extract_json_value(const std::string& json, const std::
 
 // DB 저장 함수 (실제 DB 연결 로직은 여기에 구현)
 void RfidMonitor::save_to_db(const std::string& uid, const std::string& age_group, const std::string& time_str) {
-    // [TODO] DBLogger 클래스나 MySQL API를 사용하여 Insert 수행
-    // 예: db_logger->insertRfidLog(uid, age_group, time_str);
+    // 기존 DB 저장은 유지 가능하나, 여기서는 EventMatcher에 카드 정보를 전파
     std::cout << "[DB Save Request] UID: " << uid << ", Group: " << age_group << ", Time: " << time_str << std::endl;
+    // Notify matcher about RFID read (card_text is age_group or card info)
+    // Pass uid as card_id
+    EventMatcher::instance().on_rfid_read(uid, age_group, uid);
 }
 
-// 메인 루프 (재접속 + 데이터 수신)
+// 메인 루프 (poll 기반)
 void RfidMonitor::run_loop() {
     // 바깥 루프: 연결이 끊기면 다시 시도하는 역할
     while (m_running) {
@@ -81,34 +85,31 @@ void RfidMonitor::run_loop() {
 
         std::cout << ">> [RFID] 데몬 연결 성공! 데이터 수신 대기 중..." << std::endl;
 
-        // 2. 이벤트 기반 대기 (poll 사용)
-        // poll로 데이터가 들어올 때만 read를 수행합니다.
-        struct pollfd pfd;
-        pfd.fd = sock_fd;
-        pfd.events = POLLIN;
-
         char buffer[4096];
         std::string line_buffer;
 
-        // 안쪽 루프: 연결된 상태에서 이벤트 대기 후 데이터 읽기
+        // 안쪽 루프: 연결된 상태에서 poll로 데이터 대기
         while (m_running) {
-            // 1초 타임아웃으로 m_running 체크 주기 유지
-            int ret = poll(&pfd, 1, 1000);
-            if (ret < 0) {
-                if (errno == EINTR) continue;
-                perror("poll");
-                break;
-            } else if (ret == 0) {
-                // 타임아웃: 데이터 없음, 다시 루프하여 m_running 확인
-                continue;
-            }
+            struct pollfd pfd = {sock_fd, POLLIN, 0};
+            int poll_result = poll(&pfd, 1, 1000);  // 1000ms 타임아웃
 
-            if (pfd.revents & POLLIN) {
+            if (poll_result < 0) {
+                // poll() 에러
+                if (errno == EINTR) continue;  // 신호 재시도
+                perror("rc522 poll");
+                break;  // 안쪽 루프 탈출
+            } else if (poll_result == 0) {
+                // 타임아웃 - 데이터 없음, 루프 계속
+                continue;
+            } else if (pfd.revents & POLLIN) {
+                // 읽을 데이터 있음
                 ssize_t n = read(sock_fd, buffer, sizeof(buffer) - 1);
+
                 if (n > 0) {
                     buffer[n] = '\0';
                     line_buffer += buffer;
 
+                    // 줄바꿈(\n) 단위로 잘라서 처리 (NDJSON)
                     size_t pos;
                     while ((pos = line_buffer.find('\n')) != std::string::npos) {
                         std::string json_line = line_buffer.substr(0, pos);
@@ -127,16 +128,19 @@ void RfidMonitor::run_loop() {
                         }
                     }
                 } else if (n == 0) {
+                    // EOF: 데몬 연결 종료
                     std::cerr << ">> [RFID] 데몬 연결 끊김. 재접속 시도..." << std::endl;
-                    std::cerr << "[RFID DEBUG] read() returned 0 (EOF) from socket. Closing and will retry accept." << std::endl;
-                    break;
+                    break;  // 안쪽 루프 탈출
                 } else {
+                    // read() 에러
+                    if (errno == EINTR) continue;
                     perror("rc522 read");
-                    break;
+                    break;  // 안쪽 루프 탈출
                 }
-            } else if (pfd.revents & (POLLHUP | POLLERR)) {
-                std::cerr << ">> [RFID] socket hangup/error (revents=" << pfd.revents << "). Reconnecting..." << std::endl;
-                break;
+            } else if (pfd.revents & (POLLERR | POLLHUP)) {
+                // 소켓 에러 또는 hang up
+                std::cerr << ">> [RFID] 소켓 에러 (revents=" << pfd.revents << "). 재접속 시도..." << std::endl;
+                break;  // 안쪽 루프 탈출
             }
         } // 안쪽 while 끝
 
