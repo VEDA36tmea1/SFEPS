@@ -208,7 +208,8 @@ int main() {
         return -1;
     }
 
-    AnalyticsProcessor analytics(DB_HOST, DB_USER, DB_PASS, DB_NAME, 3840, 2160);
+    // AnalyticsProcessor: analytics_logs는 CCgbd DB에 있음
+    AnalyticsProcessor analytics(DB_HOST, DB_USER, DB_PASS, "CCgbd", 3840, 2160);
     if (!analytics.start()) {
         std::cerr << "[Fatal] Analytics DB connection failed." << std::endl;
         return -1;

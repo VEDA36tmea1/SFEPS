@@ -7,6 +7,8 @@
 #include <ctime>
 #include <thread>
 #include <chrono>
+#include <poll.h>
+#include <errno.h>
 #include "event_matcher.h"
 
 // 생성자: 멤버 변수 초기화
@@ -59,7 +61,7 @@ void RfidMonitor::save_to_db(const std::string& uid, const std::string& age_grou
     EventMatcher::instance().on_rfid_read(uid, age_group, uid);
 }
 
-// 메인 루프 (재접속 + 데이터 수신)
+// 메인 루프 (poll 기반)
 void RfidMonitor::run_loop() {
     // 바깥 루프: 연결이 끊기면 다시 시도하는 역할
     while (m_running) {
@@ -83,52 +85,62 @@ void RfidMonitor::run_loop() {
 
         std::cout << ">> [RFID] 데몬 연결 성공! 데이터 수신 대기 중..." << std::endl;
 
-        // 2. 타임아웃 설정 (Ctrl+C 즉각 반응을 위해 중요)
-        // read 함수가 데이터가 없어도 1초마다 풀려나게 함
-        struct timeval tv;
-        tv.tv_sec = 1;
-        tv.tv_usec = 0;
-        setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
-
         char buffer[4096];
         std::string line_buffer;
 
-        // 안쪽 루프: 연결된 상태에서 데이터 읽기
+        // 안쪽 루프: 연결된 상태에서 poll로 데이터 대기
         while (m_running) {
-            ssize_t n = read(sock_fd, buffer, sizeof(buffer) - 1);
+            struct pollfd pfd = {sock_fd, POLLIN, 0};
+            int poll_result = poll(&pfd, 1, 1000);  // 1000ms 타임아웃
 
-            if (n > 0) {
-                // [데이터 수신]
-                buffer[n] = '\0';
-                line_buffer += buffer;
+            if (poll_result < 0) {
+                // poll() 에러
+                if (errno == EINTR) continue;  // 신호 재시도
+                perror("rc522 poll");
+                break;  // 안쪽 루프 탈출
+            } else if (poll_result == 0) {
+                // 타임아웃 - 데이터 없음, 루프 계속
+                continue;
+            } else if (pfd.revents & POLLIN) {
+                // 읽을 데이터 있음
+                ssize_t n = read(sock_fd, buffer, sizeof(buffer) - 1);
 
-                // 줄바꿈(\n) 단위로 잘라서 처리 (NDJSON)
-                size_t pos;
-                while ((pos = line_buffer.find('\n')) != std::string::npos) {
-                    std::string json_line = line_buffer.substr(0, pos);
-                    line_buffer.erase(0, pos + 1);
-                    if (json_line.empty()) continue;
+                if (n > 0) {
+                    buffer[n] = '\0';
+                    line_buffer += buffer;
 
-                    try {
-                        std::string uid = extract_json_value(json_line, "id");
-                        std::string age_group = extract_json_value(json_line, "text");
-                        std::string now = get_current_datetime();
+                    // 줄바꿈(\n) 단위로 잘라서 처리 (NDJSON)
+                    size_t pos;
+                    while ((pos = line_buffer.find('\n')) != std::string::npos) {
+                        std::string json_line = line_buffer.substr(0, pos);
+                        line_buffer.erase(0, pos + 1);
+                        if (json_line.empty()) continue;
 
-                        std::cout << ">>> [RFID Tag] UID: " << uid << " (" << age_group << ") Time: " << now << std::endl;
-                        save_to_db(uid, age_group, now);
-                    } catch (...) {
-                        std::cerr << "[RFID] Parse Error" << std::endl;
+                        try {
+                            std::string uid = extract_json_value(json_line, "id");
+                            std::string age_group = extract_json_value(json_line, "text");
+                            std::string now = get_current_datetime();
+
+                            std::cout << ">>> [RFID Tag] UID: " << uid << " (" << age_group << ") Time: " << now << std::endl;
+                            save_to_db(uid, age_group, now);
+                        } catch (...) {
+                            std::cerr << "[RFID] Parse Error" << std::endl;
+                        }
                     }
+                } else if (n == 0) {
+                    // EOF: 데몬 연결 종료
+                    std::cerr << ">> [RFID] 데몬 연결 끊김. 재접속 시도..." << std::endl;
+                    break;  // 안쪽 루프 탈출
+                } else {
+                    // read() 에러
+                    if (errno == EINTR) continue;
+                    perror("rc522 read");
+                    break;  // 안쪽 루프 탈출
                 }
-            } else if (n == -1 && !(errno == EAGAIN || errno == EWOULDBLOCK)) {
-                // [에러 발생]
-                perror("rc522 read");
-                break; // 안쪽 루프 탈출
-            } else { // n == 0
-                // [연결 종료] 데몬이 꺼짐
-                std::cerr << ">> [RFID] 데몬 연결 끊김. 재접속 시도..." << std::endl;
-                std::cerr << "[RFID DEBUG] read() returned 0 (EOF) from socket. Closing and will retry accept." << std::endl;
-                break; // 안쪽 루프 탈출
+            } else if (pfd.revents & (POLLERR | POLLHUP)) {
+                // 소켓 에러 또는 hang up
+                std::cerr << ">> [RFID] 소켓 에러 (revents=" << pfd.revents << "). 재접속 시도..." << std::endl;
+                break;  // 안쪽 루프 탈출
             }
         } // 안쪽 while 끝
 

@@ -9,6 +9,7 @@
 #include <iomanip>
 #include <cstring>
 #include <random>
+#include <ctime>
 #include "../../Camera/get_metadata/inc/Config.h"
 #include <unordered_map>
 
@@ -97,6 +98,15 @@ void AnalyticsProcessor::processLine(const std::string& rawLine) {
 
     if (type.empty()) type = "Unknown";
     if (event_str.empty()) event_str = "Detected";
+    
+    // If time_str is empty, use current time
+    if (time_str.empty()) {
+        time_t now = std::time(nullptr);
+        struct tm* timeinfo = std::localtime(&now);
+        char buf[80];
+        std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", timeinfo);
+        time_str = std::string(buf);
+    }
 
     // detect first/second and perform matching (no printing)
     static std::unordered_map<std::string, unsigned int> gate_last_pass_time;
