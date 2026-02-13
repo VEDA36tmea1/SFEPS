@@ -12,6 +12,7 @@
 #include <ctime>
 #include "../../Camera/get_metadata/inc/Config.h"
 #include <unordered_map>
+#include <queue>
 
 AnalyticsProcessor::AnalyticsProcessor(const char* h, const char* u, const char* p, const char* d, int cam_w_, int cam_h_)
     : host(h), user(u), pass(p), db(d), cam_w(cam_w_), cam_h(cam_h_), conn(nullptr), running(false) {}
@@ -41,17 +42,115 @@ void AnalyticsProcessor::stop() {
 }
 
 void AnalyticsProcessor::publishRaw(const std::string& raw) {
-    {
-        std::lock_guard<std::mutex> lock(mtx);
-        q.push(raw);
+    // XML 메타데이터: first/second 이벤트만 추출해서 전달
+    if (raw.find("<wsnt:NotificationMessage") != std::string::npos) {
+        std::vector<std::string> extracted;
+        const std::string open_msg = "<wsnt:NotificationMessage";
+        const std::string close_msg = "</wsnt:NotificationMessage>";
+        size_t pos = 0;
+
+        auto extract_value = [](const std::string& block, const std::string& key, std::string& out) {
+            const std::string name_key = "Name=\"" + key + "\"";
+            size_t name_pos = block.find(name_key);
+            if (name_pos == std::string::npos) return false;
+            size_t val_pos = block.find("Value=\"", name_pos);
+            if (val_pos == std::string::npos) return false;
+            size_t start = val_pos + 7;
+            size_t end = block.find("\"", start);
+            if (end == std::string::npos) return false;
+            out = block.substr(start, end - start);
+            return true;
+        };
+
+        auto lower_copy = [](std::string s) {
+            std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+            return s;
+        };
+
+        time_t now = std::time(nullptr);
+        std::tm* tm = std::localtime(&now);
+        char tbuf[80];
+        std::strftime(tbuf, sizeof(tbuf), "%Y-%m-%d %H:%M:%S", tm);
+        std::string now_str(tbuf);
+
+        while (true) {
+            size_t msg_start = raw.find(open_msg, pos);
+            if (msg_start == std::string::npos) break;
+
+            size_t msg_end = raw.find(close_msg, msg_start);
+            if (msg_end == std::string::npos) break;
+
+            std::string block = raw.substr(msg_start, msg_end - msg_start);
+            std::string rule_name, state, obj_id;
+
+            if (!extract_value(block, "RuleName", rule_name)) {
+                pos = msg_end + close_msg.size();
+                continue;
+            }
+
+            extract_value(block, "State", state);
+            if (!(state == "true" || state == "1")) {
+                pos = msg_end + close_msg.size();
+                continue;
+            }
+
+            std::string lower_rule = lower_copy(rule_name);
+            if (lower_rule.find("first") == std::string::npos && lower_rule.find("second") == std::string::npos) {
+                pos = msg_end + close_msg.size();
+                continue;
+            }
+
+            if (!extract_value(block, "ObjectId", obj_id)) obj_id = "None";
+            extracted.push_back("[EVENT] " + rule_name + " Active | ID: " + obj_id + " | Time: " + now_str);
+
+            pos = msg_end + close_msg.size();
+        }
+
+        if (extracted.empty()) return;
+
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            for (auto& item : extracted) q.push(item);
+        }
+        cv.notify_one();
+        return;
     }
-    cv.notify_one();
+
+    // 다른(non-XML) 라인은 analytics 처리 대상이 아님
+    return;
+}
+
+static inline unsigned int parse_time_to_epoch_seconds(const std::string& s) {
+    if (s.empty()) {
+        return static_cast<unsigned int>(std::time(nullptr));
+    }
+    std::tm tm{};
+    std::istringstream ss(s);
+    ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
+    if (ss.fail()) {
+        return static_cast<unsigned int>(std::time(nullptr));
+    }
+    tm.tm_isdst = -1;
+    std::time_t t = std::mktime(&tm);
+    if (t < 0) return static_cast<unsigned int>(std::time(nullptr));
+    return static_cast<unsigned int>(t);
 }
 
 static inline std::string trim(const std::string &s) {
     size_t a = 0; while (a < s.size() && std::isspace((unsigned char)s[a])) ++a;
     size_t b = s.size(); while (b > a && std::isspace((unsigned char)s[b-1])) --b;
     return s.substr(a, b - a);
+}
+
+static inline std::string to_lower_copy(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+    return s;
+}
+
+static inline bool is_first_or_second_event(const std::string& event_str) {
+    if (event_str.empty()) return false;
+    const std::string lower = to_lower_copy(event_str);
+    return lower.find("first") != std::string::npos || lower.find("second") != std::string::npos;
 }
 
 void AnalyticsProcessor::processLine(const std::string& rawLine) {
@@ -98,6 +197,12 @@ void AnalyticsProcessor::processLine(const std::string& rawLine) {
 
     if (type.empty()) type = "Unknown";
     if (event_str.empty()) event_str = "Detected";
+
+    // [Filter] first/second 이벤트만 처리
+    if (tag != "EVENT") return;
+    if (!is_first_or_second_event(event_str)) {
+        return;
+    }
     
     // If time_str is empty, use current time
     if (time_str.empty()) {
@@ -108,9 +213,10 @@ void AnalyticsProcessor::processLine(const std::string& rawLine) {
         time_str = std::string(buf);
     }
 
-    // detect first/second and perform matching (no printing)
+    // detect first/second and perform matching (with 로그 출력만 노출)
     static std::unordered_map<std::string, unsigned int> gate_last_pass_time;
-    std::string lower_event = event_str; std::transform(lower_event.begin(), lower_event.end(), lower_event.begin(), ::tolower);
+    unsigned int event_ts = parse_time_to_epoch_seconds(time_str);
+    std::string lower_event = to_lower_copy(event_str);
     size_t p_first = lower_event.find("first");
     size_t p_second = lower_event.find("second");
     if (p_first != std::string::npos) {
@@ -123,8 +229,29 @@ void AnalyticsProcessor::processLine(const std::string& rawLine) {
         std::string assigned = ages[dist(rng)];
         // Pass gate_id (extracted from gate string like "Gate3") and est_age
         EventMatcher::instance().register_first(gate, id.empty()?"":id, assigned, gate, estimated_age);
-        // update gate last pass time
-        gate_last_pass_time[event_str] = 0; // or use timestamp if available
+        // 로그 출력 정책: 짧은 간격이면 TAILGATING, 아니면 EVENT
+        unsigned int& prev_ts = gate_last_pass_time[event_str];
+        if (prev_ts != 0 && event_ts >= prev_ts) {
+            float diff_sec = static_cast<float>(event_ts - prev_ts);
+            float tailgate_sec = static_cast<float>(TAILGATE_LIMIT) / 90000.0f;
+            if (diff_sec < tailgate_sec) {
+                std::cout << "🚨 [TAILGATING] " << event_str
+                          << " | ID: " << id
+                          << " | RTP: " << (prev_ts * 90000) 
+                          << " | Gap: " << diff_sec << "s" << std::endl;
+            } else {
+                std::cout << "✅ [EVENT] " << event_str
+                          << " Active | ID: " << id
+                          << " | RTP: " << (event_ts * 90000)
+                          << " | Time: " << time_str << std::endl;
+            }
+        } else {
+            std::cout << "✅ [EVENT] " << event_str
+                      << " Active | ID: " << id
+                      << " | RTP: " << (event_ts * 90000)
+                      << " | Time: " << time_str << std::endl;
+        }
+        prev_ts = event_ts;
     }
     if (p_second != std::string::npos) {
         std::string gate = event_str.substr(0, p_second);
@@ -134,8 +261,29 @@ void AnalyticsProcessor::processLine(const std::string& rawLine) {
         if (mismatch) {
             // out_msg already sent by EventMatcher via alert
         }
-        // update last pass time
-        gate_last_pass_time[event_str] = 0;
+        unsigned int& prev_ts = gate_last_pass_time[event_str];
+        unsigned int& prev_second_ts = gate_last_pass_time[event_str];
+        if (prev_second_ts != 0 && event_ts >= prev_second_ts) {
+            float diff_sec = static_cast<float>(event_ts - prev_second_ts);
+            float tailgate_sec = static_cast<float>(TAILGATE_LIMIT) / 90000.0f;
+            if (diff_sec < tailgate_sec) {
+                std::cout << "🚨 [TAILGATING] " << event_str
+                          << " | ID: " << id
+                          << " | RTP: " << (prev_second_ts * 90000)
+                          << " | Gap: " << diff_sec << "s" << std::endl;
+            } else {
+                std::cout << "✅ [EVENT] " << event_str
+                          << " Active | ID: " << id
+                          << " | RTP: " << (event_ts * 90000)
+                          << " | Time: " << time_str << std::endl;
+            }
+        } else {
+            std::cout << "✅ [EVENT] " << event_str
+                      << " Active | ID: " << id
+                      << " | RTP: " << (event_ts * 90000)
+                      << " | Time: " << time_str << std::endl;
+        }
+        prev_second_ts = event_ts;
     }
 
     // store to analytics_logs table

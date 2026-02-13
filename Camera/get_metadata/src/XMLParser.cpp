@@ -2,6 +2,8 @@
 #include "Config.h"
 #include <iostream>
 #include <time.h>
+#include <algorithm>
+#include <cctype>
 
 std::string XMLParser::get_current_time_str() {
     time_t now = time(0);
@@ -59,25 +61,18 @@ void XMLParser::parseAndProcess(std::string& accumulated_xml, unsigned int last_
                 }
             }
 
-            if (x != -1 && y != -1) {
-                if(obj_type == "Human") {                    
-                    // 1. 처음 보는 ID인지 확인
-                    bool is_new_id = (log_timer_map.find(obj_id) == log_timer_map.end());
-
-                    // 2. 출력 조건: 처음 보거나, 혹은 마지막 출력 후 일정 시간이 지났거나
-                    if (is_new_id || (last_timestamp - log_timer_map[obj_id] > LOG_THROTTLE)) {
-                        
-                        std::string prefix = is_new_id ? "✨ [NEW]" : "🎯 [OBJ]";
-
-                        std::cout << prefix << " ID: " << obj_id 
-                                << " | Type: " << obj_type 
-                                << " | Pos: (" << x << ", " << y << ")" 
-                                << " | RTP: " << last_timestamp 
-                                << " | Time: " << get_current_time_str() << std::endl;
-
-                        // 마지막 출력 시간 업데이트
-                        log_timer_map[obj_id] = last_timestamp;
-                    }
+            // 기본 동작: 객체 디버그 로그 비활성 (필요 시 true로 바꿔 사용)
+            constexpr bool k_enable_object_log = false;
+            if (k_enable_object_log && x != -1 && y != -1 && obj_type == "Human") {
+                bool is_new_id = (log_timer_map.find(obj_id) == log_timer_map.end());
+                if (is_new_id || (last_timestamp - log_timer_map[obj_id] > LOG_THROTTLE)) {
+                    std::string prefix = is_new_id ? "✨ [NEW]" : "🎯 [OBJ]";
+                    std::cout << prefix << " ID: " << obj_id 
+                              << " | Type: " << obj_type 
+                              << " | Pos: (" << x << ", " << y << ")" 
+                              << " | RTP: " << last_timestamp 
+                              << " | Time: " << get_current_time_str() << std::endl;
+                    log_timer_map[obj_id] = last_timestamp;
                 }
             }
             search_pos = obj_start + 1;
@@ -133,8 +128,13 @@ void XMLParser::parseAndProcess(std::string& accumulated_xml, unsigned int last_
                 }
             }
 
-            // 4. 결과 출력
-            if (rule_name != "Unknown" && is_active) {
+            // 4. 결과 출력: first/second 이벤트만 출력
+            std::string rule_name_lower = rule_name;
+            std::transform(rule_name_lower.begin(), rule_name_lower.end(), rule_name_lower.begin(), [](unsigned char c){ return std::tolower(c); });
+            bool is_target_event = (rule_name_lower.find("first") != std::string::npos ||
+                                    rule_name_lower.find("second") != std::string::npos);
+
+            if (rule_name != "Unknown" && is_active && is_target_event) {
                 unsigned int time_diff = last_timestamp - gate_last_pass_time[rule_name];
                 
                 if (time_diff < TAILGATE_LIMIT && gate_last_pass_time[rule_name] != 0) {

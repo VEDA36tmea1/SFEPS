@@ -4,6 +4,9 @@
 #include <string>
 #include <mutex>
 #include <unordered_map>
+#include <deque>
+#include <ctime>
+#include <cstdint>
 
 class EventMatcher {
 public:
@@ -25,15 +28,19 @@ private:
         std::string event_id; 
         std::string assigned_age; 
         bool card_read=false; 
+        bool checked=false;
+        bool fraud=false;
         std::string card_text; 
         std::string card_id;
         std::string card_age_group;
         std::string gate_id;
         int est_age=0;
+        std::uint64_t seq = 0;
         time_t ts; 
     };
     std::mutex mtx;
-    std::unordered_map<std::string, Pending> pending; // keyed by gate
+    std::unordered_map<std::string, std::deque<Pending>> pending; // keyed by gate
+    std::uint64_t seq_counter = 0;
 };
 
 #endif
