@@ -206,6 +206,9 @@ Window {
                                         color: "white"
                                         background: Item {}
                                         font.pixelSize: 13
+                                        focus: true
+                                        KeyNavigation.tab: passField
+                                        onAccepted: passField.forceActiveFocus()
                                     }
                                 }
                             }
@@ -264,6 +267,8 @@ Window {
                                         color: "white"
                                         background: Item {}
                                         font.pixelSize: 13
+                                        KeyNavigation.tab: loginBtn
+                                        onAccepted: loginBtn.clicked()
                                     }
                                     Button {
                                         id: showPass
@@ -315,8 +320,14 @@ Window {
                         }
 
                         Button {
+                            id: loginBtn
                             Layout.fillWidth: true
                             Layout.preferredHeight: 44
+                            activeFocusOnTab: true
+                            
+                            Keys.onReturnPressed: clicked()
+                            Keys.onEnterPressed: clicked()
+
                             contentItem: RowLayout {
                                 anchors.centerIn: parent
                                 spacing: 8
@@ -337,8 +348,10 @@ Window {
                                 Item { Layout.fillWidth: true }
                             }
                             background: Rectangle {
-                                color: parent.hovered ? "#6e3512" : "#9c4a1b"
+                                color: parent.hovered || parent.activeFocus ? "#6e3512" : "#9c4a1b"
                                 radius: 8
+                                border.color: parent.activeFocus ? "white" : "transparent"
+                                border.width: 2
                             }
                             onClicked: {
                                 errorText.visible = false;

@@ -29,6 +29,8 @@ void AuthManager::login(const QString &id, const QString &pw)
     }
 
     if (authenticated) {
+        m_currentUserId = id;
+        emit currentUserIdChanged();
         emit loginSuccess();
     } else {
         emit loginFailed("ID/PW를 확인하세요");
