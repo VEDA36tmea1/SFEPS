@@ -31,7 +31,7 @@ void XMLParser::parseAndProcess(std::string& accumulated_xml, unsigned int last_
                 obj_id = accumulated_xml.substr(start, end - start);
             }
 
-            // ★ 타입 추출 (Human, Face, Vehicle 등)
+            // 타입 추출
             std::string obj_type = "Unknown";
             size_t type_pos = accumulated_xml.find("<tt:Type>", obj_start);
             size_t next_obj = accumulated_xml.find("<tt:Object", obj_start + 1);
@@ -67,7 +67,6 @@ void XMLParser::parseAndProcess(std::string& accumulated_xml, unsigned int last_
                     // 2. 출력 조건: 처음 보거나, 혹은 마지막 출력 후 일정 시간이 지났거나
                     if (is_new_id || (last_timestamp - log_timer_map[obj_id] > LOG_THROTTLE)) {
                         
-                        // 첫 인지일 때만 특별한 표시를 해주면 구분이 쉽습니다.
                         std::string prefix = is_new_id ? "✨ [NEW]" : "🎯 [OBJ]";
 
                         std::cout << prefix << " ID: " << obj_id 
@@ -122,7 +121,7 @@ void XMLParser::parseAndProcess(std::string& accumulated_xml, unsigned int last_
                 }
             }
 
-            // 3. ★ ObjectId 추출 (누가 넘었나?)
+            // 3. ObjectId 추출
             std::string triggered_id = "None";
             size_t id_item_pos = message_block.find("Name=\"ObjectId\"");
             if (id_item_pos != std::string::npos) {
@@ -141,7 +140,7 @@ void XMLParser::parseAndProcess(std::string& accumulated_xml, unsigned int last_
                 if (time_diff < TAILGATE_LIMIT && gate_last_pass_time[rule_name] != 0) {
                     float diff_sec = (float)time_diff / 90000.0f;
                     std::cout << "🚨 [TAILGATING] " << rule_name 
-                              << " | Trigger ID: " << triggered_id  // 누가 꼬리물기 했는지 표시
+                              << " | Trigger ID: " << triggered_id
                               << " | RTP: " << last_timestamp 
                               << " | Gap: " << diff_sec << "s" << std::endl;
                 } else {
