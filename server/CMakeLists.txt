@@ -18,9 +18,12 @@ add_executable(smart_server
     src/main.cpp 
     src/log.cpp
     src/recorder.cpp
+    src/analytics.cpp
     src/cleanup.cpp
     src/auth.cpp
     src/rfid_monitor.cpp
+    src/alert.cpp
+    src/event_matcher.cpp
 )
 
 # 4. 헤더 경로

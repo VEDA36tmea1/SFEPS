@@ -14,6 +14,7 @@
 #include "cleanup.h" 
 #include "auth.h"
 #include "rfid_monitor.h" // [NEW] RFID 모니터링 헤더 추가
+#include "analytics.h"
 
 namespace fs = std::filesystem;
 
@@ -200,10 +201,16 @@ int main() {
     // 2. 디렉토리 생성
     if (!fs::exists(VIDEO_SAVE_DIR)) fs::create_directories(VIDEO_SAVE_DIR);
 
-    // 3. DB 연결
+    // 3. DB 연결 (logger) 및 AnalyticsProcessor 시작
     DBLogger logger;
     if (!logger.connect()) {
         std::cerr << "[Fatal] DB Connection failed." << std::endl;
+        return -1;
+    }
+
+    AnalyticsProcessor analytics(DB_HOST, DB_USER, DB_PASS, DB_NAME, 3840, 2160);
+    if (!analytics.start()) {
+        std::cerr << "[Fatal] Analytics DB connection failed." << std::endl;
         return -1;
     }
 
@@ -243,12 +250,12 @@ int main() {
     std::thread t6(run_fraud_notifier);
     t6.detach();
 
-    // 9. 더미 부정승차 생성기 시작
-    std::thread t7(run_dummy_fraud_generator);
-    t7.detach();
+    // // 9. 더미 부정승차 생성기 시작
+    // std::thread t7(run_dummy_fraud_generator);
+    // t7.detach();
 
     // 10. 녹화 시작
-    RTSPRecorder recorder(logger, g_running);
+    RTSPRecorder recorder(logger, g_running, analytics);
     recorder.run(); // 메인 스레드 블로킹
   
     // detach된 스레드들이 정리될 시간을 약간 줄 수 있음

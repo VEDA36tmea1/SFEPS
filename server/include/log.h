@@ -8,22 +8,29 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
-#include <tinyxml2.h> // XML 파싱 라이브러리
+#include <tinyxml2.h> 
 
-// 로그 종류 구분
 enum LogType { SYSTEM_LOG, LOGIN_LOG, ANALYTICS_LOG, RECORDING_LOG, CLEANUP_DB_LOG };
 
-// 큐에 담을 데이터 구조체
 struct LogItem {
     LogType type;
     
-    // 공통 데이터 (message, details, username 등)
-    std::string str1;
-    std::string str2;
+    // [공통 데이터] (시스템 로그 메시지, 로그인 ID 등)
+    std::string str1; 
+    std::string str2; 
     
-    // 분석/로그인 전용 데이터
-    std::string time_str;   // frame_time
-    float value;            // confidence 또는 login_status
+    // [분석 로그 전용 데이터]
+    std::string time_str;   // frame_time (사건 발생 시간)
+    
+    // ★ [수정됨] 기존 value(confidence) 삭제 -> 좌표, 이벤트, 나이, 사진경로 추가
+    float x = 0;              // X 좌표
+    float y = 0;              // Y 좌표
+    std::string event;      // 감지 이벤트 (예: intrusion)
+    int age = 0;            // 추정 나이
+    std::string photo_path; // 저장된 사진 경로
+    
+    // 로그인 로그용 (성공/실패 여부) - value 대신 별도 변수 혹은 int 재활용 가능하지만 명시적으로 둠
+    bool login_success = false; 
 };
 
 class DBLogger {
@@ -31,46 +38,52 @@ public:
     DBLogger(const char* db = "CCgbd");
     ~DBLogger();
     
-    // DB 연결
     bool connect();
     
-    // 1. 일반 시스템 로그 저장
+    // 1. 일반 시스템 로그
     void enqueue(const std::string& type, const std::string& message);
 
-    // 2. 로그인 기록 저장
+    // 2. 로그인 기록
     void enqueueLogin(const std::string& username, const std::string& ip, bool success);
 
-    // 3. 분석 데이터 저장 (내부적으로 사용됨)
-    void enqueueAnalytics(const std::string& time, const std::string& objType, float conf, const std::string& details);
+    // 3. ★ [수정됨] 분석 데이터 저장 함수 (인자 대폭 변경)
+    // (기존: time, objType, conf, details) -> (신규: time, objType, x, y, event, age, photoPath)
+    void enqueueAnalytics(const std::string& time, 
+                          const std::string& objType, 
+                          float x, float y, 
+                          const std::string& event, 
+                          int age, 
+                          const std::string& photoPath);
     
-    // [핵심] XML 문자열을 받아서 파싱 후 DB에 저장하는 함수
+    // XML 파싱 후 저장 (이 함수 내부 구현도 .cpp에서 수정 필요)
     void parseAndLogXML(const char* xmlData);
 
-    // 4. [신규] 녹화 파일 기록 함수
+    // 4. 녹화 파일 기록
     void enqueueRecording(const std::string& filename);
 
-    // [신규] DB 용량 관리(청소) 요청 함수
+    // DB 청소
     void requestDbCleanup();
 
-
 private:
-    void processQueue(); // 백그라운드 일꾼 스레드
+    void processQueue(); 
 
     MYSQL* conn;
     
-    // ▼▼▼ 본인 DB 설정에 맞게 수정 필수 ▼▼▼
+    // ▼ 사용자 환경에 맞게 유지 ▼
     const char* host = "192.168.0.92";
     const char* user = "pi";
-    const char* pass = "raspberry";     // 비밀번호
-    const char* db_name = "CCgbd"; // DB 이름 (sfeps_db로 바꿨으면 수정)
+    const char* pass = "raspberry"; 
+    const char* db_name = "CCgbd"; 
 
-    // 스레드 관련 변수
+    // Camera resolution (can be overridden by environment variables)
+    int cam_width = 3840;   // default 4K width
+    int cam_height = 2160;  // default 4K height
+
     std::queue<LogItem> logQueue;
     std::mutex queueMutex;
     std::condition_variable cv;
     std::thread workerThread;
     std::atomic<bool> isRunning;
 };
-
 
 #endif
