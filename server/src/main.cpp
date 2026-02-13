@@ -88,15 +88,30 @@ void run_fraud_notifier() {
     int opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     struct sockaddr_in addr = {AF_INET, htons(ALERT_PORT), {INADDR_ANY}};
-    bind(server_fd, (struct sockaddr *)&addr, sizeof(addr));
-    listen(server_fd, 5);
+    if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        std::cerr << "[Alert] bind() failed: " << strerror(errno) << std::endl;
+        return;
+    }
+
+    if (listen(server_fd, 5) < 0) {
+        std::cerr << "[Alert] listen() failed: " << strerror(errno) << std::endl;
+        return;
+    }
+
+    std::cout << "[Alert] Alert server listening on port " << ALERT_PORT << "..." << std::endl;
 
     while (true) {
-        int client_fd = accept(server_fd, NULL, NULL);
+        sockaddr_in peer_addr {};
+        socklen_t peer_len = sizeof(peer_addr);
+        int client_fd = accept(server_fd, reinterpret_cast<sockaddr*>(&peer_addr), &peer_len);
         if (client_fd >= 0) {
             std::lock_guard<std::mutex> lock(g_sockets_mutex);
             g_client_sockets.push_back(client_fd);
-            std::cout << "[Alert] Client connected for fraud notifications." << std::endl;
+            std::cout << "[Alert] Client connected for fraud notifications: "
+                      << inet_ntoa(peer_addr.sin_addr) << ":" << ntohs(peer_addr.sin_port) << " (fd=" << client_fd << ")"
+                      << std::endl;
+        } else {
+            std::cerr << "[Alert] accept() failed: " << strerror(errno) << std::endl;
         }
     }
 }
