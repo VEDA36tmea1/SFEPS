@@ -54,7 +54,7 @@ void VoiceManager::stopAndSendData()
 
     // 서버로 전송 (포트 5556)
     m_socket->abort();
-    m_socket->connectToHost("192.168.0.89", 5556);
+    m_socket->connectToHost("192.168.0.92", 5556);
 
     if (m_socket->waitForConnected(3000)) {
         qDebug() << "Sending audio data to server...";
