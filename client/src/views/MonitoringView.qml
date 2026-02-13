@@ -9,7 +9,7 @@ Page {
         color: AppTheme.background
     }
 
-    signal viewDetailRequest(string cardId, string ageGroup, int gateId, int estAge)
+    signal viewDetailRequest(string cardId, string ageGroup, string gateId, int estAge)
 
     // Properties for live stats
     property int alertsToday: 0
@@ -429,7 +429,7 @@ Page {
                             monitoringEventModel.insert(0, {
                                 eventId: cardId,
                                 eventType: "FARE EVASION DETECTED",
-                                title: "Gate " + gateId + " - " + ageGroup.toUpperCase() + " CARD",
+                                title: ((gateId.toString().indexOf("Gate") !== -1 || gateId.toString().indexOf("gate") !== -1) ? gateId : "Gate " + gateId) + " - " + ageGroup.toUpperCase() + " CARD",
                                 camera: "Card ID: " + cardId + " (Est. Age: " + estAge + ")",
                                 timestamp: Qt.formatDateTime(new Date(), "HH:mm:ss"),
                                 confidence: "98.5%",
