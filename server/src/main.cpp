@@ -15,6 +15,7 @@
 #include "auth.h"
 #include "rfid_monitor.h" // [NEW] RFID 모니터링 헤더 추가
 #include "analytics.h"
+#include "alert.h"
 
 namespace fs = std::filesystem;
 
@@ -189,6 +190,11 @@ void run_login_auth() {
               
             // 검증 결과 전송
             send(client_fd, success ? "PASS" : "FAIL", 4, 0);
+            if (success) {
+                const std::string msg = "TEST|LOGIN_OK|" + user + "\n";
+                send_alert_to_clients(msg);
+                std::cout << "[Auth] login success ping sent: " << msg << std::endl;
+            }
 
             // [로그 기록] 새로 만든 login_logs 테이블에 기록
             // 사용자의 IP 주소를 가져오기 위해 sockaddr_in 정보를 같이 활용할 수도 있으나,
@@ -208,8 +214,17 @@ void signal_handler(int signum) {
     g_running = false; // 루프를 멈추게 함 -> 자연스럽게 저장 로직 실행됨
 }
 
+//1회테스트
+int main(int argc, char* argv[]) {
+    bool send_test_ping = false;
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--ping-2s" || arg == "--test-ping") {
+            send_test_ping = true;
+        }
+    }
 
-int main() {
+
     // 1. 종료 신호(SIGINT) 등록
     signal(SIGINT, signal_handler);
 
@@ -265,6 +280,23 @@ int main() {
     // 8. 부정승차 알림 서버 시작
     std::thread t6(run_fraud_notifier);
     t6.detach();
+
+    //1회 신호
+    std::thread t7;
+    if (send_test_ping) {
+        t7 = std::thread([&]() {
+            int seq = 0;
+            while (g_running) {
+                const std::string msg = "TEST|PING|" + std::to_string(seq++);
+                send_test_alert_to_clients(msg);
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+            }
+            std::cout << "[Alert] Test ping thread stopped." << std::endl;
+        });
+        t7.detach();
+        std::cout << "[System] Test ping enabled: send TEST to clients every 2 sec." << std::endl;
+    }
+
 
     // // 9. 더미 부정승차 생성기 시작
     // std::thread t7(run_dummy_fraud_generator);

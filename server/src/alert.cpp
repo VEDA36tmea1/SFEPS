@@ -1,15 +1,16 @@
-#include "../include/alert.h"
-#include <vector>
-#include <mutex>
-#include <string>
-#include <unistd.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <iostream>
+#include "../include/alert.h"// 1회 테스트전있던 코드
+
+#include <arpa/inet.h>
 #include <cerrno>
 #include <cstring>
-#include <arpa/inet.h>
-#include <netinet/in.h>
+#include <iostream>
+#include <mutex>  // 1회 테스트전있던 코드
+#include <netinet/in.h> 
+#include <string>// 1회 테스트전있던 코드
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <vector>// 1회 테스트전있던 코드
 
 // declare externals from main.cpp
 extern std::vector<int> g_client_sockets;
@@ -82,4 +83,11 @@ void send_alert_to_clients(const std::string& msg) {
         std::cout << "[Alert] Sent to clients: success=" << sent_cnt
                   << ", fail=" << fail_cnt << ", payload='" << msg << "'" << std::endl;
     }
+}
+// 1회 테스트
+void send_test_alert_to_clients(const std::string& msg) {
+    std::string out = msg;
+    if (out.empty()) return;
+    if (out.back() != '\n') out.push_back('\n');
+    send_alert_to_clients(out);
 }
