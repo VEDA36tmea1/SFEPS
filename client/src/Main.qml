@@ -477,7 +477,7 @@ Window {
                                             ColumnLayout {
                                                 spacing: 4
                                                 Text { text: cardId; color: "white"; font.bold: true; font.pixelSize: 14 }
-                                                Text { text: "Gate " + gateId + " • " + timestamp; color: AppTheme.textSecondary; font.pixelSize: 11 }
+                                                Text { text: ((gateId.toString().indexOf("Gate") !== -1 || gateId.toString().indexOf("gate") !== -1) ? gateId : "Gate " + gateId) + " • " + timestamp; color: AppTheme.textSecondary; font.pixelSize: 11 }
                                             }
                                             
                                             Item { Layout.fillWidth: true }

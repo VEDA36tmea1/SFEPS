@@ -10,7 +10,7 @@ Item {
 
     property string cardId: "**** 4921"
     property string ageGroup: "Senior"
-    property int gateId: 3
+    property string gateId: "3"
     property int estAge: 72
 
     RowLayout {
@@ -147,7 +147,7 @@ Item {
 
                     Repeater {
                         model: [
-                            { label: "Location", value: "Gate " + gateId },
+                            { label: "Location", value: (gateId.indexOf("Gate") !== -1 || gateId.indexOf("gate") !== -1) ? gateId : "Gate " + gateId },
                             { label: "Card ID", value: cardId },
                             { label: "Age Group", value: ageGroup.toUpperCase() },
                             { label: "Est. Age", value: estAge + "Y" }
