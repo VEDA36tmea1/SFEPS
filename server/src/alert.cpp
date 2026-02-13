@@ -4,7 +4,12 @@
 #include <string>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <iostream>
+#include <cerrno>
+#include <cstring>
+#include <arpa/inet.h>
+#include <netinet/in.h>
 
 // declare externals from main.cpp
 extern std::vector<int> g_client_sockets;
@@ -12,15 +17,69 @@ extern std::mutex g_sockets_mutex;
 
 void send_alert_to_clients(const std::string& msg) {
     std::lock_guard<std::mutex> lock(g_sockets_mutex);
+    const size_t payload_len = msg.size();
+    std::cout << "[Alert] Dispatch start: clients=" << g_client_sockets.size()
+              << ", len=" << payload_len << std::endl;
+
+    if (g_client_sockets.empty()) {
+        std::cout << "[Alert] No connected clients. Skip sending." << std::endl;
+        return;
+    }
+
+    size_t sent_cnt = 0;
+    size_t fail_cnt = 0;
+
     for (auto it = g_client_sockets.begin(); it != g_client_sockets.end(); ) {
         int fd = *it;
-        ssize_t n = send(fd, msg.c_str(), msg.size(), 0);
-        if (n <= 0) {
-            close(fd);
-            it = g_client_sockets.erase(it);
+        std::string peer = "fd=" + std::to_string(fd);
+        sockaddr_in addr {};
+        socklen_t addrlen = sizeof(addr);
+        if (getpeername(fd, reinterpret_cast<sockaddr*>(&addr), &addrlen) == 0) {
+            peer += " peer=" + std::string(inet_ntoa(addr.sin_addr)) + ":" + std::to_string(ntohs(addr.sin_port));
         } else {
+            peer += " peer=?";
+        }
+
+        size_t total_sent = 0;
+        const char* p = msg.c_str();
+        const size_t nlen = msg.size();
+        while (total_sent < nlen) {
+            ssize_t n = send(fd, p + total_sent, nlen - total_sent, 0);
+            if (n < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                fail_cnt++;
+                std::cout << "[Alert] send failed (" << peer << ") err=" << errno << " (" << std::strerror(errno) << ")" << std::endl;
+                close(fd);
+                it = g_client_sockets.erase(it);
+                total_sent = nlen; // break loop path
+                continue;
+            }
+            if (n == 0) {
+                fail_cnt++;
+                std::cout << "[Alert] send returned 0 (" << peer << "), closing socket." << std::endl;
+                close(fd);
+                it = g_client_sockets.erase(it);
+                total_sent = nlen; // break loop path
+                continue;
+            }
+
+            total_sent += static_cast<size_t>(n);
+        }
+
+        if (total_sent == nlen) {
+            sent_cnt++;
+            std::cout << "[Alert] send ok (" << peer << ") bytes=" << total_sent << std::endl;
             ++it;
         }
     }
-    std::cout << "[Alert] Sent to clients: " << msg << std::endl;
+
+    if (sent_cnt == 0) {
+        std::cout << "[Alert] No data delivered to clients. success=" << sent_cnt
+                  << ", fail=" << fail_cnt << ", payload_len=" << payload_len << std::endl;
+    } else {
+        std::cout << "[Alert] Sent to clients: success=" << sent_cnt
+                  << ", fail=" << fail_cnt << ", payload='" << msg << "'" << std::endl;
+    }
 }
