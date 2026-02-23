@@ -69,6 +69,13 @@ static char      rx_line_buf[RX_LINE_MAX];
 static uint8_t   rx_idx;
 static volatile uint8_t rx_ready;
 
+/* UART 디버그: 콜백이 불리는지 확인용 에코 플래그 */
+static volatile uint8_t debug_rx_flag = 0;
+static uint8_t          debug_rx_byte = 0;
+
+/* B1 버튼으로 AUTO 모드 진입 요청 플래그 */
+static volatile uint8_t button_auto_pending = 0;
+
 /* 제어 모드: 기본은 수동(MANUAL) */
 static uint8_t   control_mode = MODE_MANUAL;
 
@@ -158,6 +165,37 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    /* B1 버튼으로 모드 토글 (MANUAL ↔ AUTO) */
+    if (button_auto_pending)
+    {
+      button_auto_pending = 0;
+      if (control_mode == MODE_AUTO)
+      {
+        /* AUTO → MANUAL로 전환: 현재 각도 유지, 스윕 중단 */
+        control_mode = MODE_MANUAL;
+        const char *msg = "manual mode 실행\r\n";
+        HAL_UART_Transmit(&huart2, (const uint8_t *)msg, (uint16_t)strlen(msg), 50);
+      }
+      else
+      {
+        /* MANUAL → AUTO로 전환: 1200~1800 스윕 시작 */
+        control_mode   = MODE_AUTO;
+        auto_pwm_val   = AUTO_PWM_MIN;
+        auto_dir       = AUTO_STEP_US;
+        auto_last_tick = HAL_GetTick();
+        last_uart_tick = 0;
+        const char *msg = "auto mode 실행\r\n";
+        HAL_UART_Transmit(&huart2, (const uint8_t *)msg, (uint16_t)strlen(msg), 50);
+      }
+    }
+
+    /* 디버그: 수신된 마지막 바이트를 에코 (콜백이 실제로 불리는지 확인) */
+    if (debug_rx_flag)
+    {
+      debug_rx_flag = 0;
+      HAL_UART_Transmit(&huart2, &debug_rx_byte, 1, 20);
+    }
+
     if (rx_ready)
     {
       rx_ready = 0;
@@ -526,7 +564,9 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
-
+  /* B1 사용자 버튼(PC13) EXTI15_10 인터럽트 활성화 */
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 2, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
@@ -535,6 +575,11 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (huart != &huart2) return;
   /* 인터럽트 안에서는 전송 금지 → 타이밍/전류 변동으로 소리·간섭 발생 가능 */
+
+  /* 디버그용: 어떤 바이트가 들어오는지 main 루프에서 에코할 수 있게 저장 */
+  debug_rx_byte = rx_byte;
+  debug_rx_flag = 1;
+
   if (rx_byte == '\r' || rx_byte == '\n')
   {
     rx_ready = 1;
@@ -549,6 +594,14 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
   }
   if (!rx_ready)
     HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
+}
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+  if (GPIO_Pin == B1_Pin)
+  {
+    button_auto_pending = 1;
+  }
 }
 /* USER CODE END 4 */
 

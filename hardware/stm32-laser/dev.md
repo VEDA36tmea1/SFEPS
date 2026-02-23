@@ -1,6 +1,6 @@
 # stm32-laser 개발/문제 해결 노트
 
-## 서보 시그널 회로 – 어떻게 하면 되나?
+## ⚠️서보 시그널 회로 – 어떻게 하면 되나?
 
 3.3V MCU로 5V 서보 시그널을 만들 때, **추천하는 회로**는 아래 둘 중 하나다.
 
@@ -37,7 +37,9 @@
 
 ---
 
-### 방법 2: A1015(PNP)만 쓰기 – 저항 비율로 PNP 끄기
+### 방법 2: A1015(PNP)만 쓰기 – 저항 비율로 PNP 끄기 
+
+npn 트랜지스터가 별도로 존재하지 않는다. 
 
 이미 A1015를 쓰고 있다면, Base 저항만 바꿔서 **PA0 HIGH일 때 PNP가 확실히 꺼지게** 할 수 있다.
 
@@ -54,32 +56,100 @@
 
 ---
 
-## "시그널 꽂으면 가만히 있고, 뽑으면 움직인다"
 
-### 원인 후보
+# 😭 => 트랜지스터로 변환이 힘들어서 그냥 없이 3.3v로 구동 ㅠㅠㅠㅠ
 
-연결했을 때 서보 신호선에 **PWM이 아니라 거의 일정한 전압**이 들어가고 있을 가능성이 큼.
+---
 
-- **A1015(PNP)** 사용 시: MCU가 **3.3V**인데, Emitter가 **5V**면 Base가 3.3V여도 **Vbe = 3.3−5 = −1.7V** 로 PNP가 **계속 도통**할 수 있음.
-- 그렇게 되면 트랜지스터가 거의 항상 켜져서, 서보 신호선이 **항상 5V**에 가깝게 고정되고, **펄스 폭이 전달되지 않음** → 서보는 “신호 없음”처럼 한 자세로 가만히 있음.
-- 시그널을 **뽑으면** 입력이 떠돌이(플로팅)가 되면서 서보가 이상 동작하거나 움직이는 것처럼 보일 수 있음.
+## ⚠️ UART/시리얼 통신이 안 될 때 (VS Code, minicom, screen)
 
-### 해결 방향
+### 1. USART2 RX 인터럽트가 안 들어오는 경우
 
-1. **Base를 5V 쪽으로 풀업**해서, MCU가 HIGH(3.3V)일 때 Base가 5V에 가깝게 가서 **PNP가 꺼지도록** 하기.
-   - 예: Base ↔ 5V 사이에 **10kΩ**, PA0 ↔ Base 사이에 **4.7kΩ**.
-   - PA0 LOW → Base 0V 근처 → PNP ON → 서보 신호 5V.
-   - PA0 HIGH(3.3V) → 저항 분배로 Base가 5V에 가깝게 → PNP OFF → 10k 풀업만 걸려서 서보 신호 5V 유지.
-   - (PWM에서 “LOW” 구간을 만들려면, 서보 신호선을 **GND로 당기는** NPN 스테이지가 더 나을 수 있음.)
+증상:
 
-2. 또는 **NPN(예: 2N2222)** 으로 **반전 버퍼** 구성:
-   - NPN Collector → 서보 신호선, Emitter → GND, Base → 저항 → PA0.
-   - 서보 신호선 ↔ 5V에 10kΩ 풀업.
-   - MCU HIGH → NPN ON → 신호선 LOW, MCU LOW → NPN OFF → 신호선 5V.
-   - 이렇게 하면 3.3V로도 스위칭이 확실하고, 지금 펌웨어의 **Polarity Low** 설정과 잘 맞음.
+- 배너(`50Hz PWM...`)는 보이는데,  
+  `mode 0`, `1500` 을 쳐도 **아무 응답(`MODE=...`, `OK ...`)이 안 나옴**.
 
-### A1015(PNP) 기본 연결
+원인:
 
-- Emitter → +5V, Collector → 서보 신호선, Base → 1k~4.7kΩ → PA0 (또는 PA8).
-- Collector–5V 사이 10kΩ 풀업. 서보 전원/신호 GND는 Nucleo GND와 공통.
-- “꽂으면 안 움직임”이면 Base에 5V 풀업 추가하거나, NPN 반전 회로로 바꾸는 것을 권장.
+- `HAL_UART_Receive_IT()` 는 걸어뒀는데,  
+  **NVIC에서 USART2_IRQn 이 Enable 되지 않아서** `HAL_UART_RxCpltCallback()` 이 절대 호출되지 않음.
+
+해결:
+
+1. `Core/Src/stm32f4xx_hal_msp.c` 의 `HAL_UART_MspInit()` 안 `USART2` 케이스에 NVIC 추가:
+
+```c
+if(huart->Instance==USART2)
+{
+  ...
+  __HAL_LINKDMA(huart,hdmarx,hdma_usart2_rx);
+
+  /* USART2 interrupt Init: RX 콜백이 불리도록 NVIC 설정 */
+  HAL_NVIC_SetPriority(USART2_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(USART2_IRQn);
+}
+```
+
+2. `Core/Src/stm32f4xx_it.c` 에 실제 IRQ 핸들러 구현:
+
+```c
+extern UART_HandleTypeDef huart2;
+
+void USART2_IRQHandler(void)
+{
+  HAL_UART_IRQHandler(&huart2);
+}
+```
+
+이 두 가지가 있어야 `USART2` RX → IRQ → `HAL_UART_RxCpltCallback()` 으로 들어온다.
+
+### 2. 콜백은 도는데 `OK ...` 가 안 나오는 경우 (줄 끝 설정)
+
+증상:
+
+- VS Code 시리얼 모니터에서:
+  - `---- 전송된 utf8 인코딩 메시지: "1500" ----`
+  - 그 아래에 `1500`(에코) 까지는 찍힘
+- 하지만, `MODE=0 (manual)` 이나 `OK PA8=1500 PA0=1500 us` 는 전혀 안 나옴.
+
+원인:
+
+- 우리는 RX 콜백에서 **`'\r'` 또는 `'\n'` 을 받았을 때만** 한 줄을 완료:
+
+```c
+if (rx_byte == '\r' || rx_byte == '\n')
+{
+  rx_ready = 1;
+}
+else if (rx_idx < RX_LINE_MAX - 1)
+{
+  rx_line_buf[rx_idx++] = (char)rx_byte;
+}
+```
+
+- VS Code / minicom / screen 에서 **Line ending 이 `None`** 이면  
+  `'1'`, `'5'`, `'0'`, `'0'` 만 가고 **`\r`/`\n` 이 안 보내짐** → `rx_ready` 가 절대 1이 안 됨 → `OK ...` 도 안 찍힘.
+
+해결:
+
+- **VS Code 시리얼 모니터**
+  - 오른쪽 아래 Line ending 을 **`LF` 또는 `CRLF`** 로 설정.
+- **minicom**
+  - `Screen and keyboard` 설정에서
+    - `P - Add linefeed : Yes`
+    - `T - Add carriage return : Yes`
+- **screen**
+  - 기본적으로 Enter가 `CR` 을 보내므로 별도 설정 없이 동작하는 편.  
+    그래도 이상하면 `stty -F /dev/ttyACM0 -echo` 등으로 에코만 조정.
+
+정상일 때 흐름:
+
+1. `'1'`, `'5'`, `'0'`, `'0'`, `'\n'` 순으로 RX 콜백 진입
+2. `rx_ready = 1` 이 되고, `while(1)` 루프에서:
+   - `sscanf("1500", "%lu %lu", &u1, &u2);` → `u1=1500`, `u2=1500`
+   - `__HAL_TIM_SET_COMPARE(..., 1500);`
+   - `OK PA8=1500 PA0=1500 us\r\n` 전송
+
+#### 😋값 동작 확인!!
+ 
