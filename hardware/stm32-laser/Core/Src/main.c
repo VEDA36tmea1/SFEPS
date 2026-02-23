@@ -251,7 +251,7 @@ int main(void)
           auto_pwm_val = (uint32_t)u1;
           last_uart_tick = HAL_GetTick();
           char ack[52];
-          int len = snprintf(ack, sizeof(ack), "OK PA8=%lu PA0=%lu us\r\n", u1, u2);
+          int len = snprintf(ack, sizeof(ack), "\nOK PA8=%lu PA0=%lu us\r\n", u1, u2);
           if (len > 0)
             HAL_UART_Transmit(&huart2, (uint8_t *)ack, (uint16_t)len, 50);
         }
