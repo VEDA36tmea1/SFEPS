@@ -13,28 +13,35 @@ pkg_check_modules(TINYXML2 REQUIRED tinyxml2)
 pkg_check_modules(FFMPEG REQUIRED libavformat libavcodec libavutil libswscale)
 find_package(Threads REQUIRED)
 
-# 3. 실행 파일
-add_executable(smart_server 
-    src/main.cpp 
+# 3. Audio_Speaker_Unit 경로 (링 버퍼 + ALSA 재생)
+set(AUDIO_SPEAKER_UNIT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../hardware/Raspi-driver/Audio_Speaker_Unit)
+
+# 4. 실행 파일 (오디오 모듈 소스 포함)
+add_executable(smart_server
+    src/main.cpp
     src/log.cpp
     src/recorder.cpp
     src/cleanup.cpp
     src/auth.cpp
     src/rfid_monitor.cpp
+    ${AUDIO_SPEAKER_UNIT_DIR}/src/audio_ring_buffer.cpp
+    ${AUDIO_SPEAKER_UNIT_DIR}/src/audio_playback.cpp
 )
 
-# 4. 헤더 경로
+# 5. 헤더 경로
 target_include_directories(smart_server PRIVATE
     ${MARIADB_INCLUDE_DIRS}
     ${TINYXML2_INCLUDE_DIRS}
     ${FFMPEG_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${AUDIO_SPEAKER_UNIT_DIR}/include
 )
 
-# 5. 라이브러리 링크
+# 6. 라이브러리 링크 (ALSA 오디오 재생)
 target_link_libraries(smart_server PRIVATE
     ${MARIADB_LIBRARIES}
     ${TINYXML2_LIBRARIES}
     ${FFMPEG_LIBRARIES}
     Threads::Threads
+    asound
 )
