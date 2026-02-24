@@ -76,4 +76,3 @@ bool AudioRingBuffer::stopped() const
     std::lock_guard<std::mutex> lock(mtx_);
     return stopped_;
 }
-

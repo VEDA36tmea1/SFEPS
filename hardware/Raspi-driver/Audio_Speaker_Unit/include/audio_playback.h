@@ -30,4 +30,3 @@ private:
     snd_pcm_t* pcm_handle_ = nullptr;
     unsigned int period_frames_ = 0;
 };
-

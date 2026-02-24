@@ -187,4 +187,3 @@ int main(int argc, char** argv)
     std::cout << "[Audio_Speaker_Unit] Stopped." << std::endl;
     return 0;
 }
-
