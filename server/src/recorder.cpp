@@ -1,9 +1,36 @@
 #include "recorder.h"
-#include <iostream>
+#include <cerrno>
+#include <cstdint>
+#include <cstdlib>
 #include <chrono>
 #include <ctime>
-#include <cstdlib>
+#include <iostream>
+#include <limits>
 #include <unistd.h>
+
+namespace {
+std::size_t load_env_size_t(const char* name, std::size_t default_value, std::size_t min_value) {
+    const char* raw = std::getenv(name);
+    if (raw == nullptr || raw[0] == '\0') return default_value;
+
+    errno = 0;
+    char* end = nullptr;
+    unsigned long long parsed = std::strtoull(raw, &end, 10);
+    if (errno != 0 || end == raw || (end != nullptr && *end != '\0') || parsed < min_value ||
+        parsed > static_cast<unsigned long long>(std::numeric_limits<std::size_t>::max())) {
+        std::cerr << "[recorder.cpp] " << "Invalid env " << name << "=" << raw
+                  << ", using default=" << default_value << std::endl;
+        return default_value;
+    }
+    return static_cast<std::size_t>(parsed);
+}
+
+bool should_sample(std::uint64_t counter, std::size_t interval) {
+    if (counter == 1) return true;
+    if (interval == 0) return false;
+    return (counter % interval) == 0;
+}
+} // namespace
 
 // [헬퍼] 시간 문자열
 static std::string get_time_str() {
@@ -72,6 +99,10 @@ void RTSPRecorder::close_current_file() {
 }
 
 bool RTSPRecorder::connect_and_record() {
+    const std::size_t max_meta_packet_bytes = load_env_size_t("SFEPS_META_MAX_PACKET_BYTES", 65536, 1);
+    const std::size_t bad_meta_streak_limit = load_env_size_t("SFEPS_META_BAD_STREAK_LIMIT", 20, 1);
+    const std::size_t drop_log_interval = load_env_size_t("SFEPS_DROP_LOG_INTERVAL", 100, 1);
+
     AVDictionary* opts = nullptr;
     av_dict_set(&opts, "rtsp_transport", "tcp", 0);
     av_dict_set(&opts, "stimeout", "5000000", 0); 
@@ -123,6 +154,9 @@ bool RTSPRecorder::connect_and_record() {
 
     AVPacket pkt;
     av_init_packet(&pkt);
+    std::size_t bad_meta_streak = 0;
+    std::uint64_t dropped_meta_packets = 0;
+    bool force_reconnect = false;
 
     while (running_flag) {
         if (av_read_frame(input_ctx, &pkt) < 0) break;
@@ -163,11 +197,33 @@ bool RTSPRecorder::connect_and_record() {
                 av_interleaved_write_frame(output_ctx, &pkt);
             }
             } else if (pkt.stream_index == meta_stream_idx) {
-            std::string xml((char*)pkt.data, pkt.size);
-            // publish raw metadata to analytics processor (may contain multiple lines)
-            analytics.publishRaw(xml);
+            bool valid_meta = true;
+            if (pkt.data == nullptr || pkt.size <= 0 || static_cast<std::size_t>(pkt.size) > max_meta_packet_bytes) {
+                valid_meta = false;
+                ++bad_meta_streak;
+                std::uint64_t dropped = ++dropped_meta_packets;
+                if (should_sample(dropped, drop_log_interval)) {
+                    std::cout << "[recorder.cpp] " << "[Drop] metadata packet rejected: size=" << pkt.size
+                              << ", max=" << max_meta_packet_bytes
+                              << ", bad_streak=" << bad_meta_streak
+                              << ", dropped_count=" << dropped << std::endl;
+                }
+                if (bad_meta_streak >= bad_meta_streak_limit) {
+                    std::cerr << "[recorder.cpp] " << "[Security] metadata bad streak reached limit ("
+                              << bad_meta_streak_limit << "), reconnecting RTSP session." << std::endl;
+                    force_reconnect = true;
+                }
+            }
+
+            if (valid_meta) {
+                bad_meta_streak = 0;
+                std::string xml(reinterpret_cast<char*>(pkt.data), pkt.size);
+                // publish raw metadata to analytics processor (may contain multiple lines)
+                analytics.publishRaw(xml);
+            }
         }
         av_packet_unref(&pkt);
+        if (force_reconnect) break;
     }
     close_current_file();
     return true;

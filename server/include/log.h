@@ -61,8 +61,14 @@ public:
 
 private:
     void processQueue(); 
+    bool prepareStatements();
+    void closeStatements();
 
     MYSQL* conn;
+    MYSQL_STMT* systemLogStmt;
+    MYSQL_STMT* loginLogStmt;
+    MYSQL_STMT* analyticsLogStmt;
+    MYSQL_STMT* recordingStmt;
     std::string host;
     std::string user;
     std::string pass;

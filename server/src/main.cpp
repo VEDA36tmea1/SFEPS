@@ -4,14 +4,19 @@
 #include <atomic>
 #include <csignal> // 시그널 처리를 위해 필요
 #include <chrono>
+#include <cstdlib>
 #include <unordered_map>
+#include <unordered_set>
 #include <algorithm>
 #include <cctype>
 #include <cstring>
 #include <arpa/inet.h>
+#include <sys/time.h>
 #include <unistd.h>
 #include <vector>
 #include <cstdio>
+#include <limits>
+#include <cerrno>
 
 #include "log.h"
 #include "recorder.h" 
@@ -33,8 +38,130 @@ namespace fs = std::filesystem;
 std::vector<int> g_client_sockets;
 std::mutex g_sockets_mutex;
 
+namespace {
+struct SecurityRuntimeOptions {
+    std::unordered_set<std::string> auth_allow_ips;
+    std::unordered_set<std::string> audio_allow_ips;
+    std::unordered_set<std::string> alert_allow_ips;
+    std::size_t auth_max_bytes = 256;
+    std::size_t audio_max_bytes = 4 * 1024 * 1024;
+    std::size_t alert_max_clients = 64;
+    int socket_read_timeout_ms = 5000;
+};
+
+std::string trim_copy(const std::string& s) {
+    size_t start = 0;
+    while (start < s.size() && std::isspace(static_cast<unsigned char>(s[start]))) ++start;
+    size_t end = s.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1]))) --end;
+    return s.substr(start, end - start);
+}
+
+std::string normalize_login_key(const std::string& user) {
+    std::string normalized = trim_copy(user);
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return normalized;
+}
+
+std::size_t load_env_size_t(const char* name, std::size_t default_value, std::size_t min_value) {
+    const char* raw = std::getenv(name);
+    if (raw == nullptr || raw[0] == '\0') return default_value;
+
+    errno = 0;
+    char* end = nullptr;
+    unsigned long long parsed = std::strtoull(raw, &end, 10);
+    if (errno != 0 || end == raw || (end != nullptr && *end != '\0') || parsed < min_value ||
+        parsed > static_cast<unsigned long long>(std::numeric_limits<std::size_t>::max())) {
+        std::cerr << "[main.cpp] " << "[Config] Invalid env " << name << "=" << raw
+                  << ", using default=" << default_value << std::endl;
+        return default_value;
+    }
+    return static_cast<std::size_t>(parsed);
+}
+
+int load_env_int(const char* name, int default_value, int min_value) {
+    const char* raw = std::getenv(name);
+    if (raw == nullptr || raw[0] == '\0') return default_value;
+
+    errno = 0;
+    char* end = nullptr;
+    long parsed = std::strtol(raw, &end, 10);
+    if (errno != 0 || end == raw || (end != nullptr && *end != '\0') || parsed < min_value ||
+        parsed > std::numeric_limits<int>::max()) {
+        std::cerr << "[main.cpp] " << "[Config] Invalid env " << name << "=" << raw
+                  << ", using default=" << default_value << std::endl;
+        return default_value;
+    }
+    return static_cast<int>(parsed);
+}
+
+std::unordered_set<std::string> parse_allowlist_env(const char* name) {
+    std::unordered_set<std::string> out;
+    const char* raw = std::getenv(name);
+    if (raw == nullptr || raw[0] == '\0') return out;
+
+    std::string csv(raw);
+    size_t pos = 0;
+    while (pos <= csv.size()) {
+        size_t comma = csv.find(',', pos);
+        std::string token = (comma == std::string::npos) ? csv.substr(pos) : csv.substr(pos, comma - pos);
+        token = trim_copy(token);
+        if (!token.empty()) out.insert(token);
+        if (comma == std::string::npos) break;
+        pos = comma + 1;
+    }
+    return out;
+}
+
+SecurityRuntimeOptions load_security_runtime_options() {
+    SecurityRuntimeOptions cfg;
+    cfg.auth_allow_ips = parse_allowlist_env("SFEPS_AUTH_ALLOW_IPS");
+    cfg.audio_allow_ips = parse_allowlist_env("SFEPS_AUDIO_ALLOW_IPS");
+    cfg.alert_allow_ips = parse_allowlist_env("SFEPS_ALERT_ALLOW_IPS");
+    cfg.auth_max_bytes = load_env_size_t("SFEPS_AUTH_MAX_BYTES", 256, 1);
+    cfg.audio_max_bytes = load_env_size_t("SFEPS_AUDIO_MAX_BYTES", 4 * 1024 * 1024, 1024);
+    cfg.alert_max_clients = load_env_size_t("SFEPS_ALERT_MAX_CLIENTS", 64, 1);
+    cfg.socket_read_timeout_ms = load_env_int("SFEPS_SOCKET_READ_TIMEOUT_MS", 5000, 1);
+    return cfg;
+}
+
+void log_allowlist_mode(const char* env_name, const std::unordered_set<std::string>& allowlist) {
+    if (allowlist.empty()) {
+        std::cout << "[main.cpp] " << "[Security] " << env_name
+                  << " not set: allow-all mode (compatibility)." << std::endl;
+        return;
+    }
+    std::cout << "[main.cpp] " << "[Security] " << env_name << " enabled with " << allowlist.size()
+              << " IP(s)." << std::endl;
+}
+
+bool is_ip_allowed(const std::unordered_set<std::string>& allowlist, const std::string& client_ip) {
+    if (allowlist.empty()) return true;
+    return allowlist.find(client_ip) != allowlist.end();
+}
+
+std::string peer_ip_to_string(const sockaddr_in& peer_addr) {
+    char ip_buf[INET_ADDRSTRLEN] = {0};
+    const char* ip_res = inet_ntop(AF_INET, &peer_addr.sin_addr, ip_buf, sizeof(ip_buf));
+    return (ip_res != nullptr) ? std::string(ip_res) : std::string("Unknown_IP");
+}
+
+void apply_socket_read_timeout(int fd, int timeout_ms) {
+    if (fd < 0 || timeout_ms <= 0) return;
+    timeval tv {};
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0) {
+        std::cerr << "[main.cpp] " << "[Security] failed to set SO_RCVTIMEO: "
+                  << std::strerror(errno) << std::endl;
+    }
+}
+} // namespace
+
 // 음성 수신 스레드 함수
-void run_audio_receiver() {
+void run_audio_receiver(const SecurityRuntimeOptions sec_cfg) {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     int opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
@@ -44,16 +171,44 @@ void run_audio_receiver() {
     listen(server_fd, 5);
 
     while (true) {
-        int client_fd = accept(server_fd, NULL, NULL);
+        sockaddr_in peer_addr {};
+        socklen_t peer_len = sizeof(peer_addr);
+        int client_fd = accept(server_fd, reinterpret_cast<sockaddr*>(&peer_addr), &peer_len);
+        if (client_fd < 0) continue;
+
+        const std::string client_ip = peer_ip_to_string(peer_addr);
+        if (!is_ip_allowed(sec_cfg.audio_allow_ips, client_ip)) {
+            std::cout << "[main.cpp] " << "[Audio] Connection rejected by allowlist: ip=" << client_ip << std::endl;
+            close(client_fd);
+            continue;
+        }
+
+        apply_socket_read_timeout(client_fd, sec_cfg.socket_read_timeout_ms);
         
         // 메모리 버퍼에 오디오 데이터 수집
         std::vector<char> audio_buffer;
+        bool oversize = false;
+        std::size_t total_bytes = 0;
         char buf[4096];
         ssize_t bytes;
         while ((bytes = read(client_fd, buf, sizeof(buf))) > 0) {
+            if (total_bytes + static_cast<std::size_t>(bytes) > sec_cfg.audio_max_bytes) {
+                oversize = true;
+                break;
+            }
             audio_buffer.insert(audio_buffer.end(), buf, buf + bytes);
+            total_bytes += static_cast<std::size_t>(bytes);
+        }
+        if (bytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+            std::cerr << "[main.cpp] " << "[Audio] read error: " << std::strerror(errno) << std::endl;
         }
         close(client_fd);
+
+        if (oversize) {
+            std::cout << "[main.cpp] " << "[Audio] Payload rejected: exceeded SFEPS_AUDIO_MAX_BYTES="
+                      << sec_cfg.audio_max_bytes << " (ip=" << client_ip << ")" << std::endl;
+            continue;
+        }
 
         if (audio_buffer.empty()) {
             std::cout << "[main.cpp] " << "[Audio] Received empty data, skipping playback" << std::endl;
@@ -79,7 +234,7 @@ void run_audio_receiver() {
 }
 
 // 부정승차 알림 서버 (클라이언트 연결 관리)
-void run_fraud_notifier() {
+void run_fraud_notifier(const SecurityRuntimeOptions sec_cfg) {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     int opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
@@ -101,7 +256,22 @@ void run_fraud_notifier() {
         socklen_t peer_len = sizeof(peer_addr);
         int client_fd = accept(server_fd, reinterpret_cast<sockaddr*>(&peer_addr), &peer_len);
         if (client_fd >= 0) {
+            const std::string client_ip = peer_ip_to_string(peer_addr);
+            if (!is_ip_allowed(sec_cfg.alert_allow_ips, client_ip)) {
+                std::cout << "[main.cpp] " << "[Alert] Connection rejected by allowlist: ip=" << client_ip << std::endl;
+                close(client_fd);
+                continue;
+            }
+
+            apply_socket_read_timeout(client_fd, sec_cfg.socket_read_timeout_ms);
+
             std::lock_guard<std::mutex> lock(g_sockets_mutex);
+            if (g_client_sockets.size() >= sec_cfg.alert_max_clients) {
+                std::cout << "[main.cpp] " << "[Alert] Connection rejected: max clients reached ("
+                          << sec_cfg.alert_max_clients << ")" << std::endl;
+                close(client_fd);
+                continue;
+            }
             g_client_sockets.push_back(client_fd);
             std::cout << "[main.cpp] " << "[Alert] Client connected for fraud notifications: "
                       << inet_ntoa(peer_addr.sin_addr) << ":" << ntohs(peer_addr.sin_port) << " (fd=" << client_fd << ")"
@@ -139,26 +309,8 @@ void run_dummy_fraud_generator() {
     }
 }
 
-namespace {
-std::string trim_copy(const std::string& s) {
-    size_t start = 0;
-    while (start < s.size() && std::isspace(static_cast<unsigned char>(s[start]))) ++start;
-    size_t end = s.size();
-    while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1]))) --end;
-    return s.substr(start, end - start);
-}
-
-std::string normalize_login_key(const std::string& user) {
-    std::string normalized = trim_copy(user);
-    std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-    return normalized;
-}
-} // namespace
-
 // 로그인 인증 전용 스레드 함수
-void run_login_auth(const RuntimeConfig cfg) {
+void run_login_auth(const RuntimeConfig cfg, const SecurityRuntimeOptions sec_cfg) {
     struct AttemptState {
         int fail_count = 0;
         std::chrono::steady_clock::time_point lock_until = std::chrono::steady_clock::time_point::min();
@@ -199,21 +351,31 @@ void run_login_auth(const RuntimeConfig cfg) {
         int client_fd = accept(server_fd, reinterpret_cast<sockaddr*>(&peer_addr), &peer_len);
         if (client_fd < 0) continue;
 
-        char ip_buf[INET_ADDRSTRLEN] = {0};
-        const char* ip_res = inet_ntop(AF_INET, &peer_addr.sin_addr, ip_buf, sizeof(ip_buf));
-        std::string client_ip = (ip_res != NULL) ? std::string(ip_res) : std::string("Unknown_IP");
+        const std::string client_ip = peer_ip_to_string(peer_addr);
+        if (!is_ip_allowed(sec_cfg.auth_allow_ips, client_ip)) {
+            std::cout << "[main.cpp] " << "[Auth] Connection rejected by allowlist: ip=" << client_ip << std::endl;
+            close(client_fd);
+            continue;
+        }
 
-        char buf[1024] = {0};
+        apply_socket_read_timeout(client_fd, sec_cfg.socket_read_timeout_ms);
+
+        std::vector<char> buf(sec_cfg.auth_max_bytes + 1, 0);
 
         // 데이터 수신 ("ID:PW" 형식 예상)
-        if (read(client_fd, buf, sizeof(buf)) > 0) {
-            std::string data(buf), user = "Unknown";
+        ssize_t bytes_read = read(client_fd, buf.data(), buf.size());
+        if (bytes_read > 0) {
+            const bool oversized = static_cast<std::size_t>(bytes_read) > sec_cfg.auth_max_bytes;
+            const std::size_t copied_size =
+                oversized ? sec_cfg.auth_max_bytes : static_cast<std::size_t>(bytes_read);
+            std::string data(buf.data(), copied_size);
+            std::string user = "Unknown";
             size_t sep = data.find(':');
             bool success = false;
             bool valid_format = false;
 
             // 구분자(:)가 있을 경우에만 분석 진행
-            if (sep != std::string::npos) {
+            if (!oversized && sep != std::string::npos) {
                 user = trim_copy(data.substr(0, sep));
                 std::string pass = trim_copy(data.substr(sep + 1));
                 if (!user.empty() && !pass.empty()) {
@@ -245,7 +407,11 @@ void run_login_auth(const RuntimeConfig cfg) {
                 }
             }  
 
-            if (!valid_format) {
+            if (oversized) {
+                std::cout << "[main.cpp] " << "[Auth] Payload rejected: exceeded SFEPS_AUTH_MAX_BYTES="
+                          << sec_cfg.auth_max_bytes << " (ip=" << client_ip << ")" << std::endl;
+                success = false;
+            } else if (!valid_format) {
                 success = false;
             }
               
@@ -298,6 +464,15 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
+    const SecurityRuntimeOptions sec_cfg = load_security_runtime_options();
+    log_allowlist_mode("SFEPS_AUTH_ALLOW_IPS", sec_cfg.auth_allow_ips);
+    log_allowlist_mode("SFEPS_AUDIO_ALLOW_IPS", sec_cfg.audio_allow_ips);
+    log_allowlist_mode("SFEPS_ALERT_ALLOW_IPS", sec_cfg.alert_allow_ips);
+    std::cout << "[main.cpp] " << "[Security] auth_max_bytes=" << sec_cfg.auth_max_bytes
+              << ", audio_max_bytes=" << sec_cfg.audio_max_bytes
+              << ", alert_max_clients=" << sec_cfg.alert_max_clients
+              << ", socket_read_timeout_ms=" << sec_cfg.socket_read_timeout_ms << std::endl;
+
     bool send_test_ping = false;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -343,11 +518,11 @@ int main(int argc, char* argv[]) {
     t2.detach();
 
     // 6. 로그인 인증 스레드 시작
-    std::thread t3(run_login_auth, cfg);
+    std::thread t3(run_login_auth, cfg, sec_cfg);
     t3.detach();
 
     // 7. 음성 수신 스레드 시작
-    std::thread t4(run_audio_receiver);
+    std::thread t4(run_audio_receiver, sec_cfg);
     t4.detach();
 
     // 8. 녹화 시작
@@ -361,7 +536,7 @@ int main(int argc, char* argv[]) {
     
 
     // 8. 부정승차 알림 서버 시작
-    std::thread t6(run_fraud_notifier);
+    std::thread t6(run_fraud_notifier, sec_cfg);
     t6.detach();
 
     //1회 신호
