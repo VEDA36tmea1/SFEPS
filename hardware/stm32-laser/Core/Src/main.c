@@ -100,6 +100,13 @@ static void MX_USART2_UART_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+static void PA5_D13_SetByMode(uint8_t mode)
+{
+  /* NUCLEO 계열에서 PA5는 보통 LD2(D13)로 연결됨 */
+  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin,
+                    (mode == MODE_MANUAL) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -151,6 +158,7 @@ int main(void)
   __HAL_TIM_MOE_ENABLE(&htim1);  /* TIM1(PA8) 실제 출력 위해 필수 */
   HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
   auto_last_tick = HAL_GetTick();
+  PA5_D13_SetByMode(control_mode);
   {
     char msg[96];
     int n = snprintf(msg, sizeof(msg),
@@ -173,6 +181,7 @@ int main(void)
       {
         /* AUTO → MANUAL로 전환: 현재 각도 유지, 스윕 중단 */
         control_mode = MODE_MANUAL;
+        PA5_D13_SetByMode(control_mode);
         const char *msg = "manual mode 실행\r\n";
         HAL_UART_Transmit(&huart2, (const uint8_t *)msg, (uint16_t)strlen(msg), 50);
       }
@@ -184,6 +193,7 @@ int main(void)
         auto_dir       = AUTO_STEP_US;
         auto_last_tick = HAL_GetTick();
         last_uart_tick = 0;
+        PA5_D13_SetByMode(control_mode);
         const char *msg = "auto mode 실행\r\n";
         HAL_UART_Transmit(&huart2, (const uint8_t *)msg, (uint16_t)strlen(msg), 50);
       }
@@ -216,6 +226,7 @@ int main(void)
         if (sscanf(rx_line_buf + 4, "%lu", &m) == 1 && (m == 0ul || m == 1ul))
         {
           control_mode = (uint8_t)m;
+          PA5_D13_SetByMode(control_mode);
           const char *resp = (control_mode == MODE_MANUAL)
                              ? "MODE=0 (manual)\r\n"
                              : "MODE=1 (auto sweep 1200~1800us)\r\n";

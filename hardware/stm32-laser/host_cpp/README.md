@@ -1,0 +1,210 @@
+## IBVS Host C++ / ibvs_core 라이브러리
+
+이 디렉터리는 `IMPLEMENTATION_PLAN_IBVS.md` 기반으로 작성한
+**IBVS 호스트(C++) 스켈레톤 코드 + 공용 라이브러리(`ibvs_core`)** 를 포함한다.
+
+- 비전: `VisionDetector` (단순 스텁 – 실제 프로젝트에서 교체 필요)
+- 제어: `IbvsController` (P 제어)
+- 통신: `StmInterface` (리눅스 termios 기반 UART)
+- GStreamer 연동: `process_gst_frame` (`gst_ibvs.cpp`)
+- 데모 메인 루프: `main_ibvs.cpp` (`ibvs_host` 실행 파일)
+
+### 구조
+
+- `CMakeLists.txt`
+- `include/vision_detector.h`
+- `include/ibvs_controller.h`
+- `include/stm_interface.h`
+- `include/gst_ibvs.h`
+- `src/vision_detector.cpp`
+- `src/ibvs_controller.cpp`
+- `src/stm_interface.cpp`
+- `src/gst_ibvs.cpp`
+- `src/main_ibvs.cpp`
+
+### 빌드 방법 (예시)
+
+```bash
+cd hardware/stm32-laser/host_cpp
+mkdir -p build
+cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make -j
+```
+
+OpenCV와 GStreamer가 패키지로 설치되어 있고
+`find_package(OpenCV)`, `pkg_check_modules(GST ...)` 가 동작해야 한다.
+필요하면 `OpenCV_DIR`, `PKG_CONFIG_PATH` 등을 CMake 옵션/환경변수로 넘긴다.
+
+### 실행 예시
+
+```bash
+./ibvs_host /dev/ttyUSB0 0
+```
+
+- 첫 번째 인자: STM 보드가 연결된 시리얼 포트 (기본: `/dev/ttyUSB0`)
+- 두 번째 인자: 카메라 인덱스 (기본: `0`)
+
+현재 비전·검출 로직은 **테스트용 스텁**이다.
+실제 타겟/레이저 검출 알고리즘으로 교체해 사용해야 한다.
+
+---
+
+### GStreamer 파이프라인 사용 가이드
+
+`ibvs_core` 라이브러리는 GStreamer 파이프라인 안에서 사용할 수 있도록
+`process_gst_frame(GstSample*, cv::Point2f, ...)` 헬퍼 함수를 제공한다.
+
+#### 1. 개념 흐름
+
+1. GStreamer 파이프라인에서 카메라/스트림 영상을 `appsink` 로 받는다.
+2. 다른 요소(딥러닝 detector 등)가 객체 중심 좌표 `target_center` 를 계산한다.
+3. `appsink` 의 `new-sample` 콜백에서:
+   - `GstSample* sample` 을 받는다.
+   - `process_gst_frame(sample, target_center, detector, controller, stm);` 호출
+4. 함수 내부에서:
+   - `GstSample` → `cv::Mat` 변환
+   - 영상에서 레이저 스폿 좌표 검출
+   - `target_center` 와 레이저 좌표 사이 픽셀 오차 계산
+   - `IbvsController` 로 PWM(us) 계산
+   - `StmInterface` 로 STM 보드에 `"PAN_US TILT_US\r\n"` 전송
+
+#### 2. appsink 파이프라인 예시 (gst-launch 스타일)
+
+아래는 개념적인 예시이며, 실제 앱에서는 C/C++ 코드로 파이프라인을 구성하고
+`appsink` 의 `new-sample` 시그널에 콜백을 연결해야 한다.
+
+```bash
+gst-launch-1.0 \
+  v4l2src device=/dev/video0 ! \
+  videoconvert ! video/x-raw,format=BGR,width=640,height=480 ! \
+  queue ! \
+  appsink name=mysink emit-signals=true sync=false
+```
+
+위에서 `mysink` 의 `new-sample` 콜백에서 `process_gst_frame` 을 호출한다.
+
+#### 3. C++ appsink 콜백 예시 (개념 코드)
+
+```cpp
+// 전역 또는 컨텍스트에 유지할 객체들
+VisionDetector   g_detector;
+IbvsController   g_controller(800, 2200, 1500, 0.5, 0.5);
+StmInterface     g_stm("/dev/ttyUSB0", 115200);
+cv::Point2f      g_target_center; // 외부 객체 검출 모듈이 갱신
+
+static GstFlowReturn on_new_sample(GstElement* sink, gpointer)
+{
+    GstSample* sample = nullptr;
+    g_signal_emit_by_name(sink, "pull-sample", &sample);
+    if (!sample)
+        return GST_FLOW_ERROR;
+
+    // g_target_center 는 다른 모듈에서 이미 계산해둔 객체 중심 좌표
+    process_gst_frame(sample, g_target_center,
+                      g_detector, g_controller, g_stm);
+
+    gst_sample_unref(sample);
+    return GST_FLOW_OK;
+}
+```
+
+GStreamer 파이프라인 구성 시 `appsink` 에 위 콜백을 연결하면,
+각 프레임마다 레이저 검출 + 에러 보정 + STM 명령 전송이 수행된다.
+
+---
+
+### src 코드별 데이터 흐름도
+
+#### 1. `main_ibvs.cpp` (데모 실행 파일)
+
+텍스트 데이터 흐름:
+
+1. 프로그램 시작
+2. 시리얼 포트 오픈 → `StmInterface` 생성 → 필요 시 `sendModeManual()`
+3. `cv::VideoCapture` 로 카메라 프레임 획득
+4. 루프:
+   - `frame` 캡처 (`cap.read`)
+   - `VisionDetector::detectTarget(frame)` → `target`
+   - `VisionDetector::detectLaser(frame)`  → `laser`
+   - 둘 다 `found == true` 이면:
+     - `e_u = target.x - laser.x`, `e_v = target.y - laser.y`
+     - `IbvsController::update(e_u, e_v, dt)` → `pan_us`, `tilt_us`
+     - `StmInterface::sendPwm(pan_us, tilt_us)` 으로 STM에 전송
+   - 디버그용으로 화면에 타겟/레이저/선 오버레이 후 `imshow`
+
+간단한 흐름도(논리):
+
+`카메라 프레임 → VisionDetector → (target, laser)`
+`→ 에러 계산(e_u, e_v) → IbvsController → PWM(us)`
+`→ StmInterface → UART → STM 보드`
+
+#### 2. `gst_ibvs.cpp` (`process_gst_frame`)
+
+텍스트 데이터 흐름:
+
+1. GStreamer `appsink` 에서 `GstSample* sample` 을 받는다.
+2. `sampleToMat(sample, frame)`:
+   - `GstSample` 의 캡스에서 `width`, `height`, `format` 읽기
+   - `GstBuffer` 매핑 → `cv::Mat` 생성 → 복사본으로 `frame` 완성
+3. 외부에서 전달된 `target_center` 를 사용해 `DetectionResult target` 구성
+4. `VisionDetector::detectLaser(frame)` → 레이저 중심 `laser`
+5. `e_u = target.x - laser.x`, `e_v = target.y - laser.y`
+6. `IbvsController::update(e_u, e_v, 0.0)` → `pan_us`, `tilt_us`
+7. `StmInterface::sendPwm(pan_us, tilt_us)` 로 STM에 명령 전송
+
+논리 흐름도:
+
+`GstSample → sampleToMat → cv::Mat frame`
+`frame → VisionDetector::detectLaser → laser_center`
+`(target_center, laser_center) → 에러(e_u, e_v)`
+`→ IbvsController → PWM(us) → StmInterface → STM`
+
+#### 3. `vision_detector.cpp` (`VisionDetector`)
+
+- `detectTarget(const cv::Mat&)`
+  - 현재는 **프레임 중앙을 타겟으로 가정**하는 스텁 구현.
+  - 실제 프로젝트에서는 객체 검출 결과(bbox 중심 등)로 교체해야 한다.
+
+- `detectLaser(const cv::Mat&)`
+  - 입력 `frame` 을 GRAY로 변환.
+  - `cv::minMaxLoc` 으로 최대 밝기 픽셀의 위치를 찾음.
+  - 최대 밝기 값이 일정 threshold 이상이면 `found=true` 로 간주.
+
+흐름:
+
+`cv::Mat frame → (색/밝기 기반 처리) → DetectionResult {point, found}`
+
+#### 4. `ibvs_controller.cpp` (`IbvsController`)
+
+- 내부 상태:
+  - `current_pan_us`, `current_tilt_us`
+  - PWM 제한값 `pwm_min_`, `pwm_max_`, 중립값 `neutral_`
+  - 게인 `Ku_`, `Kv_` (각각 [us / pixel])
+
+- `update(e_u, e_v, dt_sec)`:
+  - 단순 P 제어:
+    - `current_pan_us  += Ku_ * e_u`
+    - `current_tilt_us += Kv_ * e_v`
+  - `clampPwm` 으로 `PWM_US_MIN` ~ `PWM_US_MAX` 범위 제한
+  - `IbvsOutput { pan_us, tilt_us }` 반환
+
+흐름:
+
+`(e_u, e_v) → P 제어 → (pan_us, tilt_us)`
+
+#### 5. `stm_interface.cpp` (`StmInterface`)
+
+- 생성자:
+  - `openSerial(device, baudrate)` 로 리눅스 시리얼 포트 오픈 (`termios` 설정 포함)
+- `isOpen()`:
+  - 파일 디스크립터 유효 여부 반환
+- `sendPwm(pan_us, tilt_us)`:
+  - `"PAN_US TILT_US\r\n"` 형식 문자열 구성 후 `write` 로 전송
+- `sendModeManual()`:
+  - `"mode 0\r\n"` 문자열 전송 (STM 펌웨어의 manual 모드 진입용)
+
+흐름:
+
+`(pan_us, tilt_us) → 문자열 "u1 u2\r\n" → UART → STM 보드`
+
