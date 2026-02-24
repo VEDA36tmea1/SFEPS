@@ -32,6 +32,13 @@ bool should_sample(std::uint64_t counter, std::size_t interval) {
 }
 } // namespace
 
+namespace {
+int ffmpeg_interrupt_cb(void* opaque) {
+    auto* running = static_cast<std::atomic<bool>*>(opaque);
+    return (running && !running->load()) ? 1 : 0;
+}
+}
+
 // [헬퍼] 시간 문자열
 static std::string get_time_str() {
     auto t = std::time(nullptr);
@@ -123,11 +130,24 @@ bool RTSPRecorder::connect_and_record() {
     av_dict_set(&opts, "ca_file", tls_ca, 0);
     av_dict_set(&opts, "verifyhost", "192.168.0.92", 0);
     
+    std::cout << "[System] Connecting to " << RTSP_URL << " (Secure Mode)..." << std::endl;
+
+    input_ctx = avformat_alloc_context();
+    if (!input_ctx) {
+        std::cerr << "[Error] Failed to allocate ffmpeg format context." << std::endl;
+        return false;
+    }
+    input_ctx->interrupt_callback.callback = ffmpeg_interrupt_cb;
+    input_ctx->interrupt_callback.opaque = &running_flag;
     std::cout << "[recorder.cpp] " << "[System] Connecting to " << RTSP_URL << " (Secure Mode)..." << std::endl;
     
     if (avformat_open_input(&input_ctx, RTSP_URL, nullptr, &opts) != 0) {
         av_dict_free(&opts);
         std::cerr << "[Error] Failed to connect! Check IP, Port(8332), or Cert." << std::endl;
+        if (input_ctx) {
+            avformat_free_context(input_ctx);
+            input_ctx = nullptr;
+        }
         return false;
     }
     av_dict_free(&opts);

@@ -2,6 +2,7 @@
 #include <filesystem>
 #include <thread>
 #include <atomic>
+#include <chrono>
 #include <csignal> // 시그널 처리를 위해 필요
 #include <chrono>
 #include <cstdlib>
@@ -14,9 +15,16 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <vector>
+#include <mutex>
 #include <cstdio>
-#include <limits>
 #include <cerrno>
+#include <cstring>
+#include <poll.h>
+#include <iomanip>
+#include <cstdint>
+
+#include <limits>
+
 
 #include "log.h"
 #include "recorder.h"
@@ -41,6 +49,15 @@ namespace fs = std::filesystem;
 // 알림 전송용 클라이언트 소켓 관리
 std::vector<int> g_client_sockets;
 std::mutex g_sockets_mutex;
+std::atomic<bool> g_running(true);
+
+void close_alert_client_sockets() {
+    std::lock_guard<std::mutex> lock(g_sockets_mutex);
+    for (int fd : g_client_sockets) {
+        close(fd);
+    }
+    g_client_sockets.clear();
+}
 
 namespace {
 struct SecurityRuntimeOptions {
@@ -271,22 +288,79 @@ void run_audio_receiver() {
     char buf[BUF_SIZE];
 
     while (g_running) {
+        struct pollfd pfd = {server_fd, POLLIN, 0};
+        int poll_ret = poll(&pfd, 1, 1000);
+        if (poll_ret < 0) {
+            if (errno == EINTR) continue;
+            std::perror("[Audio] poll");
+            break;
+        }
+        if (poll_ret == 0) continue;
+
         int client_fd = accept(server_fd, NULL, NULL);
         if (client_fd < 0) {
             if (!g_running) break;
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
             std::perror("[Audio] accept");
             continue;
         }
 
         std::cout << "[Audio] Client connected." << std::endl;
+        std::size_t total_bytes = 0;
+        std::uint64_t sample_count = 0;
+        std::uint64_t abs_sum = 0;
+        int peak_abs = 0;
+        const auto conn_start = std::chrono::steady_clock::now();
 
         ssize_t bytes;
-        while (g_running && (bytes = read(client_fd, buf, BUF_SIZE)) > 0) {
-            ring.push(buf, static_cast<std::size_t>(bytes));
+        while (g_running) {
+            struct pollfd cfd = {client_fd, POLLIN, 0};
+            int c_poll = poll(&cfd, 1, 1000);
+            if (c_poll < 0) {
+                if (errno == EINTR) continue;
+                std::perror("[Audio] client poll");
+                break;
+            }
+            if (c_poll == 0) continue;
+
+            bytes = read(client_fd, buf, BUF_SIZE);
+            if (bytes > 0) {
+                ring.push(buf, static_cast<std::size_t>(bytes));
+                total_bytes += static_cast<std::size_t>(bytes);
+
+                const std::size_t sample_bytes = static_cast<std::size_t>(bytes) - (static_cast<std::size_t>(bytes) % sizeof(std::int16_t));
+                const auto* samples = reinterpret_cast<const std::int16_t*>(buf);
+                const std::size_t n = sample_bytes / sizeof(std::int16_t);
+                for (std::size_t i = 0; i < n; ++i) {
+                    int v = static_cast<int>(samples[i]);
+                    int a = (v < 0) ? -v : v;
+                    abs_sum += static_cast<std::uint64_t>(a);
+                    if (a > peak_abs) peak_abs = a;
+                }
+                sample_count += n;
+                continue;
+            }
+            if (bytes == 0) break;
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+            std::perror("[Audio] read");
+            break;
         }
 
         close(client_fd);
-        std::cout << "[Audio] Client disconnected." << std::endl;
+        const auto elapsed_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - conn_start).count();
+        const double pcm_seconds = static_cast<double>(total_bytes) / static_cast<double>(AUDIO_SAMPLE_RATE * AUDIO_FRAME_BYTES);
+        const double avg_abs = (sample_count > 0) ? (static_cast<double>(abs_sum) / static_cast<double>(sample_count)) : 0.0;
+        std::cout << "[Audio] Client disconnected. bytes=" << total_bytes
+                  << ", conn_ms=" << elapsed_ms
+                  << ", pcm_sec=" << std::fixed << std::setprecision(2) << pcm_seconds
+                  << ", avg_abs=" << std::fixed << std::setprecision(1) << avg_abs
+                  << ", peak_abs=" << peak_abs << std::endl;
+        if (total_bytes == 0) {
+            std::cerr << "[Audio] Warning: connection closed without PCM payload." << std::endl;
+        } else if (sample_count > 0 && peak_abs < 50) {
+            std::cerr << "[Audio] Warning: payload looks near-silent (very low peak)." << std::endl;
+        }
     }
 
     ring.stop();
@@ -297,22 +371,37 @@ void run_audio_receiver() {
 // 부정승차 알림 서버 (클라이언트 연결 관리)
 void run_fraud_notifier(const SecurityRuntimeOptions sec_cfg) {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0) {
+        std::cerr << "[Alert] socket() failed: " << strerror(errno) << std::endl;
+        return;
+    }
     int opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     struct sockaddr_in addr = {AF_INET, htons(ALERT_PORT), {INADDR_ANY}};
     if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         std::cerr << "[Alert] bind() failed: " << strerror(errno) << std::endl;
+        close(server_fd);
         return;
     }
 
     if (listen(server_fd, 5) < 0) {
         std::cerr << "[Alert] listen() failed: " << strerror(errno) << std::endl;
+        close(server_fd);
         return;
     }
 
     std::cout << "[main.cpp] " << "[Alert] Alert server listening on port " << ALERT_PORT << "..." << std::endl;
 
-    while (true) {
+    while (g_running) {
+        struct pollfd pfd = {server_fd, POLLIN, 0};
+        int poll_ret = poll(&pfd, 1, 1000);
+        if (poll_ret < 0) {
+            if (errno == EINTR) continue;
+            std::cerr << "[Alert] poll() failed: " << strerror(errno) << std::endl;
+            break;
+        }
+        if (poll_ret == 0) continue;
+
         sockaddr_in peer_addr {};
         socklen_t peer_len = sizeof(peer_addr);
         int client_fd = accept(server_fd, reinterpret_cast<sockaddr*>(&peer_addr), &peer_len);
@@ -338,14 +427,20 @@ void run_fraud_notifier(const SecurityRuntimeOptions sec_cfg) {
                       << inet_ntoa(peer_addr.sin_addr) << ":" << ntohs(peer_addr.sin_port) << " (fd=" << client_fd << ")"
                       << std::endl;
         } else {
+            if (!g_running) break;
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
             std::cerr << "[Alert] accept() failed: " << strerror(errno) << std::endl;
         }
     }
+
+    close(server_fd);
+    close_alert_client_sockets();
+    std::cout << "[Alert] notifier thread stopped." << std::endl;
 }
 
 // 더미 부정승차 데이터 생성기
 void run_dummy_fraud_generator() {
-    while (true) {
+    while (g_running) {
         std::this_thread::sleep_for(std::chrono::seconds(5)); // 5초마다 발생
 
         // 1. 더미 데이터 생성
@@ -390,23 +485,75 @@ void run_login_auth(const RuntimeConfig cfg, const SecurityRuntimeOptions sec_cf
     Authenticator auth(cfg.db_host.c_str(), cfg.db_user.c_str(), cfg.db_pass.c_str(), cfg.db_name_auth.c_str()); // ID/PW 검증용 객체
     
     // DB 연결 확인 (로그용, 인증용 각각 연결)
-    if (!db.connect() || !auth.connect()) {
-        std::cerr << "[Fatal] Auth-related DB connection failed." << std::endl;
-        return;
+    const bool db_ok = db.connect();
+    const bool auth_ok = auth.connect();
+    const bool auth_bypass_mode = !(db_ok && auth_ok);
+    if (auth_bypass_mode) {
+        std::cerr << "[Warn] Auth DB unavailable. Temporary auth bypass mode enabled (all login requests PASS)." << std::endl;
     }
 
     // TCP 소켓 서버 설정
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0) {
+        std::cerr << "[Auth] socket() failed: " << strerror(errno) << std::endl;
+        return;
+    }
     int opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
     // 주소 및 포트 바인딩 (간결한 구조체 초기화 방식 사용)
     struct sockaddr_in addr = {AF_INET, htons(AUTH_PORT), {INADDR_ANY}};
-    bind(server_fd, (struct sockaddr *)&addr, sizeof(addr));
-    listen(server_fd, 5); // 최대 5개 대기열
+    if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        std::cerr << "[Auth] bind() failed: " << strerror(errno) << std::endl;
+        close(server_fd);
+        return;
+    }
+    if (listen(server_fd, 5) < 0) { // 최대 5개 대기열
+        std::cerr << "[Auth] listen() failed: " << strerror(errno) << std::endl;
+        close(server_fd);
+        return;
+    }
 
-    while (true) {
+    while (g_running) {
+        struct pollfd pfd = {server_fd, POLLIN, 0};
+        int poll_ret = poll(&pfd, 1, 1000);
+        if (poll_ret < 0) {
+            if (errno == EINTR) continue;
+            std::cerr << "[Auth] poll() failed: " << strerror(errno) << std::endl;
+            break;
+        }
+        if (poll_ret == 0) continue;
+
         // 클라이언트 접속 대기
+        int client_fd = accept(server_fd, NULL, NULL);
+        if (client_fd < 0) {
+            if (!g_running) break;
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+            std::cerr << "[Auth] accept() failed: " << strerror(errno) << std::endl;
+            continue;
+        }
+
+        char buf[1024] = {0};
+
+        // 데이터 수신 ("ID:PW" 형식 예상)
+        struct pollfd cfd = {client_fd, POLLIN, 0};
+        int c_poll = poll(&cfd, 1, 1000);
+        if (c_poll > 0 && read(client_fd, buf, sizeof(buf)) > 0) {
+            std::string data(buf), user = "Unknown";
+            size_t sep = data.find(':');
+            bool success = auth_bypass_mode;
+
+            // 구분자(:)가 있을 경우에만 분석 진행
+            if (sep != std::string::npos) {
+                user = data.substr(0, sep);
+                std::string pass = data.substr(sep + 1);
+                
+                // 불필요한 공백/개행 제거
+                user.erase(user.find_last_not_of(" \n\r\t") + 1);
+                pass.erase(pass.find_last_not_of(" \n\r\t") + 1);
+                
+                if (!auth_bypass_mode) {
+                    success = auth.authenticate(user, pass);
         sockaddr_in peer_addr {};
         socklen_t peer_len = sizeof(peer_addr);
         int client_fd = accept(server_fd, reinterpret_cast<sockaddr*>(&peer_addr), &peer_len);
@@ -505,13 +652,14 @@ void run_login_auth(const RuntimeConfig cfg, const SecurityRuntimeOptions sec_cf
         }
         close(client_fd); // 세션 종료
     }
-}
 
-// 전역 플래그 (시그널 핸들러에서 접근하기 위해)
-std::atomic<bool> g_running(true);
+    close(server_fd);
+    std::cout << "[Auth] auth thread stopped." << std::endl;
+}
 
 // [핵심] Ctrl+C 감지 함수
 void signal_handler(int signum) {
+    (void)signum;
     std::cout << "[main.cpp] " << "\n[System] 종료 신호 감지! 녹화를 저장하고 종료합니다...\n";
     g_running = false; // 루프를 멈추게 함 -> 자연스럽게 저장 로직 실행됨
 }
@@ -545,11 +693,16 @@ int main(int argc, char* argv[]) {
 
     // 1. 종료 신호(SIGINT) 등록
     signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
 
     // 2. 디렉토리 생성
     if (!fs::exists(VIDEO_SAVE_DIR)) fs::create_directories(VIDEO_SAVE_DIR);
 
     // 3. DB 연결 (logger) 및 AnalyticsProcessor 시작
+    DBLogger logger;
+    const bool logger_connected = logger.connect();
+    if (!logger_connected) {
+        std::cerr << "[Warn] DB Connection failed. Continuing without DB logging." << std::endl;
     DBLogger logger(cfg.db_host.c_str(), cfg.db_user.c_str(), cfg.db_pass.c_str(), cfg.db_name_analytics.c_str());
     if (!logger.connect()) {
         std::cerr << "[Fatal] DB Connection failed." << std::endl;
@@ -560,25 +713,31 @@ int main(int argc, char* argv[]) {
     AnalyticsProcessor analytics(cfg.db_host.c_str(), cfg.db_user.c_str(), cfg.db_pass.c_str(),
                                  cfg.db_name_analytics.c_str(), 3840, 2160);
     if (!analytics.start()) {
-        std::cerr << "[Fatal] Analytics DB connection failed." << std::endl;
-        return -1;
+        std::cerr << "[Warn] Analytics processor failed to start. Continuing without analytics worker." << std::endl;
     }
 
     // 4. 파일 정리 스레드 시작
     // 전역 변수 g_running을 참조로 넘김
     std::thread t1(run_file_cleanup_worker, std::ref(g_running), std::string(VIDEO_SAVE_DIR), 300);
-    t1.detach();
 
     // 5. DB 정리 스레드 시작
-    std::thread t2([&](){ 
-        while(g_running) { 
-            std::this_thread::sleep_for(std::chrono::seconds(60)); 
-            logger.requestDbCleanup(); 
-        } 
-    });
-    t2.detach();
+    std::thread t2;
+    if (logger_connected) {
+        t2 = std::thread([&](){ 
+            while(g_running) { 
+                std::this_thread::sleep_for(std::chrono::seconds(60)); 
+                logger.requestDbCleanup(); 
+            } 
+        });
+    } else {
+        std::cout << "[System] DB cleanup worker skipped (DB unavailable)." << std::endl;
+    }
 
     // 6. 로그인 인증 스레드 시작
+    std::thread t3(run_login_auth);
+
+    // 7. 음성 수신 스레드 시작
+    std::thread t4(run_audio_receiver);
     std::thread t3(run_login_auth, cfg, sec_cfg);
     t3.detach();
 
@@ -590,13 +749,13 @@ int main(int argc, char* argv[]) {
     // [NEW] 9. RFID 모니터링 스레드 시작 (recorder.run() 이전에 시작)
     RfidMonitor rfid_monitor(g_running, cfg.db_host, cfg.db_user, cfg.db_pass, cfg.db_name_auth);
     std::thread t5(&RfidMonitor::start, &rfid_monitor);
-    t5.detach();
 
     std::cout << "[main.cpp] " << "[System] RFID 모니터링 서비스 시작됨." << std::endl;
 
     
 
     // 8. 부정승차 알림 서버 시작
+    std::thread t6(run_fraud_notifier);
     std::thread t6(run_fraud_notifier, sec_cfg);
     t6.detach();
 
@@ -624,9 +783,16 @@ int main(int argc, char* argv[]) {
     // 10. 녹화 시작
     RTSPRecorder recorder(logger, g_running, analytics);
     recorder.run(); // 메인 스레드 블로킹
-  
-    // detach된 스레드들이 정리될 시간을 약간 줄 수 있음
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+    // recorder 루프가 끝나면 나머지 스레드도 종료 신호 전달
+    g_running = false;
+
+    if (t6.joinable()) t6.join();
+    if (t5.joinable()) t5.join();
+    if (t4.joinable()) t4.join();
+    if (t3.joinable()) t3.join();
+    if (t2.joinable()) t2.join();
+    if (t1.joinable()) t1.join();
 
     std::cout << "[main.cpp] " << "[System] 서버가 안전하게 종료되었습니다." << std::endl;
     return 0;

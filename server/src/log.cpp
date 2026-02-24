@@ -120,6 +120,12 @@ bool DBLogger::connect() {
 
 // 1. 일반 로그 큐에 넣기
 void DBLogger::enqueue(const std::string& type, const std::string& message) {
+    if (!isRunning.load()) return;
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        // 구조체 순서: type, str1, str2, time_str, x, y, event, age, photo_path, login_success
+        logQueue.push({SYSTEM_LOG, type, message, "", 0, 0, "", 0, "", false});
+    }
     std::lock_guard<std::mutex> lock(queueMutex);
     logQueue.push(LogItem {SYSTEM_LOG, type, message, "", 0.0f, 0.0f, "", 0, "", false});
     cv.notify_one();
@@ -127,6 +133,12 @@ void DBLogger::enqueue(const std::string& type, const std::string& message) {
 
 // 2. 로그인 로그 큐에 넣기
 void DBLogger::enqueueLogin(const std::string& username, const std::string& ip, bool success) {
+    if (!isRunning.load()) return;
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        // login_success 필드(맨 마지막)에 success 값 전달
+        logQueue.push({LOGIN_LOG, username, ip, "", 0, 0, "", 0, "", success});
+    }
     std::lock_guard<std::mutex> lock(queueMutex);
     logQueue.push(LogItem {LOGIN_LOG, username, ip, "", 0.0f, 0.0f, "", 0, "", success});
     cv.notify_one();
@@ -134,6 +146,15 @@ void DBLogger::enqueueLogin(const std::string& username, const std::string& ip, 
 
 // 3. ★ [수정됨] 분석 로그 큐에 넣기
 // 인자가 x, y, event, age, photoPath로 변경됨
+void DBLogger::enqueueAnalytics(const std::string& time, const std::string& objType, 
+                                float x, float y, const std::string& event, 
+                                int age, const std::string& photoPath) {
+    if (!isRunning.load()) return;
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        // str2(기존 details)는 비워둡니다.
+        logQueue.push({ANALYTICS_LOG, objType, "", time, x, y, event, age, photoPath, false});
+    }
 void DBLogger::enqueueAnalytics(const std::string& time,
                                 const std::string& objType,
                                 float x,
@@ -148,6 +169,11 @@ void DBLogger::enqueueAnalytics(const std::string& time,
 
 // [신규] 녹화 파일 기록 큐에 넣기
 void DBLogger::enqueueRecording(const std::string& filename) {
+    if (!isRunning.load()) return;
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        logQueue.push({RECORDING_LOG, filename, "", "", 0, 0, "", 0, "", false});
+    }
     std::lock_guard<std::mutex> lock(queueMutex);
     logQueue.push(LogItem {RECORDING_LOG, filename, "", "", 0.0f, 0.0f, "", 0, "", false});
     cv.notify_one();
@@ -155,6 +181,11 @@ void DBLogger::enqueueRecording(const std::string& filename) {
 
 // [신규] DB 청소 요청을 큐에 넣기
 void DBLogger::requestDbCleanup() {
+    if (!isRunning.load()) return;
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        logQueue.push({CLEANUP_DB_LOG, "", "", "", 0, 0, "", 0, "", false});
+    }
     std::lock_guard<std::mutex> lock(queueMutex);
     logQueue.push(LogItem {CLEANUP_DB_LOG, "", "", "", 0.0f, 0.0f, "", 0, "", false});
     cv.notify_one();

@@ -1,5 +1,6 @@
 #include "voicemanager.h"
 #include <QDebug>
+#include <QProcessEnvironment>
 
 // 서버 주소/포트 (Audio_Speaker_Unit·서버와 동일 포트)
 static const char * const AUDIO_SERVER_HOST = "192.168.0.89";
@@ -39,11 +40,17 @@ void VoiceManager::toggleMicrophone()
 
 void VoiceManager::startRecording()
 {
+    const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    const QString host = env.value(
+        "AUDIO_SERVER_HOST",
+        env.value("FRAUD_SERVER_HOST", QString::fromUtf8(AUDIO_SERVER_HOST))
+    );
+
     m_socket->abort();
-    m_socket->connectToHost(QString::fromUtf8(AUDIO_SERVER_HOST), AUDIO_SERVER_PORT);
+    m_socket->connectToHost(host, AUDIO_SERVER_PORT);
     m_active = true;
     emit activeChanged();
-    qDebug() << "Connecting to audio server... (RAW streaming)";
+    qDebug() << "Connecting to audio server..." << host << ":" << AUDIO_SERVER_PORT << "(RAW streaming)";
 }
 
 void VoiceManager::onSocketConnected()

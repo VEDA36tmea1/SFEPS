@@ -27,6 +27,8 @@ add_executable(smart_server
     src/db_tls.cpp
     src/runtime_config.cpp
     src/rfid_monitor.cpp
+    src/event_matcher.cpp
+    src/alert.cpp
     ${AUDIO_SPEAKER_UNIT_DIR}/src/audio_ring_buffer.cpp
     ${AUDIO_SPEAKER_UNIT_DIR}/src/audio_playback.cpp
 )
