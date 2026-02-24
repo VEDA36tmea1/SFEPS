@@ -6,12 +6,13 @@
 
 ## 🚀 주요 기능
 
-*   **보안 로그인 시스템**: 라즈베리파이 내 MariaDB와 연동된 TCP/IP 소켓 통신을 통한 사용자 인증.
-*   **멀티 프로토콜 스트리밍**: 라즈베리파이, 웹캠, 로컬 영상 파일로부터 **RTSP 실시간 영상** 수신 및 재생 지원.
-    *   **저지연 최적화 (Low Latency)**: 별도의 스레드(`VideoCaptureWorker`)와 최소화된 버퍼링 설정을 통해 실시간 응답성 보장.
-*   **실시간 영상 처리**: OpenCV 기반의 밝기 조절, ROI(관심 영역) 확대, AI 판독 결과 시각화.
-*   **중앙 집중형 로그 관리**: 인증 시도 및 이상 징후 발생 시 서버 데이터베이스에 실시간 타임스탬프 기록.
-*   **최신 UI/UX**: **Qt Quick (QML)**을 사용하여 유려하고 반응성이 뛰어난 다크 테마 인터페이스 구현.
+*   **보안 로그인 시스템**: 라즈베리파이 내 MariaDB와 연동된 TCP/IP 소켓 통신(Port 5555)을 통한 사용자 인증.
+*   **멀티 프로토콜 스트리밍**: OpenCV를 활용한 **RTSP 실시간 영상** 수신 및 고속 재생 지원.
+    *   **저지연 최적화 (Low Latency)**: `VideoCaptureWorker` 스레드와 `CAP_PROP_BUFFERSIZE` 최적화를 통해 실시간 응답성 확보.
+*   **실시간 영상 처리**: OpenCV 기반의 밝기 조절 및 ROI(관심 영역) 드래그 줌 기능 구현.
+*   **이상 징후 실시간 알림**: `FraudManager`를 통해 서버로부터 부정 승차 의심 데이터를 즉각 수신(Port 5557) 및 팝업 알림.
+*   **양방향 음성 통신**: `VoiceManager`를 통한 RAW PCM 무전통신 기능(Port 5556, 16kHz Mono) 지원.
+*   **통합 관제 대시보드**: 모니터링, 데이터 분석(Analytics), 로그 관리, 설정 기능을 갖춘 유려한 다크 테마 UI.
 
 ---
 
@@ -19,17 +20,20 @@
 
 ### 클라이언트 환경 (Client)
 *   **OS**: Windows 10/11
-*   **Framework**: Qt 6.4 이상 (필수 구성 요소: `QtQuick`, `QtQuickControls2`)
-*   **Compiler**: MinGW 64-bit (권장) 또는 MSVC
+*   **Framework**: Qt 6.4 이상 (필수: `QtQuick`, `QtMultimedia`, `QtNetwork`)
+*   **Compiler**: MinGW 64-bit (권장)
 *   **Library**: OpenCV 4.5.5 (MinGW 빌드)
 *   **Network Ports**:
-    *   TCP Port `5555` (인증/Auth)
-    *   RTSP Port `8554` (스트리밍/Streaming)
+    *   TCP Port `5555`: 사용자 인증 (Auth)
+    *   TCP Port `5557`: 부정 승차 알림 수신 (Fraud Alert)
+    *   TCP Port `5556`: 음성 스트리밍 (Voice/Audio)
+    *   RTSP Port `8554`: 영상 스트리밍 (Video)
 
 ### 네트워크 설정 (필수)
-클라이언트를 실행하기 전에 `src/authmanager.cpp`와 `src/videodisplayitem.cpp` 파일에서 서버(라즈베리파이)의 IP 주소가 올바르게 설정되어 있는지 확인하십시오.
-*   기본 인증 서버 IP: `192.168.0.92`
-*   기본 RTSP 주소: `rtsp://admin:CCgbdCCgbd@192.168.0.30/profile2/media.smp`
+현재 코드는 라즈베리파이 서버 IP를 `192.168.0.92`로 가정하고 있습니다. 서버 환경에 맞춰 다음 파일들을 확인하십시오.
+*   `src/authmanager.cpp`: 인증 서버 IP/Port 설정.
+*   `src/mainwindow.cpp`: RTSP 주소 (`rtsp://192.168.0.92:8554/cam1`) 설정.
+*   `src/voicemanager.cpp`: 오디오 서버 IP/Port 설정.
 
 ---
 
@@ -37,7 +41,7 @@
 
 ### 1. 사전 준비 (OpenCV)
 이 프로젝트는 **OpenCV MinGW 빌드 (`OpenCV-4.5.5-x64`)**가 필요합니다.
-프로젝트 루트의 **상위 디렉토리**에 다운로드하거나 `CMakeLists.txt`에서 경로를 수정해야 합니다.
+프로젝트 루트의 **상위 디렉토리**에 다운로드하거나 `CMakeLists.txt`에서 `OpenCV_DIR` 경로를 수정해야 합니다.
 
 ```powershell
 # 예시: 이 프로젝트의 상위 폴더에서 실행
@@ -49,19 +53,16 @@ git clone --branch OpenCV-4.5.5-x64 --depth 1 https://github.com/huihut/OpenCV-M
 1.  **PowerShell** 또는 터미널을 엽니다.
 2.  프로젝트 디렉토리로 이동합니다:
     ```powershell
-    cd C:\path\to\qt_client_ui
+    cd C:\path\to\SFEPS\client
     ```
 3.  **빌드 디렉토리 생성**:
     ```powershell
-    mkdir build-mingw
-    cd build-mingw
+    mkdir build
+    cd build
     ```
-4.  **CMake 구성 (Configure)**:
+4.  **CMake 구성 및 빌드**:
     ```powershell
     cmake -G "MinGW Makefiles" ..
-    ```
-5.  **빌드 (Build)**:
-    ```powershell
     cmake --build .
     ```
 
@@ -69,16 +70,18 @@ git clone --branch OpenCV-4.5.5-x64 --depth 1 https://github.com/huihut/OpenCV-M
 빌드가 성공하면 빌드 디렉토리 내의 실행 파일을 실행합니다:
 ```powershell
 .\appHanwhaVisionSFEPS.exe
-```
+    ```
 
 ---
 
 ## 📂 프로젝트 구조
 
-*   `src/`: 메인 소스 코드.
-    *   `main.cpp`: 프로그램 진입점, QML 타입 등록.
-    *   `authmanager.h/cpp`: TCP 로그인 로직 처리.
-    *   `videodisplayitem.h/cpp`: RTSP 스트리밍 표시 (QQuickPaintedItem), 백그라운드 스레드 포함.
-    *   `views/`: QML 뷰 파일들 (로그인, 모니터링 화면 등).
-*   `assets/`: 이미지 및 아이콘 리소스.
-*   `CMakeLists.txt`: 빌드 설정 파일.
+*   `src/`: C++/QML 소스 코드.
+    *   `main.cpp`: 프로그램 진입점 및 QML 타입 등록.
+    *   `mainwindow.h/cpp`: OpenCV 기반 영상 스트리밍 및 UI 핵심 로직 (`QQuickPaintedItem`).
+    *   `authmanager.h/cpp`: TCP 소켓 기반 로그인/인증 처리.
+    *   `fraudmanager.h/cpp`: 서버로부터 실시간 부정 승차 알림 수신용 소켓 관리.
+    *   `voicemanager.h/cpp`: 마이크 입력 캡처 및 서버 전송 (Voice over IP).
+    *   `views/`: 기능별 QML 화면 (Monitoring, Analytics, Login, Settings 등).
+*   `assets/`: 이미지, 아이콘 및 스타일 리소스.
+*   `CMakeLists.txt`: 프로젝트 빌드 설정.
