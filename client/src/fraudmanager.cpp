@@ -33,7 +33,6 @@ void FraudManager::onConnected()
     qDebug() << "[FraudManager] Connected to fraud alert server.";
     retryTimer->stop();
 }
-
 void FraudManager::onDisconnected()
 {
     qDebug() << "[FraudManager] Disconnected from fraud alert server. Retrying in 5s...";
@@ -50,17 +49,21 @@ void FraudManager::retryConnection()
 
 void FraudManager::onReadyRead()
 {
-    // 서버가 newline을 보내지 않을 경우를 대비해 canReadLine() 외의 처리도 고려할 수 있으나,
-    // 현재 서버 dummy generator가 "\n"을 보내므로 readLine()을 기본으로 함.
-    while (socket->canReadLine()) {
-        QByteArray data = socket->readLine().trimmed();
-        if (data.isEmpty()) continue;
+    // 수신 데이터 누적: '\n' 기준으로 분할하여 처리하고,
+    // 개행이 없는 완전한 메시지도 파싱(예: 서버가 개행을 빼먹는 경우)합니다.
+    recvBuffer.append(socket->readAll());
 
-        QString msg = QString::fromUtf8(data);
+    // 완전한 라인(\n)이 있으면 하나씩 처리
+    while (true) {
+        int nl = recvBuffer.indexOf('\n');
+        if (nl == -1) break;
+        QByteArray line = recvBuffer.left(nl).trimmed();
+        recvBuffer.remove(0, nl + 1);
+        if (line.isEmpty()) continue;
+
+        QString msg = QString::fromUtf8(line);
         qDebug() << "[FraudManager] Received:" << msg;
 
-        // 형식: "FRAUD|CardID|AgeGroup|Gate|EstAge"
-        // 예: "FRAUD|A1B2C3D4|senior|Gate1|65"
         if (msg.startsWith("FRAUD|")) {
             QStringList parts = msg.split("|", Qt::SkipEmptyParts);
             if (parts.size() >= 5) {
@@ -68,14 +71,30 @@ void FraudManager::onReadyRead()
                 QString ageGroup = parts[2];
                 QString gateId = parts[3];
                 int estAge = parts[4].toInt();
-                
-                // 나이 그룹 첫 글자 대문자화 (UI 미관을 위해)
-                if (!ageGroup.isEmpty()) {
-                    ageGroup[0] = ageGroup[0].toUpper();
-                }
-
+                if (!ageGroup.isEmpty()) ageGroup[0] = ageGroup[0].toUpper();
                 emit fraudDetected(cardId, ageGroup, gateId, estAge);
             }
         }
+    }
+
+    // 폴백: 개행이 없더라도 버퍼 내용이 완전한 메시지 형식이면 처리
+    if (!recvBuffer.isEmpty()) {
+        QString s = QString::fromUtf8(recvBuffer).trimmed();
+        if (!s.isEmpty() && s.startsWith("FRAUD|")) {
+            QStringList parts = s.split("|", Qt::SkipEmptyParts);
+            if (parts.size() >= 5) {
+                QString cardId = parts[1];
+                QString ageGroup = parts[2];
+                QString gateId = parts[3];
+                int estAge = parts[4].toInt();
+                if (!ageGroup.isEmpty()) ageGroup[0] = ageGroup[0].toUpper();
+                qDebug() << "[FraudManager] Received (no-nl fallback):" << s;
+                emit fraudDetected(cardId, ageGroup, gateId, estAge);
+                recvBuffer.clear();
+            }
+        }
+
+        // 안전장치: 버퍼가 너무 커지면 초기화하여 메모리/무한루프 방지
+        if (recvBuffer.size() > 16 * 1024) recvBuffer.clear();
     }
 }
