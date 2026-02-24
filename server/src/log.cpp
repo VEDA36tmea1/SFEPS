@@ -33,6 +33,8 @@ bool DBLogger::connect() {
 
     if (mysql_real_connect(conn, host, user, pass, db_name, 0, NULL, 0) == NULL) {
         std::cerr << "[DB Error] " << mysql_error(conn) << std::endl;
+        mysql_close(conn);
+        conn = NULL;
         return false;
     }
     
@@ -44,6 +46,7 @@ bool DBLogger::connect() {
 
 // 1. 일반 로그 큐에 넣기
 void DBLogger::enqueue(const std::string& type, const std::string& message) {
+    if (!isRunning.load()) return;
     {
         std::lock_guard<std::mutex> lock(queueMutex);
         // 구조체 순서: type, str1, str2, time_str, x, y, event, age, photo_path, login_success
@@ -54,6 +57,7 @@ void DBLogger::enqueue(const std::string& type, const std::string& message) {
 
 // 2. 로그인 로그 큐에 넣기
 void DBLogger::enqueueLogin(const std::string& username, const std::string& ip, bool success) {
+    if (!isRunning.load()) return;
     {
         std::lock_guard<std::mutex> lock(queueMutex);
         // login_success 필드(맨 마지막)에 success 값 전달
@@ -67,6 +71,7 @@ void DBLogger::enqueueLogin(const std::string& username, const std::string& ip, 
 void DBLogger::enqueueAnalytics(const std::string& time, const std::string& objType, 
                                 float x, float y, const std::string& event, 
                                 int age, const std::string& photoPath) {
+    if (!isRunning.load()) return;
     {
         std::lock_guard<std::mutex> lock(queueMutex);
         // str2(기존 details)는 비워둡니다.
@@ -77,6 +82,7 @@ void DBLogger::enqueueAnalytics(const std::string& time, const std::string& objT
 
 // [신규] 녹화 파일 기록 큐에 넣기
 void DBLogger::enqueueRecording(const std::string& filename) {
+    if (!isRunning.load()) return;
     {
         std::lock_guard<std::mutex> lock(queueMutex);
         logQueue.push({RECORDING_LOG, filename, "", "", 0, 0, "", 0, "", false});
@@ -86,6 +92,7 @@ void DBLogger::enqueueRecording(const std::string& filename) {
 
 // [신규] DB 청소 요청을 큐에 넣기
 void DBLogger::requestDbCleanup() {
+    if (!isRunning.load()) return;
     {
         std::lock_guard<std::mutex> lock(queueMutex);
         logQueue.push({CLEANUP_DB_LOG, "", "", "", 0, 0, "", 0, "", false});

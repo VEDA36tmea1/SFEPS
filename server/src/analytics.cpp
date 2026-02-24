@@ -23,14 +23,20 @@ AnalyticsProcessor::~AnalyticsProcessor() {
 
 bool AnalyticsProcessor::start() {
     conn = mysql_init(NULL);
-    if (!conn) return false;
-    if (mysql_real_connect(conn, host, user, pass, db, 0, NULL, 0) == NULL) {
+    if (!conn) {
+        std::cerr << "[Analytics] mysql_init failed. Running without DB logging." << std::endl;
+    } else if (mysql_real_connect(conn, host, user, pass, db, 0, NULL, 0) == NULL) {
         std::cerr << "[Analytics] DB connect error: " << mysql_error(conn) << std::endl;
-        mysql_close(conn); conn = nullptr; return false;
+        mysql_close(conn);
+        conn = nullptr;
     }
     running = true;
     worker = std::thread(&AnalyticsProcessor::workerLoop, this);
-    std::cout << "[Analytics] Started." << std::endl;
+    if (conn) {
+        std::cout << "[Analytics] Started (DB enabled)." << std::endl;
+    } else {
+        std::cout << "[Analytics] Started (DB disabled)." << std::endl;
+    }
     return true;
 }
 
@@ -42,6 +48,8 @@ void AnalyticsProcessor::stop() {
 }
 
 void AnalyticsProcessor::publishRaw(const std::string& raw) {
+    if (!running.load()) return;
+
     // XML 메타데이터: first/second 이벤트만 추출해서 전달
     if (raw.find("<wsnt:NotificationMessage") != std::string::npos) {
         std::vector<std::string> extracted;
