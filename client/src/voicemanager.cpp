@@ -1,19 +1,26 @@
 #include "voicemanager.h"
 #include <QDebug>
 
+// 서버 주소/포트 (Audio_Speaker_Unit·서버와 동일 포트)
+static const char * const AUDIO_SERVER_HOST = "192.168.0.89";
+static const quint16 AUDIO_SERVER_PORT = 5556;
+
 VoiceManager::VoiceManager(QObject *parent) : QObject(parent)
 {
     m_socket = new QTcpSocket(this);
-    
-    // 오디오 포맷 설정
+    m_forwardDevice = new SocketForwardDevice(m_socket, this);
+
+    // RAW PCM: 16kHz, 모노, S16_LE (서버·Audio_Speaker_Unit과 동일)
     QAudioFormat format;
     format.setSampleRate(16000);
     format.setChannelCount(1);
     format.setSampleFormat(QAudioFormat::Int16);
 
     m_audioSource = new QAudioSource(format, this);
-    
+
     connect(m_audioSource, &QAudioSource::stateChanged, this, &VoiceManager::handleStateChanged);
+    connect(m_socket, &QTcpSocket::connected, this, &VoiceManager::onSocketConnected);
+    connect(m_socket, &QTcpSocket::errorOccurred, this, &VoiceManager::onSocketError);
 }
 
 VoiceManager::~VoiceManager()
@@ -32,46 +39,47 @@ void VoiceManager::toggleMicrophone()
 
 void VoiceManager::startRecording()
 {
-    m_audioData.clear();
-    m_buffer.setBuffer(&m_audioData);
-    m_buffer.open(QIODevice::WriteOnly | QIODevice::Truncate);
-
-    m_audioSource->start(&m_buffer);
+    m_socket->abort();
+    m_socket->connectToHost(QString::fromUtf8(AUDIO_SERVER_HOST), AUDIO_SERVER_PORT);
     m_active = true;
     emit activeChanged();
-    qDebug() << "Recording started...";
+    qDebug() << "Connecting to audio server... (RAW streaming)";
+}
+
+void VoiceManager::onSocketConnected()
+{
+    m_forwardDevice->open(QIODevice::WriteOnly);
+    m_audioSource->start(m_forwardDevice);
+    qDebug() << "Recording started. Streaming RAW PCM to server...";
+}
+
+void VoiceManager::onSocketError(QAbstractSocket::SocketError err)
+{
+    Q_UNUSED(err);
+    if (!m_active) return;
+    qDebug() << "Audio socket error:" << m_socket->errorString();
+    stopAndSendData();
+    emit errorOccurred("서버 연결 실패 (Audio Port " + QString::number(AUDIO_SERVER_PORT) + ")");
 }
 
 void VoiceManager::stopAndSendData()
 {
-    m_audioSource->stop();
-    m_buffer.close();
+    if (m_audioSource->state() != QAudio::StoppedState)
+        m_audioSource->stop();
+    if (m_forwardDevice->isOpen())
+        m_forwardDevice->close();
+    m_socket->disconnectFromHost();
+    if (m_socket->state() != QAbstractSocket::UnconnectedState)
+        m_socket->waitForDisconnected(1000);
     m_active = false;
     emit activeChanged();
-    qDebug() << "Recording stopped. Data size:" << m_audioData.size();
-
-    if (m_audioData.isEmpty()) return;
-
-    // 서버로 전송 (포트 5556)
-    m_socket->abort();
-    m_socket->connectToHost("192.168.0.92", 5556);
-
-    if (m_socket->waitForConnected(3000)) {
-        qDebug() << "Sending audio data to server...";
-        m_socket->write(m_audioData);
-        m_socket->flush();
-        m_socket->disconnectFromHost();
-    } else {
-        qDebug() << "Failed to connect to audio server";
-        emit errorOccurred("서버 연결 실패 (Audio Port 5556)");
-    }
+    qDebug() << "Recording stopped. Stream closed.";
 }
 
 void VoiceManager::handleStateChanged(QAudio::State newState)
 {
     if (newState == QAudio::StoppedState) {
-        if (m_audioSource->error() != QAudio::NoError) {
+        if (m_audioSource->error() != QAudio::NoError)
             qDebug() << "Audio Source Error:" << m_audioSource->error();
-        }
     }
 }
