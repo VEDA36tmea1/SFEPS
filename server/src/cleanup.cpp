@@ -5,8 +5,20 @@
 #include <chrono>
 
 namespace fs = std::filesystem;
+namespace {
+constexpr const char* kRecPrefix = "rec_";
+constexpr const char* kMp4Suffix = ".mp4";
+
+inline bool is_rec_mp4(const std::string& filename) {
+    if (filename.rfind(kRecPrefix, 0) != 0) return false;
+    return filename.size() > 4 && filename.compare(filename.size() - 4, 4, kMp4Suffix) == 0;
+}
+} // namespace
+
+constexpr long kCleanupIntervalSec = 10;
 
 void run_file_cleanup_worker(std::atomic<bool>& running_flag, const std::string& save_dir, long retention_sec) {
+    auto interval = std::chrono::seconds(kCleanupIntervalSec);
     while (running_flag) {
         try {
             if (fs::exists(save_dir)) {
@@ -17,18 +29,15 @@ void run_file_cleanup_worker(std::atomic<bool>& running_flag, const std::string&
                     if (entry.is_regular_file()) {
                         std::string filename = entry.path().filename().string();
 
-                        // "rec_"로 시작하고 ".mp4"로 끝나는 파일만 대상
-                        if (filename.rfind("rec_", 0) == 0 && filename.length() >= 4 && 
-                            filename.compare(filename.length() - 4, 4, ".mp4") == 0) {
+                        if (!is_rec_mp4(filename)) continue;
                             
-                            // 생성 시간 체크
-                            auto ftime = fs::last_write_time(entry);
-                            auto age = std::chrono::duration_cast<std::chrono::seconds>(now - ftime).count();
-                            
-                            if (age >= retention_sec) {
-                                std::cout << "[Cleanup] Del: " << filename << " (Age: " << age << "s)" << std::endl;
-                                fs::remove(entry.path());
-                            }
+                        // 생성 시간 체크
+                        auto ftime = fs::last_write_time(entry);
+                        auto age = std::chrono::duration_cast<std::chrono::seconds>(now - ftime).count();
+                        
+                        if (age >= retention_sec) {
+                            //std::cout << "[Cleanup] Del: " << filename << " (Age: " << age << "s)" << std::endl;
+                            fs::remove(entry.path());
                         }
                     }
                 }
@@ -38,6 +47,6 @@ void run_file_cleanup_worker(std::atomic<bool>& running_flag, const std::string&
         }
         
         // 10초마다 검사
-        std::this_thread::sleep_for(std::chrono::seconds(10));
+        std::this_thread::sleep_for(interval);
     }
 }
