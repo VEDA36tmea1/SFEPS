@@ -116,4 +116,3 @@ void AudioPlayback::playbackThreadFunc()
     // 재생 중이던 버퍼를 비우고 종료
     snd_pcm_drain(pcm_handle_);
 }
-

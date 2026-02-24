@@ -16,4 +16,3 @@ constexpr int AUDIO_SAMPLE_BYTES = 2;
 
 // 프레임당 바이트 수 (모노에서는 샘플과 동일)
 constexpr int AUDIO_FRAME_BYTES = AUDIO_SAMPLE_BYTES * AUDIO_CHANNELS;
-

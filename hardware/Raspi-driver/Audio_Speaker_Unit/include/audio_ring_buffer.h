@@ -34,4 +34,3 @@ private:
     std::condition_variable cv_not_full_;
     bool stopped_ = false;
 };
-
