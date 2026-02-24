@@ -15,7 +15,7 @@ AuthManager::AuthManager(QObject *parent) : QObject(parent)
 void AuthManager::login(const QString &id, const QString &pw)
 {
     socket->abort();
-    socket->connectToHost("192.168.0.89", 5555);
+    socket->connectToHost("192.168.0.92", 5555);
 
     bool authenticated = false;
     if (socket->waitForConnected(3000)) {
@@ -29,6 +29,8 @@ void AuthManager::login(const QString &id, const QString &pw)
     }
 
     if (authenticated) {
+        m_currentUserId = id;
+        emit currentUserIdChanged();
         emit loginSuccess();
     } else {
         emit loginFailed("ID/PW를 확인하세요");

@@ -8,6 +8,7 @@
 #include <QFile>
 #include <QTextStream>
 #include <QDateTime>
+#include <QProcessEnvironment>
 #include "authmanager.h"
 #include "mainwindow.h"
 #include "voicemanager.h"
@@ -55,7 +56,13 @@ int main(int argc, char *argv[]) {
   // FraudManager를 컨텍스트 속성으로 등록
   FraudManager fraudManager;
   engine.rootContext()->setContextProperty("fraudManager", &fraudManager);
-  fraudManager.connectToServer("192.168.0.89", 5557);
+
+  // 알림 서버 호스트: 환경변수 FRAUD_SERVER_HOST가 설정되어 있으면 그 값을 사용하고,
+  // 설정되어 있지 않으면 기존 하드코드된 주소를 기본값으로 사용합니다.
+  QString alertHost = QProcessEnvironment::systemEnvironment().value("FRAUD_SERVER_HOST", "192.168.0.92");
+  const int alertPort = 5557;
+  qDebug() << "[Main] Fraud alert server:" << alertHost << ":" << alertPort;
+  fraudManager.connectToServer(alertHost, alertPort);
 
   // QML 파일 URL 정의
   const QUrl loginUrl(QStringLiteral("qrc:/src/views/LoginView.qml"));

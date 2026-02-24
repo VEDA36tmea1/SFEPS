@@ -11,6 +11,22 @@ Page {
     }
     signal backClicked
 
+    property int totalEntries: 0
+    property int sessionEvasions: 0
+    property int totalEvasions: 0 + sessionEvasions
+    property real evasionRate: totalEntries > 0 ? Math.round((totalEvasions / totalEntries) * 1000) / 10 : 0
+
+    // Demographic Counters
+    property int ageCount18: 0
+    property int ageCount25: 0
+    property int ageCount35: 0
+    property int ageCount45: 0
+    property int ageCount60: 0
+    property int ageCountPlus: 0
+
+    // Dynamic scaling helper
+    property int maxAgeCount: Math.max(1, ageCount18, ageCount25, ageCount35, ageCount45, ageCount60, ageCountPlus)
+
     ScrollView {
         id: scrollView
         anchors.fill: parent
@@ -155,7 +171,7 @@ Page {
                                         anchors.centerIn: parent
                                         spacing: 4
                                         Text {
-                                            text: "15%"
+                                            text: root.evasionRate + "%"
                                             color: "white"
                                             font.bold: true
                                             font.pixelSize: 24
@@ -189,7 +205,7 @@ Page {
                                                 font.pixelSize: 12
                                             }
                                             Text {
-                                                text: "6,427"
+                                                text: root.totalEvasions.toLocaleString()
                                                 color: "white"
                                                 font.bold: true
                                                 font.pixelSize: 16
@@ -207,12 +223,12 @@ Page {
                                         ColumnLayout {
                                             spacing: 2
                                             Text {
-                                                text: "Valid Entries"
+                                                text: "Total Entries"
                                                 color: AppTheme.textSecondary
                                                 font.pixelSize: 12
                                             }
                                             Text {
-                                                text: "36,423"
+                                                text: totalEntries.toLocaleString()
                                                 color: "white"
                                                 font.bold: true
                                                 font.pixelSize: 16
@@ -238,7 +254,7 @@ Page {
                         anchors.fill: parent
                         anchors.margins: 20
                         Text {
-                            text: "Demographic Distribution"
+                            text: "Passenger Demographics"
                             color: "white"
                             font.bold: true
                             font.pixelSize: 16
@@ -256,66 +272,52 @@ Page {
 
                             Repeater {
                                 model: [
-                                    {
-                                        label: "<18",
-                                        val: 12
-                                    },
-                                    {
-                                        label: "18-25",
-                                        val: 28
-                                    },
-                                    {
-                                        label: "26-35",
-                                        val: 35
-                                    },
-                                    {
-                                        label: "36-45",
-                                        val: 18
-                                    },
-                                    {
-                                        label: "46-60",
-                                        val: 5
-                                    },
-                                    {
-                                        label: "60+",
-                                        val: 2
-                                    }
+                                    { label: "<18", val: root.ageCount18 },
+                                    { label: "18-25", val: root.ageCount25 },
+                                    { label: "26-35", val: root.ageCount35 },
+                                    { label: "36-45", val: root.ageCount45 },
+                                    { label: "46-60", val: root.ageCount60 },
+                                    { label: "60+", val: root.ageCountPlus }
                                 ]
-                                delegate: Item {
-                                    Layout.fillWidth: true
-                                    Layout.fillHeight: true
+                                    Item {
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
 
-                                    ColumnLayout {
-                                        anchors.bottom: parent.bottom
-                                        anchors.horizontalCenter: parent.horizontalCenter
-                                        spacing: 8
+                                        ColumnLayout {
+                                            anchors.fill: parent
+                                            spacing: 8
 
-                                        Rectangle {
-                                            Layout.alignment: Qt.AlignHCenter
-                                            width: 30
-                                            height: parent.parent.height * (modelData.val / 40) // Scale factor
-                                            color: AppTheme.surfaceBackground
-                                            radius: 4
+                                            // Bar Container
+                                            Item {
+                                                Layout.fillWidth: true
+                                                Layout.fillHeight: true
 
-                                            // Fill
-                                            Rectangle {
-                                                anchors.bottom: parent.bottom
-                                                width: parent.width
-                                                height: parent.height
+                                                Rectangle {
+                                                    anchors.bottom: parent.bottom
+                                                    anchors.horizontalCenter: parent.horizontalCenter
+                                                    width: 30
+                                                    height: parent.height * (modelData.val / root.maxAgeCount) * 0.9 // 90% space max
+                                                    color: AppTheme.accent
+                                                    radius: 4
+                                                    opacity: 0.9
+                                                }
+                                            }
+
+                                            Text {
+                                                text: modelData.val
+                                                color: "white"
+                                                font.pixelSize: 10
+                                                Layout.alignment: Qt.AlignHCenter
+                                            }
+
+                                            Text {
+                                                text: modelData.label
                                                 color: AppTheme.textSecondary
-                                                opacity: 0.1 // Bg track
-                                                radius: 4
+                                                font.pixelSize: 11
+                                                Layout.alignment: Qt.AlignHCenter
                                             }
                                         }
-
-                                        Text {
-                                            text: modelData.label
-                                            color: AppTheme.textSecondary
-                                            font.pixelSize: 11
-                                            Layout.alignment: Qt.AlignHCenter
-                                        }
                                     }
-                                }
                             }
                         }
                     }
@@ -348,6 +350,16 @@ Page {
                                 confidence: cardId,
                                 action: "Footage"
                             })
+                            sessionEvasions++
+                            totalEntries++
+                            
+                            // Increment age demographics based on estAge
+                            if (estAge < 18) ageCount18++
+                            else if (estAge <= 25) ageCount25++
+                            else if (estAge <= 35) ageCount35++
+                            else if (estAge <= 45) ageCount45++
+                            else if (estAge <= 60) ageCount60++
+                            else ageCountPlus++
                         }
                     }
 
@@ -427,13 +439,6 @@ Page {
                         clip: true
                         model: ListModel {
                             id: alertsModel
-                            ListElement {
-                                ts: "14:23:05"
-                                location: "Gate 04"
-                                type: "SENIOR CARD"
-                                confidence: "CARD_8291"
-                                action: "Footage"
-                            }
                         }
                         delegate: ColumnLayout {
                             width: ListView.view ? ListView.view.width : 0

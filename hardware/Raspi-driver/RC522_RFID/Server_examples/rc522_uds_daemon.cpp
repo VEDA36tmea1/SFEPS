@@ -159,7 +159,8 @@ int main(int argc, char** argv) {
     while (g_running) {
       uint32_t uid = 0;
       if (ioctl(rc522_fd, RC522_READ_CARD, &uid) < 0) {
-        if (errno == EINTR) break;
+        if (errno == EINTR) continue;
+        fprintf(stderr, "[DEBUG] ioctl failed: errno=%d (%s)\n", errno, strerror(errno));
         usleep(100000);
         continue;
       }

@@ -28,7 +28,7 @@
 
 ### 네트워크 설정 (필수)
 클라이언트를 실행하기 전에 `src/authmanager.cpp`와 `src/videodisplayitem.cpp` 파일에서 서버(라즈베리파이)의 IP 주소가 올바르게 설정되어 있는지 확인하십시오.
-*   기본 인증 서버 IP: `192.168.0.89`
+*   기본 인증 서버 IP: `192.168.0.92`
 *   기본 RTSP 주소: `rtsp://admin:CCgbdCCgbd@192.168.0.30/profile2/media.smp`
 
 ---

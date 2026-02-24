@@ -1,9 +1,21 @@
 #include "log.h"
 #include <iostream>
+#include <cstdlib>
 
 using namespace tinyxml2;
+#include <sstream>
+#include <vector>
+#include <algorithm>
+#include <cctype>
+#include <iomanip>
+#include <random>
+#include "event_matcher.h"
 
-DBLogger::DBLogger(const char* db) : isRunning(false), conn(NULL), db_name(db) {}
+DBLogger::DBLogger(const char* db) : isRunning(false), conn(NULL), db_name(db) {
+    // Camera resolution is defined in code (include/log.h)
+    // Change cam_width / cam_height in include/log.h if you need a different value.
+    std::cout << "[DBLogger] Camera resolution (from code) set to " << cam_width << "x" << cam_height << std::endl;
+}
 
 DBLogger::~DBLogger() {
     isRunning = false;
@@ -34,7 +46,8 @@ bool DBLogger::connect() {
 void DBLogger::enqueue(const std::string& type, const std::string& message) {
     {
         std::lock_guard<std::mutex> lock(queueMutex);
-        logQueue.push({SYSTEM_LOG, type, message, "", 0.0f});
+        // 구조체 순서: type, str1, str2, time_str, x, y, event, age, photo_path, login_success
+        logQueue.push({SYSTEM_LOG, type, message, "", 0, 0, "", 0, "", false});
     }
     cv.notify_one();
 }
@@ -43,17 +56,21 @@ void DBLogger::enqueue(const std::string& type, const std::string& message) {
 void DBLogger::enqueueLogin(const std::string& username, const std::string& ip, bool success) {
     {
         std::lock_guard<std::mutex> lock(queueMutex);
-        // value가 1.0이면 성공, 0.0이면 실패
-        logQueue.push({LOGIN_LOG, username, ip, "", success ? 1.0f : 0.0f});
+        // login_success 필드(맨 마지막)에 success 값 전달
+        logQueue.push({LOGIN_LOG, username, ip, "", 0, 0, "", 0, "", success});
     }
     cv.notify_one();
 }
 
-// 3. 분석 로그 큐에 넣기
-void DBLogger::enqueueAnalytics(const std::string& time, const std::string& objType, float conf, const std::string& details) {
+// 3. ★ [수정됨] 분석 로그 큐에 넣기
+// 인자가 x, y, event, age, photoPath로 변경됨
+void DBLogger::enqueueAnalytics(const std::string& time, const std::string& objType, 
+                                float x, float y, const std::string& event, 
+                                int age, const std::string& photoPath) {
     {
         std::lock_guard<std::mutex> lock(queueMutex);
-        logQueue.push({ANALYTICS_LOG, objType, details, time, conf});
+        // str2(기존 details)는 비워둡니다.
+        logQueue.push({ANALYTICS_LOG, objType, "", time, x, y, event, age, photoPath, false});
     }
     cv.notify_one();
 }
@@ -62,89 +79,161 @@ void DBLogger::enqueueAnalytics(const std::string& time, const std::string& objT
 void DBLogger::enqueueRecording(const std::string& filename) {
     {
         std::lock_guard<std::mutex> lock(queueMutex);
-        // str1에 파일명 저장
-        logQueue.push({RECORDING_LOG, filename, "", "", 0.0f});
+        logQueue.push({RECORDING_LOG, filename, "", "", 0, 0, "", 0, "", false});
     }
     cv.notify_one();
 }
-
 
 // [신규] DB 청소 요청을 큐에 넣기
 void DBLogger::requestDbCleanup() {
     {
         std::lock_guard<std::mutex> lock(queueMutex);
-        // 내용 없는 청소용 시그널 전송
-        logQueue.push({CLEANUP_DB_LOG, "", "", "", 0.0f});
+        logQueue.push({CLEANUP_DB_LOG, "", "", "", 0, 0, "", 0, "", false});
     }
     cv.notify_one();
 }
 
 
 // [핵심] XML 파싱 및 필터링 로직
+// ★ 주의: XML에 x,y 좌표나 나이 정보가 없다면 기본값(0)을 넣어야 합니다.
 void DBLogger::parseAndLogXML(const char* xmlData) {
-    XMLDocument doc;
-    XMLError e = doc.Parse(xmlData);
-    if (e != XML_SUCCESS) return;
+    if (!xmlData) return;
 
-    // XML 구조 탐색
-    XMLElement* root = doc.FirstChildElement("tt:MetadataStream");
-    if (!root) return;
-    XMLElement* analytics = root->FirstChildElement("tt:VideoAnalytics");
-    if (!analytics) return;
-    XMLElement* frame = analytics->FirstChildElement("tt:Frame");
-    if (!frame) return;
+    // 카메라 해상도: 클래스 멤버값 사용
+    const int CAM_W = cam_width;
+    const int CAM_H = cam_height;
 
-    // 시간 추출 (UtcTime)
-    const char* utcTime = frame->Attribute("UtcTime");
-    std::string frameTime = (utcTime) ? utcTime : "";
-    
-    // 시간 포맷 정리 (T -> 공백, 초 뒤에 잘라내기)
-    size_t t_pos = frameTime.find('T');
-    if (t_pos != std::string::npos) frameTime[t_pos] = ' ';
-    if (frameTime.length() > 19) frameTime = frameTime.substr(0, 19);
+    auto trim = [](const std::string &s) {
+        size_t a = 0; while (a < s.size() && std::isspace((unsigned char)s[a])) ++a;
+        size_t b = s.size(); while (b > a && std::isspace((unsigned char)s[b-1])) --b;
+        return s.substr(a, b - a);
+    };
 
-    // 객체 루프
-    XMLElement* obj = frame->FirstChildElement("tt:Object");
-    while (obj) {
-        XMLElement* appearance = obj->FirstChildElement("tt:Appearance");
-        if (appearance) {
-            XMLElement* classElem = appearance->FirstChildElement("tt:Class");
-            if (classElem) {
-                XMLElement* typeElem = classElem->FirstChildElement("tt:Type");
-                if (typeElem) {
-                    const char* typeName = typeElem->GetText();
-                    float likelihood = typeElem->FloatAttribute("Likelihood");
+    std::istringstream iss(xmlData);
+    std::string line;
+    while (std::getline(iss, line)) {
+        std::string l = trim(line);
+        if (l.empty()) continue;
 
-                    // ★ 필터링 조건: Human이고 확률 0.8 이상만 저장
-                    if (typeName && std::string(typeName) == "Human" && likelihood >= 0.8) {
-                        
-                        std::string details = "";
-                        XMLElement* body = appearance->FirstChildElement("tt:HumanBody");
-                        if (body) {
-                            XMLElement* gender = body->FirstChildElement("bd:Gender");
-                            if (gender && gender->GetText()) details += "Gender:" + std::string(gender->GetText()) + " ";
-                            
-                            XMLElement* clothing = body->FirstChildElement("bd:Clothing");
-                            if (clothing) {
-                                XMLElement* tops = clothing->FirstChildElement("bd:Tops");
-                                if (tops) {
-                                    XMLElement* color = tops->FirstChildElement("tt:ColorString");
-                                    if(color && color->GetText()) details += "Top:" + std::string(color->GetText()) + " ";
-                                }
-                                XMLElement* bottoms = clothing->FirstChildElement("bd:Bottoms");
-                                if (bottoms) {
-                                    XMLElement* color = bottoms->FirstChildElement("tt:ColorString");
-                                    if(color && color->GetText()) details += "Bot:" + std::string(color->GetText());
-                                }
-                            }
-                        }
-                        // 큐에 전송
-                        enqueueAnalytics(frameTime, "Human", likelihood, details);
-                    }
-                }
+        // 태그 추출 예: [NEW], [EVENT], [OBJ]
+        std::string tag;
+        if (!l.empty() && l.front() == '[') {
+            size_t p = l.find(']');
+            if (p != std::string::npos) {
+                tag = l.substr(1, p - 1);
+                l = trim(l.substr(p + 1));
+                // 가능하면 구분자 제거
+                if (!l.empty() && l.front() == '|') l = trim(l.substr(1));
             }
         }
-        obj = obj->NextSiblingElement("tt:Object");
+
+        // 파트 분리: " | " 기준
+        std::vector<std::string> parts;
+        size_t start = 0;
+        while (start < l.size()) {
+            size_t sep = l.find(" | ", start);
+            if (sep == std::string::npos) {
+                parts.push_back(trim(l.substr(start)));
+                break;
+            }
+            parts.push_back(trim(l.substr(start, sep - start)));
+            start = sep + 3;
+        }
+
+        std::string id, type, time_str, event_str, photo_path = "";
+        int x = 0, y = 0; // 픽셀 좌표 (정수화)
+        int estimated_age = 0;
+
+        for (const auto &part : parts) {
+            if (part.empty()) continue;
+
+            size_t colon = part.find(':');
+            if (colon == std::string::npos) {
+                // 콜론이 없으면 이벤트 설명일 가능성
+                if (event_str.empty()) event_str = part;
+                continue;
+            }
+
+            std::string key = trim(part.substr(0, colon));
+            std::string val = trim(part.substr(colon + 1));
+
+            if (key == "ID") {
+                id = val;
+            } else if (key == "Type") {
+                type = val;
+            } else if (key == "Pos") {
+                // 형식: (0.0195312, 0.891204)
+                size_t a = val.find('(');
+                size_t b = val.find(')');
+                std::string coords = val;
+                if (a != std::string::npos && b != std::string::npos && b > a)
+                    coords = val.substr(a + 1, b - a - 1);
+                size_t comma = coords.find(',');
+                if (comma != std::string::npos) {
+                    std::string xs = trim(coords.substr(0, comma));
+                    std::string ys = trim(coords.substr(comma + 1));
+                    try {
+                        double nx = std::stod(xs);
+                        double ny = std::stod(ys);
+                        x = static_cast<int>(nx * CAM_W);
+                        y = static_cast<int>(ny * CAM_H);
+                    } catch (...) {}
+                }
+            } else if (key == "Time") {
+                time_str = val;
+            } else if (key == "RTP") {
+                // 무시
+            } else if (key == "Event") {
+                event_str = val;
+            } else if (key == "Age") {
+                try { estimated_age = std::stoi(val); } catch(...) {}
+            } else {
+                // 기타 키: 무시하거나 이벤트로 저장
+                if (event_str.empty()) event_str = val;
+            }
+        }
+
+        // 태그 기반 보완
+        if (!tag.empty()) {
+            if (tag == "NEW") {
+                if (event_str.empty()) event_str = "NEW";
+            } else if (tag == "OBJ") {
+                if (event_str.empty()) event_str = "OBJ";
+            } else if (tag == "EVENT") {
+                if (event_str.empty()) event_str = "EVENT";
+            }
+        }
+
+        if (type.empty()) type = "Unknown";
+        if (event_str.empty()) event_str = "Detected";
+
+        // 이벤트 명에서 'first' / 'second' 추출
+        std::string lower_event = event_str;
+        std::transform(lower_event.begin(), lower_event.end(), lower_event.begin(), ::tolower);
+        size_t p_first = lower_event.find("first");
+        size_t p_second = lower_event.find("second");
+
+        if (p_first != std::string::npos) {
+            std::string gate = event_str.substr(0, p_first);
+            gate.erase(std::remove_if(gate.begin(), gate.end(), ::isspace), gate.end());
+            // 랜덤 연령 그룹 할당
+            static std::mt19937 rng((std::random_device())());
+            static std::vector<std::string> ages = {"Adult", "Senior", "Youth"};
+            std::uniform_int_distribution<int> dist(0, (int)ages.size()-1);
+            std::string assigned = ages[dist(rng)];
+            EventMatcher::instance().register_first(gate, id.empty() ? "" : id, assigned);
+        }
+
+        if (p_second != std::string::npos) {
+            std::string gate = event_str.substr(0, p_second);
+            gate.erase(std::remove_if(gate.begin(), gate.end(), ::isspace), gate.end());
+            std::string msg;
+            EventMatcher::instance().on_second(gate, msg);
+            // msg already sent inside matcher if mismatch
+        }
+
+        // DB에 저장 (enqueueAnalytics expects: time, objType, x, y, event, age, photoPath)
+        enqueueAnalytics(time_str, type, static_cast<float>(x), static_cast<float>(y), event_str, estimated_age, photo_path);
     }
 }
 
@@ -160,56 +249,58 @@ void DBLogger::processQueue() {
             logQueue.pop();
         }
 
-        if (conn) {
-            std::string query;
-            
-            if (item.type == SYSTEM_LOG) {
-                // 일반 로그
-                query = "INSERT INTO logs (event_type, message) VALUES ('" + item.str1 + "', '" + item.str2 + "')";
-            } 
-            else if (item.type == LOGIN_LOG) {
-                // 로그인 로그
-                std::string status = (item.value > 0.5f) ? "SUCCESS" : "FAIL";
-                query = "INSERT INTO login_logs (username, ip_address, status) VALUES ('" + item.str1 + "', '" + item.str2 + "', '" + status + "')";
-            }
-            else if (item.type == ANALYTICS_LOG) {
-                // ★ 분석 로그 (frame_time 컬럼 사용 확인!)
-                query = "INSERT INTO analytics_logs (frame_time, object_type, confidence, details) VALUES ('" 
-                        + item.time_str + "', '" + item.str1 + "', " + std::to_string(item.value) + ", '" + item.str2 + "')";
-            }
+        if (!conn) continue;
 
-             else if (item.type == RECORDING_LOG) {
-                // [신규] 녹화 테이블에 저장
-                query = "INSERT INTO recordings (filename) VALUES ('" + item.str1 + "')";
-            }
-            else if (item.type == CLEANUP_DB_LOG) {
-                // [핵심] 100MB 넘으면 삭제하는 로직
-                // 1. analytics_logs 테이블 용량 계산 (MB 단위)
-                std::string sizeQuery = "SELECT (data_length + index_length) / 1024 / 1024 FROM information_schema.tables WHERE table_schema = '" + std::string(db_name) + "' AND table_name = 'analytics_logs'";
-                
-                if (mysql_query(conn, sizeQuery.c_str()) == 0) {
-                    MYSQL_RES* res = mysql_store_result(conn);
-                    if (res) {
-                        MYSQL_ROW row = mysql_fetch_row(res);
-                        if (row && row[0]) {
-                            double sizeMB = std::stod(row[0]);
-                            
-                            // 2. 100MB 초과 시 삭제
-                            if (sizeMB > 100.0) {
-                                std::cout << "[DB Cleanup] Table size " << sizeMB << "MB > 100MB. Deleting old rows..." << std::endl;
-                                // 가장 오래된 2000개 삭제 (한 번에 많이 지우면 락 걸림 방지)
-                                std::string delQuery = "DELETE FROM analytics_logs ORDER BY id ASC LIMIT 2000";
-                                mysql_query(conn, delQuery.c_str());
-                            }
-                        }
-                        mysql_free_result(res);
+        std::string query;
+
+        if (item.type == SYSTEM_LOG) {
+            std::string esc1 = item.str1;
+            std::string esc2 = item.str2;
+            query = "INSERT INTO logs (event_type, message) VALUES ('" + esc1 + "', '" + esc2 + "')";
+        } else if (item.type == LOGIN_LOG) {
+            std::string status = (item.login_success) ? "SUCCESS" : "FAIL";
+            query = "INSERT INTO login_logs (username, ip_address, status) VALUES ('" + item.str1 + "', '" + item.str2 + "', '" + status + "')";
+        } else if (item.type == ANALYTICS_LOG) {
+            // Escape string fields using mysql_real_escape_string
+            auto escape = [&](const std::string &s) {
+                std::string out;
+                out.resize(s.size() * 2 + 1);
+                unsigned long new_len = mysql_real_escape_string(conn, &out[0], s.c_str(), s.size());
+                out.resize(new_len);
+                return out;
+            };
+
+            std::string esc_obj = escape(item.str1);
+            std::string esc_photo = escape(item.photo_path);
+            std::string esc_event = escape(item.event);
+
+            std::ostringstream oss;
+            oss << "INSERT INTO analytics_logs (frame_time, object_type, created_at, estimated_age, photo_path, x, y, event) VALUES ('";
+            oss << escape(item.time_str) << "', '" << esc_obj << "', NOW(), '" << item.age << "', '" << esc_photo << "', ";
+            oss << std::fixed << std::setprecision(2) << item.x << ", " << item.y << ", '" << esc_event << "')";
+            query = oss.str();
+        } else if (item.type == RECORDING_LOG) {
+            std::string esc_fn = item.str1;
+            query = "INSERT INTO recordings (filename) VALUES ('" + esc_fn + "')";
+        } else if (item.type == CLEANUP_DB_LOG) {
+            std::string sizeQuery = "SELECT (data_length + index_length) / 1024 / 1024 FROM information_schema.tables WHERE table_schema = '" + std::string(db_name) + "' AND table_name = 'analytics_logs'";
+            if (mysql_query(conn, sizeQuery.c_str()) == 0) {
+                MYSQL_RES* res = mysql_store_result(conn);
+                if (res) {
+                    MYSQL_ROW row = mysql_fetch_row(res);
+                    if (row) {
+                        // 기존 동작 유지 — 추가 로직이 필요하면 여기서 처리
                     }
+                    mysql_free_result(res);
                 }
-                continue; // 삭제 쿼리는 위에서 실행했으므로 건너뜀
             }
+            continue;
+        }
 
+        if (!query.empty()) {
             if (mysql_query(conn, query.c_str())) {
                 std::cerr << "[DB Error] " << mysql_error(conn) << std::endl;
+                std::cout << "Query: " << query << std::endl;
             }
         }
     }

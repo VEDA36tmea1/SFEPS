@@ -18,6 +18,7 @@
 #include "audio_common.h"
 #include "audio_ring_buffer.h"
 #include "audio_playback.h"
+#include "analytics.h"
 
 namespace fs = std::filesystem;
 
@@ -113,15 +114,30 @@ void run_fraud_notifier() {
     int opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     struct sockaddr_in addr = {AF_INET, htons(ALERT_PORT), {INADDR_ANY}};
-    bind(server_fd, (struct sockaddr *)&addr, sizeof(addr));
-    listen(server_fd, 5);
+    if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        std::cerr << "[Alert] bind() failed: " << strerror(errno) << std::endl;
+        return;
+    }
+
+    if (listen(server_fd, 5) < 0) {
+        std::cerr << "[Alert] listen() failed: " << strerror(errno) << std::endl;
+        return;
+    }
+
+    std::cout << "[Alert] Alert server listening on port " << ALERT_PORT << "..." << std::endl;
 
     while (true) {
-        int client_fd = accept(server_fd, NULL, NULL);
+        sockaddr_in peer_addr {};
+        socklen_t peer_len = sizeof(peer_addr);
+        int client_fd = accept(server_fd, reinterpret_cast<sockaddr*>(&peer_addr), &peer_len);
         if (client_fd >= 0) {
             std::lock_guard<std::mutex> lock(g_sockets_mutex);
             g_client_sockets.push_back(client_fd);
-            std::cout << "[Alert] Client connected for fraud notifications." << std::endl;
+            std::cout << "[Alert] Client connected for fraud notifications: "
+                      << inet_ntoa(peer_addr.sin_addr) << ":" << ntohs(peer_addr.sin_port) << " (fd=" << client_fd << ")"
+                      << std::endl;
+        } else {
+            std::cerr << "[Alert] accept() failed: " << strerror(errno) << std::endl;
         }
     }
 }
@@ -226,10 +242,17 @@ int main() {
     // 2. 디렉토리 생성
     if (!fs::exists(VIDEO_SAVE_DIR)) fs::create_directories(VIDEO_SAVE_DIR);
 
-    // 3. DB 연결
+    // 3. DB 연결 (logger) 및 AnalyticsProcessor 시작
     DBLogger logger;
     if (!logger.connect()) {
         std::cerr << "[Fatal] DB Connection failed." << std::endl;
+        return -1;
+    }
+
+    // AnalyticsProcessor: analytics_logs는 CCgbd DB에 있음
+    AnalyticsProcessor analytics(DB_HOST, DB_USER, DB_PASS, "CCgbd", 3840, 2160);
+    if (!analytics.start()) {
+        std::cerr << "[Fatal] Analytics DB connection failed." << std::endl;
         return -1;
     }
 
@@ -269,12 +292,12 @@ int main() {
     std::thread t6(run_fraud_notifier);
     t6.detach();
 
-    // 9. 더미 부정승차 생성기 시작
-    std::thread t7(run_dummy_fraud_generator);
-    t7.detach();
+    // // 9. 더미 부정승차 생성기 시작
+    // std::thread t7(run_dummy_fraud_generator);
+    // t7.detach();
 
     // 10. 녹화 시작
-    RTSPRecorder recorder(logger, g_running);
+    RTSPRecorder recorder(logger, g_running, analytics);
     recorder.run(); // 메인 스레드 블로킹
   
     // detach된 스레드들이 정리될 시간을 약간 줄 수 있음

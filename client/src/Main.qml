@@ -18,13 +18,27 @@ Window {
         id: notificationModel
     }
 
-    Window {
-        id: detailWindow
+    property int currentNotificationIndex: -1
+
+    Popup {
+        id: detailPopup
+        anchors.centerIn: parent
         width: 1000
         height: 600
-        title: "Hardware Incident Detail"
-        visible: false
-        color: AppTheme.background
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: 0
+        
+        background: Rectangle {
+            color: AppTheme.background
+            radius: 12
+            border.color: AppTheme.borderCard
+            border.width: 1
+            
+            // Add a drop shadow effect or just a darker border for depth
+            layer.enabled: true
+        }
 
         property alias cardId: detailView.cardId
         property alias ageGroup: detailView.ageGroup
@@ -34,8 +48,13 @@ Window {
         DetailView {
             id: detailView
             anchors.fill: parent
-            onCloseClicked: detailWindow.close()
-            // We might need to add properties to DetailView.qml or just pass them if it's dynamic
+            onCloseClicked: detailPopup.close()
+            onConfirmClicked: {
+                if (currentNotificationIndex >= 0 && currentNotificationIndex < notificationModel.count) {
+                    notificationModel.remove(currentNotificationIndex)
+                }
+                currentNotificationIndex = -1
+            }
         }
     }
 
@@ -201,7 +220,7 @@ Window {
                             ColumnLayout {
                                 spacing: 0
                                 Text {
-                                    text: "John Doe"
+                                    text: authManager.currentUserId || "Admin"
                                     color: "white"
                                     font.pixelSize: 12
                                     font.bold: true
@@ -362,62 +381,142 @@ Window {
                                     }
                                 }
                             }
-                            onClicked: notificationPopup.open()
+                            onClicked: {
+                                notificationDrawer.open()
+                                unreadCount = 0
+                            }
                         }
 
-                        Popup {
-                            id: notificationPopup
-                            y: bellButton.height + 8
-                            x: bellButton.width - width // Align right edges
-                            width: 300
-                            height: Math.min(400, navList.contentHeight + 40)
-                            padding: 0
+                        Drawer {
+                            id: notificationDrawer
+                            edge: Qt.RightEdge
+                            width: 380
+                            height: parent.height
+                            
                             background: Rectangle {
                                 color: AppTheme.surfaceCardAlt
-                                radius: 8
                                 border.color: AppTheme.borderCard
+                                Rectangle {
+                                    anchors.left: parent.left
+                                    width: 1; height: parent.height
+                                    color: AppTheme.borderCard
+                                }
                             }
+
                             contentItem: ColumnLayout {
                                 spacing: 0
+                                
+                                // Integrated Header
                                 Rectangle {
-                                    Layout.fillWidth: true; Layout.preferredHeight: 40; color: "transparent"
-                                    Text { anchors.centerIn: parent; text: "Notifications (" + unreadCount + ")"; color: "white"; font.bold: true }
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 70
+                                    color: AppTheme.surface
+                                    
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 24; anchors.rightMargin: 16
+                                        ColumnLayout {
+                                            spacing: 2
+                                            Text { 
+                                                text: "Notifications"
+                                                color: "white"
+                                                font.pixelSize: 18
+                                                font.bold: true 
+                                            }
+                                            Text {
+                                                text: unreadCount + " new notifications"
+                                                color: AppTheme.accent
+                                                font.pixelSize: 11
+                                                font.bold: true
+                                            }
+                                        }
+                                        Item { Layout.fillWidth: true }
+                                        Button {
+                                            flat: true
+                                            implicitWidth: 32; implicitHeight: 32
+                                            onClicked: notificationDrawer.close()
+                                            background: null
+                                            contentItem: Text {
+                                                text: "✕"
+                                                color: "#666"
+                                                font.pixelSize: 20
+                                                horizontalAlignment: Text.AlignHCenter
+                                                verticalAlignment: Text.AlignVCenter
+                                            }
+                                        }
+                                    }
+                                    Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: AppTheme.borderCard }
                                 }
-                                Rectangle { Layout.fillWidth: true; height: 1; color: AppTheme.borderCard }
+
                                 ListView {
                                     id: navList
-                                    Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+                                    Layout.margins: 12
+                                    clip: true
                                     model: notificationModel
-                                    delegate: ItemDelegate {
-                                        width: parent.width; height: 70
-                                        contentItem: RowLayout {
-                                            spacing: 12
-                                            Rectangle { width: 32; height: 32; radius: 16; color: "#450a0a"; Text { anchors.centerIn: parent; text: "⚠️"; font.pixelSize: 16 } }
-                                            ColumnLayout {
-                                                spacing: 2
-                                                Text { text: cardId; color: "white"; font.bold: true; font.pixelSize: 12 }
-                                                Text { text: "Gate " + gateId; color: "#9ca3af"; font.pixelSize: 10 }
+                                    spacing: 10
+                                    delegate: Rectangle {
+                                        width: navList.width - 24; height: 95
+                                        color: AppTheme.surfaceCard
+                                        radius: 10
+                                        border.color: AppTheme.borderCard
+                                        
+                                        RowLayout {
+                                            anchors.fill: parent
+                                            anchors.margins: 16
+                                            spacing: 16
+                                            
+                                            Rectangle { 
+                                                width: 44; height: 44; radius: 22; color: "#2d160a"
+                                                border.color: AppTheme.accent
+                                                border.width: 1
+                                                Text { anchors.centerIn: parent; text: "⚡"; font.pixelSize: 20 } 
                                             }
+                                            
+                                            ColumnLayout {
+                                                spacing: 4
+                                                Text { text: cardId; color: "white"; font.bold: true; font.pixelSize: 14 }
+                                                Text { text: ((gateId.toString().indexOf("Gate") !== -1 || gateId.toString().indexOf("gate") !== -1) ? gateId : "Gate " + gateId) + " • " + timestamp; color: AppTheme.textSecondary; font.pixelSize: 11 }
+                                            }
+                                            
                                             Item { Layout.fillWidth: true }
+                                            
                                             Button {
-                                                text: "Detail"
-                                                font.pixelSize: 10
+                                                id: viewBtn
+                                                text: "View"
+                                                font.pixelSize: 11
+                                                palette.buttonText: viewBtn.hovered ? "white" : AppTheme.accent
+                                                background: Rectangle {
+                                                    color: viewBtn.hovered ? AppTheme.accent : "transparent"
+                                                    border.color: AppTheme.accent
+                                                    radius: 6
+                                                }
                                                 onClicked: {
-                                                    detailWindow.cardId = cardId
-                                                    detailWindow.ageGroup = ageGroup
-                                                    detailWindow.gateId = gateId
-                                                    detailWindow.estAge = estAge
-                                                    detailWindow.show()
-                                                    notificationPopup.close()
+                                                    currentNotificationIndex = index
+                                                    detailPopup.cardId = cardId
+                                                    detailPopup.ageGroup = ageGroup
+                                                    detailPopup.gateId = gateId
+                                                    detailPopup.estAge = estAge
+                                                    detailPopup.open()
+                                                    notificationDrawer.close()
                                                 }
                                             }
                                         }
                                     }
                                 }
+
                                 Rectangle { Layout.fillWidth: true; height: 1; color: AppTheme.borderCard }
+                                
                                 Button {
-                                    Layout.fillWidth: true; text: "Clear All"; flat: true
-                                    onClicked: { notificationModel.clear(); unreadCount = 0; notificationPopup.close() }
+                                    id: clearBtn
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 60
+                                    text: "Clear All Notifications"
+                                    flat: true
+                                    font.bold: true
+                                    palette.buttonText: clearBtn.hovered ? AppTheme.accentHover : AppTheme.accent
+                                    onClicked: { notificationModel.clear(); notificationDrawer.close() }
                                 }
                             }
                         }
@@ -431,7 +530,13 @@ Window {
                     currentIndex: currentViewIndex - 1
 
                     MonitoringView {
-                        onViewDetailRequest: {} 
+                        onViewDetailRequest: (cardId, ageGroup, gateId, estAge) => {
+                            detailPopup.cardId = cardId
+                            detailPopup.ageGroup = ageGroup
+                            detailPopup.gateId = gateId
+                            detailPopup.estAge = estAge
+                            detailPopup.open()
+                        }
                     }
                     AnalyticsView {}
                     SettingsView {

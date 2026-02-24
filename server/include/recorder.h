@@ -4,6 +4,7 @@
 #include <string>
 #include <atomic>
 #include "log.h"
+#include "analytics.h"
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -18,13 +19,14 @@ static const int SEGMENT_DURATION = 60; // 60초
 
 class RTSPRecorder {
 public:
-    RTSPRecorder(DBLogger& logger, std::atomic<bool>& running_flag);
+    RTSPRecorder(DBLogger& logger, std::atomic<bool>& running_flag, AnalyticsProcessor& analytics);
     ~RTSPRecorder();
     void run();
 
 private:
     DBLogger& logger;
     std::atomic<bool>& running_flag;
+    AnalyticsProcessor& analytics;
     AVFormatContext *input_ctx = nullptr, *output_ctx = nullptr;
     int video_stream_idx = -1, meta_stream_idx = -1;
     time_t start_time = 0;
