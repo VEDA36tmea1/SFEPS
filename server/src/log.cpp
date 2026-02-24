@@ -6,7 +6,8 @@
 #include <vector>
 
 namespace {
-constexpr const char* kSystemLogInsertQuery = "INSERT INTO logs (event_type, message) VALUES (?, ?)";
+constexpr const char* kSystemLogInsertQuery =
+    "INSERT INTO logs (event_type, message) VALUES (?, ?)";
 constexpr const char* kLoginLogInsertQuery =
     "INSERT INTO login_logs (username, ip_address, status) VALUES (?, ?, ?)";
 constexpr const char* kAnalyticsLogInsertQuery =
@@ -17,95 +18,107 @@ constexpr const char* kRecordingInsertQuery = "INSERT INTO recordings (filename)
 bool prepare_stmt(MYSQL* conn, MYSQL_STMT*& stmt, const char* query, const char* name) {
     stmt = mysql_stmt_init(conn);
     if (stmt == nullptr) {
-        std::cerr << "[log.cpp] " << "[DB Error] mysql_stmt_init() failed for " << name << std::endl;
+        std::cerr << "[log.cpp] [DB Error] mysql_stmt_init() failed for " << name << std::endl;
         return false;
     }
 
     if (mysql_stmt_prepare(stmt, query, std::strlen(query)) != 0) {
-        std::cerr << "[log.cpp] " << "[DB Error] prepare failed for " << name << ": "
+        std::cerr << "[log.cpp] [DB Error] prepare failed for " << name << ": "
                   << mysql_stmt_error(stmt) << std::endl;
         mysql_stmt_close(stmt);
         stmt = nullptr;
         return false;
     }
+
     return true;
 }
-} // namespace
+}  // namespace
 
 DBLogger::DBLogger(const char* host_, const char* user_, const char* pass_, const char* db)
-    : isRunning(false),
-      conn(NULL),
-      systemLogStmt(NULL),
-      loginLogStmt(NULL),
-      analyticsLogStmt(NULL),
-      recordingStmt(NULL),
+    : conn(nullptr),
+      systemLogStmt(nullptr),
+      loginLogStmt(nullptr),
+      analyticsLogStmt(nullptr),
+      recordingStmt(nullptr),
       host(host_ ? host_ : ""),
       user(user_ ? user_ : ""),
       pass(pass_ ? pass_ : ""),
-      db_name(db ? db : "") {}
+      db_name(db ? db : ""),
+      isRunning(false) {}
 
 DBLogger::~DBLogger() {
     isRunning = false;
-    cv.notify_one();
-    if (workerThread.joinable()) workerThread.join();
+    cv.notify_all();
+    if (workerThread.joinable()) {
+        workerThread.join();
+    }
+
     closeStatements();
-    if (conn != NULL) {
+
+    if (conn != nullptr) {
         mysql_close(conn);
-        std::cout << "[log.cpp] " << "[System] DB Connection Closed." << std::endl;
+        conn = nullptr;
+        std::cout << "[log.cpp] [System] DB connection closed." << std::endl;
     }
 }
 
 bool DBLogger::prepareStatements() {
-    if (conn == NULL) return false;
-    if (!prepare_stmt(conn, systemLogStmt, kSystemLogInsertQuery, "system log insert")) return false;
-    if (!prepare_stmt(conn, loginLogStmt, kLoginLogInsertQuery, "login log insert")) return false;
-    if (!prepare_stmt(conn, analyticsLogStmt, kAnalyticsLogInsertQuery, "analytics log insert")) return false;
-    if (!prepare_stmt(conn, recordingStmt, kRecordingInsertQuery, "recording insert")) return false;
+    if (conn == nullptr) return false;
+
+    if (!prepare_stmt(conn, systemLogStmt, kSystemLogInsertQuery, "logs insert")) return false;
+    if (!prepare_stmt(conn, loginLogStmt, kLoginLogInsertQuery, "login_logs insert")) return false;
+    if (!prepare_stmt(conn, analyticsLogStmt, kAnalyticsLogInsertQuery, "analytics_logs insert")) {
+        return false;
+    }
+    if (!prepare_stmt(conn, recordingStmt, kRecordingInsertQuery, "recordings insert")) return false;
     return true;
 }
 
 void DBLogger::closeStatements() {
-    if (recordingStmt != NULL) {
+    if (recordingStmt != nullptr) {
         mysql_stmt_close(recordingStmt);
-        recordingStmt = NULL;
+        recordingStmt = nullptr;
     }
-    if (analyticsLogStmt != NULL) {
+    if (analyticsLogStmt != nullptr) {
         mysql_stmt_close(analyticsLogStmt);
-        analyticsLogStmt = NULL;
+        analyticsLogStmt = nullptr;
     }
-    if (loginLogStmt != NULL) {
+    if (loginLogStmt != nullptr) {
         mysql_stmt_close(loginLogStmt);
-        loginLogStmt = NULL;
+        loginLogStmt = nullptr;
     }
-    if (systemLogStmt != NULL) {
+    if (systemLogStmt != nullptr) {
         mysql_stmt_close(systemLogStmt);
-        systemLogStmt = NULL;
+        systemLogStmt = nullptr;
     }
 }
 
 bool DBLogger::connect() {
-    conn = mysql_init(NULL);
-    if (conn == NULL) return false;
-
-    std::string tls_err;
-    if (!configure_db_tls(conn, "log", tls_err)) {
-        std::cerr << "[DB TLS Error] " << tls_err << std::endl;
-        mysql_close(conn);
-        conn = NULL;
+    conn = mysql_init(nullptr);
+    if (conn == nullptr) {
         return false;
     }
 
-    if (mysql_real_connect(conn, host.c_str(), user.c_str(), pass.c_str(), db_name.c_str(), 0, NULL, 0) == NULL) {
-        std::cerr << "[DB Error] " << mysql_error(conn) << std::endl;
+    std::string tls_err;
+    if (!configure_db_tls(conn, "log", tls_err)) {
+        std::cerr << "[log.cpp] [DB TLS Error] " << tls_err << std::endl;
         mysql_close(conn);
-        conn = NULL;
+        conn = nullptr;
+        return false;
+    }
+
+    if (mysql_real_connect(conn, host.c_str(), user.c_str(), pass.c_str(), db_name.c_str(), 0, nullptr, 0) ==
+        nullptr) {
+        std::cerr << "[log.cpp] [DB Error] " << mysql_error(conn) << std::endl;
+        mysql_close(conn);
+        conn = nullptr;
         return false;
     }
 
     if (!prepareStatements()) {
         closeStatements();
         mysql_close(conn);
-        conn = NULL;
+        conn = nullptr;
         return false;
     }
 
@@ -118,43 +131,26 @@ bool DBLogger::connect() {
     return true;
 }
 
-// 1. 일반 로그 큐에 넣기
 void DBLogger::enqueue(const std::string& type, const std::string& message) {
     if (!isRunning.load()) return;
+
     {
         std::lock_guard<std::mutex> lock(queueMutex);
-        // 구조체 순서: type, str1, str2, time_str, x, y, event, age, photo_path, login_success
-        logQueue.push({SYSTEM_LOG, type, message, "", 0, 0, "", 0, "", false});
+        logQueue.push(LogItem {SYSTEM_LOG, type, message, "", 0.0f, 0.0f, "", 0, "", false});
     }
-    std::lock_guard<std::mutex> lock(queueMutex);
-    logQueue.push(LogItem {SYSTEM_LOG, type, message, "", 0.0f, 0.0f, "", 0, "", false});
     cv.notify_one();
 }
 
-// 2. 로그인 로그 큐에 넣기
 void DBLogger::enqueueLogin(const std::string& username, const std::string& ip, bool success) {
     if (!isRunning.load()) return;
+
     {
         std::lock_guard<std::mutex> lock(queueMutex);
-        // login_success 필드(맨 마지막)에 success 값 전달
-        logQueue.push({LOGIN_LOG, username, ip, "", 0, 0, "", 0, "", success});
+        logQueue.push(LogItem {LOGIN_LOG, username, ip, "", 0.0f, 0.0f, "", 0, "", success});
     }
-    std::lock_guard<std::mutex> lock(queueMutex);
-    logQueue.push(LogItem {LOGIN_LOG, username, ip, "", 0.0f, 0.0f, "", 0, "", success});
     cv.notify_one();
 }
 
-// 3. ★ [수정됨] 분석 로그 큐에 넣기
-// 인자가 x, y, event, age, photoPath로 변경됨
-void DBLogger::enqueueAnalytics(const std::string& time, const std::string& objType, 
-                                float x, float y, const std::string& event, 
-                                int age, const std::string& photoPath) {
-    if (!isRunning.load()) return;
-    {
-        std::lock_guard<std::mutex> lock(queueMutex);
-        // str2(기존 details)는 비워둡니다.
-        logQueue.push({ANALYTICS_LOG, objType, "", time, x, y, event, age, photoPath, false});
-    }
 void DBLogger::enqueueAnalytics(const std::string& time,
                                 const std::string& objType,
                                 float x,
@@ -162,63 +158,70 @@ void DBLogger::enqueueAnalytics(const std::string& time,
                                 const std::string& event,
                                 int age,
                                 const std::string& photoPath) {
-    std::lock_guard<std::mutex> lock(queueMutex);
-    logQueue.push(LogItem {ANALYTICS_LOG, objType, "", time, x, y, event, age, photoPath, false});
+    if (!isRunning.load()) return;
+
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        logQueue.push(
+            LogItem {ANALYTICS_LOG, objType, "", time, x, y, event, age, photoPath, false});
+    }
     cv.notify_one();
 }
 
-// [신규] 녹화 파일 기록 큐에 넣기
 void DBLogger::enqueueRecording(const std::string& filename) {
     if (!isRunning.load()) return;
+
     {
         std::lock_guard<std::mutex> lock(queueMutex);
-        logQueue.push({RECORDING_LOG, filename, "", "", 0, 0, "", 0, "", false});
+        logQueue.push(LogItem {RECORDING_LOG, filename, "", "", 0.0f, 0.0f, "", 0, "", false});
     }
-    std::lock_guard<std::mutex> lock(queueMutex);
-    logQueue.push(LogItem {RECORDING_LOG, filename, "", "", 0.0f, 0.0f, "", 0, "", false});
     cv.notify_one();
 }
 
-// [신규] DB 청소 요청을 큐에 넣기
 void DBLogger::requestDbCleanup() {
     if (!isRunning.load()) return;
+
     {
         std::lock_guard<std::mutex> lock(queueMutex);
-        logQueue.push({CLEANUP_DB_LOG, "", "", "", 0, 0, "", 0, "", false});
+        logQueue.push(LogItem {CLEANUP_DB_LOG, "", "", "", 0.0f, 0.0f, "", 0, "", false});
     }
-    std::lock_guard<std::mutex> lock(queueMutex);
-    logQueue.push(LogItem {CLEANUP_DB_LOG, "", "", "", 0.0f, 0.0f, "", 0, "", false});
     cv.notify_one();
 }
 
-// 일꾼 스레드 (실제 DB 저장)
 void DBLogger::processQueue() {
     auto execute_stmt = [&](MYSQL_STMT* stmt, MYSQL_BIND* bind, const char* stmt_name) -> bool {
-        if (stmt == NULL) return false;
+        if (stmt == nullptr) return false;
+
         if (mysql_stmt_reset(stmt) != 0) {
-            std::cerr << "[log.cpp] " << "[DB Error] stmt reset failed (" << stmt_name
+            std::cerr << "[log.cpp] [DB Error] stmt reset failed (" << stmt_name
                       << "): " << mysql_stmt_error(stmt) << std::endl;
             return false;
         }
+
         if (mysql_stmt_bind_param(stmt, bind) != 0) {
-            std::cerr << "[log.cpp] " << "[DB Error] stmt bind failed (" << stmt_name
+            std::cerr << "[log.cpp] [DB Error] stmt bind failed (" << stmt_name
                       << "): " << mysql_stmt_error(stmt) << std::endl;
             return false;
         }
+
         if (mysql_stmt_execute(stmt) != 0) {
-            std::cerr << "[log.cpp] " << "[DB Error] stmt execute failed (" << stmt_name
+            std::cerr << "[log.cpp] [DB Error] stmt execute failed (" << stmt_name
                       << "): " << mysql_stmt_error(stmt) << std::endl;
             return false;
         }
+
         return true;
     };
 
-    while (isRunning) {
+    while (true) {
         std::vector<LogItem> batch;
         {
             std::unique_lock<std::mutex> lock(queueMutex);
-            cv.wait(lock, [this] { return !logQueue.empty() || !isRunning; });
-            if (!isRunning && logQueue.empty()) break;
+            cv.wait(lock, [this] { return !logQueue.empty() || !isRunning.load(); });
+            if (!isRunning.load() && logQueue.empty()) {
+                break;
+            }
+
             batch.reserve(logQueue.size());
             while (!logQueue.empty()) {
                 batch.push_back(std::move(logQueue.front()));
@@ -226,12 +229,13 @@ void DBLogger::processQueue() {
             }
         }
 
-        if (!conn || batch.empty()) continue;
+        if (conn == nullptr || batch.empty()) continue;
 
         for (auto& item : batch) {
             if (item.type == SYSTEM_LOG) {
                 MYSQL_BIND params[2];
                 std::memset(params, 0, sizeof(params));
+
                 unsigned long type_len = static_cast<unsigned long>(item.str1.size());
                 unsigned long msg_len = static_cast<unsigned long>(item.str2.size());
 
@@ -249,8 +253,8 @@ void DBLogger::processQueue() {
             } else if (item.type == LOGIN_LOG) {
                 MYSQL_BIND params[3];
                 std::memset(params, 0, sizeof(params));
-                const std::string status = (item.login_success) ? "SUCCESS" : "FAIL";
 
+                const std::string status = item.login_success ? "SUCCESS" : "FAIL";
                 unsigned long user_len = static_cast<unsigned long>(item.str1.size());
                 unsigned long ip_len = static_cast<unsigned long>(item.str2.size());
                 unsigned long status_len = static_cast<unsigned long>(status.size());
@@ -274,6 +278,7 @@ void DBLogger::processQueue() {
             } else if (item.type == ANALYTICS_LOG) {
                 MYSQL_BIND params[7];
                 std::memset(params, 0, sizeof(params));
+
                 int age_param = item.age;
                 double x_param = static_cast<double>(item.x);
                 double y_param = static_cast<double>(item.y);
@@ -316,6 +321,7 @@ void DBLogger::processQueue() {
             } else if (item.type == RECORDING_LOG) {
                 MYSQL_BIND params[1];
                 std::memset(params, 0, sizeof(params));
+
                 unsigned long filename_len = static_cast<unsigned long>(item.str1.size());
                 params[0].buffer_type = MYSQL_TYPE_STRING;
                 params[0].buffer = const_cast<char*>(item.str1.c_str());
@@ -326,7 +332,12 @@ void DBLogger::processQueue() {
             } else if (item.type == CLEANUP_DB_LOG) {
                 if (mysql_query(conn, cleanupSizeQuery.c_str()) == 0) {
                     MYSQL_RES* res = mysql_store_result(conn);
-                    if (res) mysql_free_result(res);
+                    if (res != nullptr) {
+                        mysql_free_result(res);
+                    }
+                } else {
+                    std::cerr << "[log.cpp] [DB Error] cleanup query failed: " << mysql_error(conn)
+                              << std::endl;
                 }
             }
         }

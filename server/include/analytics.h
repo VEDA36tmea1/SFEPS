@@ -13,7 +13,12 @@
 
 class AnalyticsProcessor {
 public:
-    AnalyticsProcessor(const char* host, const char* user, const char* pass, const char* db, int cam_w = 3840, int cam_h = 2160);
+    AnalyticsProcessor(const char* host,
+                       const char* user,
+                       const char* pass,
+                       const char* db,
+                       int cam_w = 3840,
+                       int cam_h = 2160);
     ~AnalyticsProcessor();
 
     bool start();
@@ -33,8 +38,12 @@ private:
                             const std::string& event_name,
                             const std::string& photo_path);
 
-    const char* host; const char* user; const char* pass; const char* db;
-    int cam_w; int cam_h;
+    std::string host;
+    std::string user;
+    std::string pass;
+    std::string db;
+    int cam_w;
+    int cam_h;
 
     MYSQL* conn;
     MYSQL_STMT* analyticsInsertStmt;

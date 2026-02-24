@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Usage:
+#   ./run_server.sh
+#   ./run_server.sh --test-ping
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

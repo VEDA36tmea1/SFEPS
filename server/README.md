@@ -65,6 +65,9 @@ make -j4
 # 수동 실행(권장: run_server.sh 사용)
 cd ..
 ./run_server.sh
+
+# 테스트 알림 핑(2초 주기)
+./run_server.sh --test-ping
 ```
 
 ## 주요 경로
@@ -83,7 +86,8 @@ cd ..
 - 알림 포트 동시 접속 수 상한 (`SFEPS_ALERT_MAX_CLIENTS`)
 - 포트별 allowlist 기반 접속 제어 (`SFEPS_*_ALLOW_IPS`)
 - 메타데이터 패킷/큐 상한 및 샘플링 드롭 로그 (`SFEPS_META_*`, `SFEPS_ANALYTICS_QUEUE_MAX`)
-- 음성 RAW PCM 수신 후 `aplay`로 즉시 재생
+- 음성 RAW PCM 수신 후 `AudioRingBuffer + AudioPlayback(ALSA)` 경로로 재생
 - 부정승차/테스트 메시지 알림 브로드캐스트
+- Auth/Startup 정책: fail-closed (`Auth DB`, `logger`, `analytics` 실패 시 중단)
 
 마지막 업데이트: 2026-02-24
