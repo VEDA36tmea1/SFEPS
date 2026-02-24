@@ -1,9 +1,9 @@
 #include "recorder.h"
 #include <iostream>
-#include <filesystem>
 #include <chrono>
 #include <ctime>
-#include <iomanip>
+#include <cstdlib>
+#include <unistd.h>
 
 // [헬퍼] 시간 문자열
 static std::string get_time_str() {
@@ -26,15 +26,30 @@ bool RTSPRecorder::open_output_file(AVCodecParameters* par) {
     if (avformat_alloc_output_context2(&output_ctx, nullptr, "mp4", current_filename.c_str()) < 0) return false;
 
     AVStream* out = avformat_new_stream(output_ctx, nullptr);
+    if (!out) {
+        avformat_free_context(output_ctx);
+        output_ctx = nullptr;
+        return false;
+    }
+
     avcodec_parameters_copy(out->codecpar, par);
     out->codecpar->codec_tag = 0;
 
     if (!(output_ctx->oformat->flags & AVFMT_NOFILE)) {
-        if (avio_open(&output_ctx->pb, current_filename.c_str(), AVIO_FLAG_WRITE) < 0) return false;
+        if (avio_open(&output_ctx->pb, current_filename.c_str(), AVIO_FLAG_WRITE) < 0) {
+            avformat_free_context(output_ctx);
+            output_ctx = nullptr;
+            return false;
+        }
     }
-    if (avformat_write_header(output_ctx, nullptr) < 0) return false;
+    if (avformat_write_header(output_ctx, nullptr) < 0) {
+        if (!(output_ctx->oformat->flags & AVFMT_NOFILE)) avio_closep(&output_ctx->pb);
+        avformat_free_context(output_ctx);
+        output_ctx = nullptr;
+        return false;
+    }
 
-    std::cout << "[Rec] Start: " << current_filename << std::endl;
+    //std::cout << "[recorder.cpp] " << "[Rec] Start: " << current_filename << std::endl;
     start_time = std::time(nullptr);
     
     // 새 파일 시작 시 타임스탬프 상태 초기화
@@ -52,7 +67,7 @@ void RTSPRecorder::close_current_file() {
         avformat_free_context(output_ctx);
         output_ctx = nullptr;
         logger.enqueueRecording(current_filename);
-        std::cout << "[Rec] Saved: " << current_filename << std::endl;
+        //std::cout << "[recorder.cpp] " << "[Rec] Saved: " << current_filename << std::endl;
     }
 }
 
@@ -61,28 +76,48 @@ bool RTSPRecorder::connect_and_record() {
     av_dict_set(&opts, "rtsp_transport", "tcp", 0);
     av_dict_set(&opts, "stimeout", "5000000", 0); 
 
-    // ★ [보안 핵심] 자가 서명 인증서(Self-Signed) 허용 옵션
-    // 이 줄이 없으면 "SSL certificate problem" 에러가 뜨면서 접속이 안 됩니다.
-    av_dict_set(&opts, "tls_verify", "0", 0); 
+    const char* tls_ca = std::getenv("RTSPS_TLS_CA");
+    if (tls_ca == nullptr || tls_ca[0] == '\0') {
+        std::cerr << "[Error] RTSPS_TLS_CA is not set (fail-closed)." << std::endl;
+        av_dict_free(&opts);
+        return false;
+    }
+    if (access(tls_ca, R_OK) != 0) {
+        std::cerr << "[Error] RTSPS_TLS_CA is not readable: " << tls_ca << std::endl;
+        av_dict_free(&opts);
+        return false;
+    }
+
+    av_dict_set(&opts, "tls_verify", "1", 0);
+    av_dict_set(&opts, "ca_file", tls_ca, 0);
+    av_dict_set(&opts, "verifyhost", "192.168.0.92", 0);
     
-    std::cout << "[System] Connecting to " << RTSP_URL << " (Secure Mode)..." << std::endl;
+    std::cout << "[recorder.cpp] " << "[System] Connecting to " << RTSP_URL << " (Secure Mode)..." << std::endl;
     
     if (avformat_open_input(&input_ctx, RTSP_URL, nullptr, &opts) != 0) {
+        av_dict_free(&opts);
         std::cerr << "[Error] Failed to connect! Check IP, Port(8332), or Cert." << std::endl;
         return false;
     }
+    av_dict_free(&opts);
     
-    if (avformat_find_stream_info(input_ctx, nullptr) < 0) return false;
+    if (avformat_find_stream_info(input_ctx, nullptr) < 0) {
+        avformat_close_input(&input_ctx);
+        return false;
+    }
 
     video_stream_idx = av_find_best_stream(input_ctx, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     for(unsigned i=0; i<input_ctx->nb_streams; i++) 
         if(input_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_DATA) meta_stream_idx = i;
 
-    if (video_stream_idx < 0) return false;
+    if (video_stream_idx < 0) {
+        avformat_close_input(&input_ctx);
+        return false;
+    }
     
     // 연결 성공 로그
     logger.enqueue("SYSTEM", "RTSP Connected via TLS (Secure)");
-    std::cout << "[System] Connected! Video Stream Index: " << video_stream_idx << std::endl;
+    std::cout << "[recorder.cpp] " << "[System] Connected! Video Stream Index: " << video_stream_idx << std::endl;
 
     if (!open_output_file(input_ctx->streams[video_stream_idx]->codecpar)) return false;
 

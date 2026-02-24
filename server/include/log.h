@@ -8,8 +8,6 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
-#include <tinyxml2.h> 
-
 enum LogType { SYSTEM_LOG, LOGIN_LOG, ANALYTICS_LOG, RECORDING_LOG, CLEANUP_DB_LOG };
 
 struct LogItem {
@@ -35,7 +33,7 @@ struct LogItem {
 
 class DBLogger {
 public:
-    DBLogger(const char* db = "CCgbd");
+    DBLogger(const char* host, const char* user, const char* pass, const char* db);
     ~DBLogger();
     
     bool connect();
@@ -54,9 +52,6 @@ public:
                           const std::string& event, 
                           int age, 
                           const std::string& photoPath);
-    
-    // XML 파싱 후 저장 (이 함수 내부 구현도 .cpp에서 수정 필요)
-    void parseAndLogXML(const char* xmlData);
 
     // 4. 녹화 파일 기록
     void enqueueRecording(const std::string& filename);
@@ -68,22 +63,17 @@ private:
     void processQueue(); 
 
     MYSQL* conn;
-    
-    // ▼ 사용자 환경에 맞게 유지 ▼
-    const char* host = "192.168.0.92";
-    const char* user = "pi";
-    const char* pass = "raspberry"; 
-    const char* db_name = "CCgbd"; 
-
-    // Camera resolution (can be overridden by environment variables)
-    int cam_width = 3840;   // default 4K width
-    int cam_height = 2160;  // default 4K height
+    std::string host;
+    std::string user;
+    std::string pass;
+    std::string db_name;
 
     std::queue<LogItem> logQueue;
     std::mutex queueMutex;
     std::condition_variable cv;
     std::thread workerThread;
     std::atomic<bool> isRunning;
+    std::string cleanupSizeQuery;
 };
 
 #endif

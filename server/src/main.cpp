@@ -3,9 +3,13 @@
 #include <thread>
 #include <atomic>
 #include <csignal> // 시그널 처리를 위해 필요
+#include <chrono>
+#include <unordered_map>
+#include <algorithm>
+#include <cctype>
+#include <cstring>
 #include <arpa/inet.h>
 #include <unistd.h>
-#include <fstream>
 #include <vector>
 #include <cstdio>
 
@@ -16,27 +20,18 @@
 #include "rfid_monitor.h" // [NEW] RFID 모니터링 헤더 추가
 #include "analytics.h"
 #include "alert.h"
+#include "runtime_config.h"
 
 namespace fs = std::filesystem;
 
-// [설정] 로그인 인증 전용 포트 및 DB 접속 정보
+// [설정] 포트 정보
 #define AUTH_PORT 5555           // Qt 클라이언트와 통신할 포트
 #define AUDIO_PORT 5556          // 음성 데이터 수신 포트
-#define VOICE_SAVE_DIR "voice_recs"
-#define DB_HOST "192.168.0.92"   // MariaDB 서버 IP
-#define DB_USER "pi"             // DB 사용자 아이디
-#define DB_PASS "raspberry"      // DB 비밀번호
-#define DB_NAME "Client_db"      // 사용할 데이터베이스 이름
 #define ALERT_PORT 5557          // 부정승차 알림 포트
 
 // 알림 전송용 클라이언트 소켓 관리
 std::vector<int> g_client_sockets;
 std::mutex g_sockets_mutex;
-
-// 데이터를 콜백 함수로 넘기기 위한 구조체
-struct ServerData {
-    DBLogger *logger;
-};
 
 // 음성 수신 스레드 함수
 void run_audio_receiver() {
@@ -61,11 +56,11 @@ void run_audio_receiver() {
         close(client_fd);
 
         if (audio_buffer.empty()) {
-            std::cout << "[Audio] Received empty data, skipping playback" << std::endl;
+            std::cout << "[main.cpp] " << "[Audio] Received empty data, skipping playback" << std::endl;
             continue;
         }
 
-        std::cout << "[Audio] Received " << audio_buffer.size() << " bytes, playing..." << std::endl;
+        std::cout << "[main.cpp] " << "[Audio] Received " << audio_buffer.size() << " bytes, playing..." << std::endl;
 
         // ALSA로 바로 재생 (16000 Hz, 모노, S16_LE)
         FILE* aplay = popen("aplay -f S16_LE -r 16000 -c 1 -D default", "w");
@@ -73,7 +68,7 @@ void run_audio_receiver() {
             size_t written = fwrite(audio_buffer.data(), 1, audio_buffer.size(), aplay);
             pclose(aplay);
             if (written == audio_buffer.size()) {
-                std::cout << "[Audio] Playback completed" << std::endl;
+                std::cout << "[main.cpp] " << "[Audio] Playback completed" << std::endl;
             } else {
                 std::cerr << "[Audio] Playback error: wrote " << written << " / " << audio_buffer.size() << " bytes" << std::endl;
             }
@@ -99,7 +94,7 @@ void run_fraud_notifier() {
         return;
     }
 
-    std::cout << "[Alert] Alert server listening on port " << ALERT_PORT << "..." << std::endl;
+    std::cout << "[main.cpp] " << "[Alert] Alert server listening on port " << ALERT_PORT << "..." << std::endl;
 
     while (true) {
         sockaddr_in peer_addr {};
@@ -108,7 +103,7 @@ void run_fraud_notifier() {
         if (client_fd >= 0) {
             std::lock_guard<std::mutex> lock(g_sockets_mutex);
             g_client_sockets.push_back(client_fd);
-            std::cout << "[Alert] Client connected for fraud notifications: "
+            std::cout << "[main.cpp] " << "[Alert] Client connected for fraud notifications: "
                       << inet_ntoa(peer_addr.sin_addr) << ":" << ntohs(peer_addr.sin_port) << " (fd=" << client_fd << ")"
                       << std::endl;
         } else {
@@ -140,14 +135,46 @@ void run_dummy_fraud_generator() {
                 ++it;
             }
         }
-        std::cout << "[Alert] Fraud detected and broadcasted (5s interval): " << cardId << std::endl;
+        std::cout << "[main.cpp] " << "[Alert] Fraud detected and broadcasted (5s interval): " << cardId << std::endl;
     }
 }
 
+namespace {
+std::string trim_copy(const std::string& s) {
+    size_t start = 0;
+    while (start < s.size() && std::isspace(static_cast<unsigned char>(s[start]))) ++start;
+    size_t end = s.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1]))) --end;
+    return s.substr(start, end - start);
+}
+
+std::string normalize_login_key(const std::string& user) {
+    std::string normalized = trim_copy(user);
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return normalized;
+}
+} // namespace
+
 // 로그인 인증 전용 스레드 함수
-void run_login_auth() {
-    DBLogger db(DB_NAME); // 로그 기록용 객체
-    Authenticator auth(DB_HOST, DB_USER, DB_PASS, DB_NAME); // ID/PW 검증용 객체
+void run_login_auth(const RuntimeConfig cfg) {
+    struct AttemptState {
+        int fail_count = 0;
+        std::chrono::steady_clock::time_point lock_until = std::chrono::steady_clock::time_point::min();
+        std::chrono::steady_clock::time_point last_seen = std::chrono::steady_clock::time_point::min();
+    };
+
+    constexpr int kMaxFail = 5;
+    constexpr int kCleanupInterval = 100;
+    const auto kLockDuration = std::chrono::seconds(30);
+    const auto kStaleRetention = std::chrono::minutes(10);
+
+    std::unordered_map<std::string, AttemptState> attempts;
+    int request_counter = 0;
+
+    DBLogger db(cfg.db_host.c_str(), cfg.db_user.c_str(), cfg.db_pass.c_str(), cfg.db_name_auth.c_str()); // 로그 기록용 객체
+    Authenticator auth(cfg.db_host.c_str(), cfg.db_user.c_str(), cfg.db_pass.c_str(), cfg.db_name_auth.c_str()); // ID/PW 검증용 객체
     
     // DB 연결 확인 (로그용, 인증용 각각 연결)
     if (!db.connect() || !auth.connect()) {
@@ -167,7 +194,15 @@ void run_login_auth() {
 
     while (true) {
         // 클라이언트 접속 대기
-        int client_fd = accept(server_fd, NULL, NULL);
+        sockaddr_in peer_addr {};
+        socklen_t peer_len = sizeof(peer_addr);
+        int client_fd = accept(server_fd, reinterpret_cast<sockaddr*>(&peer_addr), &peer_len);
+        if (client_fd < 0) continue;
+
+        char ip_buf[INET_ADDRSTRLEN] = {0};
+        const char* ip_res = inet_ntop(AF_INET, &peer_addr.sin_addr, ip_buf, sizeof(ip_buf));
+        std::string client_ip = (ip_res != NULL) ? std::string(ip_res) : std::string("Unknown_IP");
+
         char buf[1024] = {0};
 
         // 데이터 수신 ("ID:PW" 형식 예상)
@@ -175,31 +210,71 @@ void run_login_auth() {
             std::string data(buf), user = "Unknown";
             size_t sep = data.find(':');
             bool success = false;
+            bool valid_format = false;
 
             // 구분자(:)가 있을 경우에만 분석 진행
             if (sep != std::string::npos) {
-                user = data.substr(0, sep);
-                std::string pass = data.substr(sep + 1);
-                
-                // 불필요한 공백/개행 제거
-                user.erase(user.find_last_not_of(" \n\r\t") + 1);
-                pass.erase(pass.find_last_not_of(" \n\r\t") + 1);
-                
-                success = auth.authenticate(user, pass);
+                user = trim_copy(data.substr(0, sep));
+                std::string pass = trim_copy(data.substr(sep + 1));
+                if (!user.empty() && !pass.empty()) {
+                    valid_format = true;
+                    const std::string login_key = normalize_login_key(user) + "|" + client_ip;
+                    auto now = std::chrono::steady_clock::now();
+                    AttemptState& state = attempts[login_key];
+                    state.last_seen = now;
+
+                    if (state.lock_until > now) {
+                        success = false;
+                        std::cout << "[main.cpp] " << "[Auth] locked user blocked: "
+                                  << user << " ip=" << client_ip << std::endl;
+                    } else {
+                        success = auth.authenticate(user, pass);
+                        if (success) {
+                            state.fail_count = 0;
+                            state.lock_until = std::chrono::steady_clock::time_point::min();
+                        } else {
+                            state.fail_count += 1;
+                            if (state.fail_count >= kMaxFail) {
+                                state.fail_count = 0;
+                                state.lock_until = now + kLockDuration;
+                                std::cout << "[main.cpp] " << "[Auth] lockout triggered: user="
+                                          << user << " ip=" << client_ip << " duration=30s" << std::endl;
+                            }
+                        }
+                    }
+                }
             }  
+
+            if (!valid_format) {
+                success = false;
+            }
               
             // 검증 결과 전송
             send(client_fd, success ? "PASS" : "FAIL", 4, 0);
             if (success) {
                 const std::string msg = "TEST|LOGIN_OK|" + user + "\n";
                 send_alert_to_clients(msg);
-                std::cout << "[Auth] login success ping sent: " << msg << std::endl;
+                std::cout << "[main.cpp] " << "[Auth] login success ping sent: " << msg << std::endl;
             }
 
             // [로그 기록] 새로 만든 login_logs 테이블에 기록
             // 사용자의 IP 주소를 가져오기 위해 sockaddr_in 정보를 같이 활용할 수도 있으나,
             // 현재는 구조상 간단하게 유저 정보와 성공여부만 기록합니다. (IP는 로그 클래스 내부 처리 유도)
-            db.enqueueLogin(user, "Unknown_IP", success);
+            db.enqueueLogin(user, client_ip, success);
+
+            if (++request_counter % kCleanupInterval == 0) {
+                auto now = std::chrono::steady_clock::now();
+                for (auto it = attempts.begin(); it != attempts.end();) {
+                    const bool is_locked = it->second.lock_until > now;
+                    const bool is_stale = (it->second.last_seen != std::chrono::steady_clock::time_point::min()) &&
+                                          ((now - it->second.last_seen) > kStaleRetention);
+                    if (!is_locked && it->second.fail_count == 0 && is_stale) {
+                        it = attempts.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+            }
         }
         close(client_fd); // 세션 종료
     }
@@ -210,12 +285,19 @@ std::atomic<bool> g_running(true);
 
 // [핵심] Ctrl+C 감지 함수
 void signal_handler(int signum) {
-    std::cout << "\n[System] 종료 신호 감지! 녹화를 저장하고 종료합니다...\n";
+    std::cout << "[main.cpp] " << "\n[System] 종료 신호 감지! 녹화를 저장하고 종료합니다...\n";
     g_running = false; // 루프를 멈추게 함 -> 자연스럽게 저장 로직 실행됨
 }
 
 //1회테스트
 int main(int argc, char* argv[]) {
+    RuntimeConfig cfg;
+    std::string cfg_err;
+    if (!load_runtime_config(cfg, cfg_err)) {
+        std::cerr << "[Fatal] Runtime config error: " << cfg_err << std::endl;
+        return -1;
+    }
+
     bool send_test_ping = false;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -232,14 +314,15 @@ int main(int argc, char* argv[]) {
     if (!fs::exists(VIDEO_SAVE_DIR)) fs::create_directories(VIDEO_SAVE_DIR);
 
     // 3. DB 연결 (logger) 및 AnalyticsProcessor 시작
-    DBLogger logger;
+    DBLogger logger(cfg.db_host.c_str(), cfg.db_user.c_str(), cfg.db_pass.c_str(), cfg.db_name_analytics.c_str());
     if (!logger.connect()) {
         std::cerr << "[Fatal] DB Connection failed." << std::endl;
         return -1;
     }
 
     // AnalyticsProcessor: analytics_logs는 CCgbd DB에 있음
-    AnalyticsProcessor analytics(DB_HOST, DB_USER, DB_PASS, "CCgbd", 3840, 2160);
+    AnalyticsProcessor analytics(cfg.db_host.c_str(), cfg.db_user.c_str(), cfg.db_pass.c_str(),
+                                 cfg.db_name_analytics.c_str(), 3840, 2160);
     if (!analytics.start()) {
         std::cerr << "[Fatal] Analytics DB connection failed." << std::endl;
         return -1;
@@ -260,7 +343,7 @@ int main(int argc, char* argv[]) {
     t2.detach();
 
     // 6. 로그인 인증 스레드 시작
-    std::thread t3(run_login_auth);
+    std::thread t3(run_login_auth, cfg);
     t3.detach();
 
     // 7. 음성 수신 스레드 시작
@@ -269,11 +352,11 @@ int main(int argc, char* argv[]) {
 
     // 8. 녹화 시작
     // [NEW] 9. RFID 모니터링 스레드 시작 (recorder.run() 이전에 시작)
-    RfidMonitor rfid_monitor(g_running, DB_HOST, DB_USER, DB_PASS, DB_NAME);
+    RfidMonitor rfid_monitor(g_running, cfg.db_host, cfg.db_user, cfg.db_pass, cfg.db_name_auth);
     std::thread t5(&RfidMonitor::start, &rfid_monitor);
     t5.detach();
 
-    std::cout << "[System] RFID 모니터링 서비스 시작됨." << std::endl;
+    std::cout << "[main.cpp] " << "[System] RFID 모니터링 서비스 시작됨." << std::endl;
 
     
 
@@ -291,10 +374,10 @@ int main(int argc, char* argv[]) {
                 send_test_alert_to_clients(msg);
                 std::this_thread::sleep_for(std::chrono::seconds(2));
             }
-            std::cout << "[Alert] Test ping thread stopped." << std::endl;
+            std::cout << "[main.cpp] " << "[Alert] Test ping thread stopped." << std::endl;
         });
         t7.detach();
-        std::cout << "[System] Test ping enabled: send TEST to clients every 2 sec." << std::endl;
+        std::cout << "[main.cpp] " << "[System] Test ping enabled: send TEST to clients every 2 sec." << std::endl;
     }
 
 
@@ -309,6 +392,6 @@ int main(int argc, char* argv[]) {
     // detach된 스레드들이 정리될 시간을 약간 줄 수 있음
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
-    std::cout << "[System] 서버가 안전하게 종료되었습니다." << std::endl;
+    std::cout << "[main.cpp] " << "[System] 서버가 안전하게 종료되었습니다." << std::endl;
     return 0;
 }

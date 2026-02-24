@@ -21,6 +21,8 @@ add_executable(smart_server
     src/analytics.cpp
     src/cleanup.cpp
     src/auth.cpp
+    src/db_tls.cpp
+    src/runtime_config.cpp
     src/rfid_monitor.cpp
     src/alert.cpp
     src/event_matcher.cpp
