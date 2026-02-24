@@ -23,6 +23,7 @@ public:
 
 private:
     MYSQL* conn;            // MariaDB 커넥션 객체
+    MYSQL_STMT* authStmt;   // prepared statement handle
     const char* host;       // DB 호스트 주소
     const char* user;       // DB 사용자 ID
     const char* pass;       // DB 비밀번호

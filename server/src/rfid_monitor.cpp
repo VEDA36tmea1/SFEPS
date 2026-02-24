@@ -55,7 +55,7 @@ std::string RfidMonitor::extract_json_value(const std::string& json, const std::
 // DB 저장 함수 (실제 DB 연결 로직은 여기에 구현)
 void RfidMonitor::save_to_db(const std::string& uid, const std::string& age_group, const std::string& time_str) {
     // 기존 DB 저장은 유지 가능하나, 여기서는 EventMatcher에 카드 정보를 전파
-    std::cout << "[DB Save Request] UID: " << uid << ", Group: " << age_group << ", Time: " << time_str << std::endl;
+    std::cout << "[rfid_monitor.cpp] " << "[DB Save Request] UID: " << uid << ", Group: " << age_group << ", Time: " << time_str << std::endl;
     // Notify matcher about RFID read (card_text is age_group or card info)
     // Pass uid as card_id
     EventMatcher::instance().on_rfid_read(uid, age_group, uid);
@@ -83,7 +83,7 @@ void RfidMonitor::run_loop() {
             continue; 
         }
 
-        std::cout << ">> [RFID] 데몬 연결 성공! 데이터 수신 대기 중..." << std::endl;
+        std::cout << "[rfid_monitor.cpp] " << ">> [RFID] 데몬 연결 성공! 데이터 수신 대기 중..." << std::endl;
 
         char buffer[4096];
         std::string line_buffer;
@@ -121,7 +121,7 @@ void RfidMonitor::run_loop() {
                             std::string age_group = extract_json_value(json_line, "text");
                             std::string now = get_current_datetime();
 
-                            std::cout << ">>> [RFID Tag] UID: " << uid << " (" << age_group << ") Time: " << now << std::endl;
+                            std::cout << "[rfid_monitor.cpp] " << ">>> [RFID Tag] UID: " << uid << " (" << age_group << ") Time: " << now << std::endl;
                             save_to_db(uid, age_group, now);
                         } catch (...) {
                             std::cerr << "[RFID] Parse Error" << std::endl;
@@ -150,5 +150,5 @@ void RfidMonitor::run_loop() {
         if (m_running) std::this_thread::sleep_for(std::chrono::seconds(1));
     } // 바깥 while 끝
 
-    std::cout << ">> [RFID] 모니터링 스레드 종료." << std::endl;
+    std::cout << "[rfid_monitor.cpp] " << ">> [RFID] 모니터링 스레드 종료." << std::endl;
 }

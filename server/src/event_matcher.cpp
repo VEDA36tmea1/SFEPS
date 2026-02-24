@@ -41,7 +41,7 @@ void EventMatcher::register_first(const std::string& gate, const std::string& ev
     auto& q = pending[gate];
     q.push_back(std::move(p));
     if (q.size() > 32) q.pop_front();  // 방어: 게이트당 과도한 pending 방지
-    std::cout << "[Matcher] Registered first for gate=" << gate << " id=" << event_id << " age=" << assigned_age 
+    std::cout << "[event_matcher.cpp] " << "[Matcher] Registered first for gate=" << gate << " id=" << event_id << " age=" << assigned_age 
               << " gate_id=" << gate_id << " est_age=" << est_age << std::endl;
 }
 
@@ -71,7 +71,7 @@ void EventMatcher::on_rfid_read(const std::string& uid, const std::string& card_
     }
 
     if (!best_pending) {
-        std::cout << "[Matcher] No pending event to pair RFID uid=" << uid << std::endl;
+        std::cout << "[event_matcher.cpp] " << "[Matcher] No pending event to pair RFID uid=" << uid << std::endl;
         return;
     }
 
@@ -89,12 +89,12 @@ void EventMatcher::on_rfid_read(const std::string& uid, const std::string& card_
     if (p.fraud) {
         std::string out_message = "FRAUD|" + p.card_id + "|" + p.card_age_group + "|" + p.gate_id + "|" + std::to_string(p.est_age);
         send_alert_to_clients(out_message);
-        std::cout << "[Matcher] FRAUD DETECTED at RFID: gate=" << best_gate
+        std::cout << "[event_matcher.cpp] " << "[Matcher] FRAUD DETECTED at RFID: gate=" << best_gate
                   << " assigned=" << assigned_norm
                   << " card=" << card_norm
                   << " -> " << out_message << std::endl;
     } else {
-        std::cout << "[Matcher] MATCH at RFID: gate=" << best_gate
+        std::cout << "[event_matcher.cpp] " << "[Matcher] MATCH at RFID: gate=" << best_gate
                   << " assigned=" << assigned_norm
                   << " card=" << card_norm << std::endl;
     }
@@ -121,7 +121,7 @@ bool EventMatcher::on_second(const std::string& gate, std::string& out_message) 
         q.pop_front();
 
         if (!p.card_read) {
-            std::cout << "[Matcher] second arrived for gate=" << gate << " but no card read paired." << std::endl;
+            std::cout << "[event_matcher.cpp] " << "[Matcher] second arrived for gate=" << gate << " but no card read paired." << std::endl;
             continue;
         }
         found = true;
@@ -139,11 +139,11 @@ bool EventMatcher::on_second(const std::string& gate, std::string& out_message) 
         if (p.fraud) {
             out_message = "FRAUD|" + p.card_id + "|" + p.card_age_group + "|" + p.gate_id + "|" + std::to_string(p.est_age);
             // 중복 전송 방지: RFID 시점에 이미 전송했으므로 여기선 전송하지 않음
-            std::cout << "[Matcher] second only: previous mismatch already sent, gate=" << gate
+            std::cout << "[event_matcher.cpp] " << "[Matcher] second only: previous mismatch already sent, gate=" << gate
                       << " assigned=" << assigned_norm << " card=" << card_norm << std::endl;
             return true;
         }
-        std::cout << "[Matcher] MATCH for gate=" << gate << " (assigned:" << assigned_norm << " card:" << card_norm << ")" << std::endl;
+        std::cout << "[event_matcher.cpp] " << "[Matcher] MATCH for gate=" << gate << " (assigned:" << assigned_norm << " card:" << card_norm << ")" << std::endl;
         return false;
     }
 
@@ -152,11 +152,11 @@ bool EventMatcher::on_second(const std::string& gate, std::string& out_message) 
     if (p.fraud) {
         out_message = "FRAUD|" + p.card_id + "|" + p.card_age_group + "|" + p.gate_id + "|" + std::to_string(p.est_age);
         send_alert_to_clients(out_message);
-        std::cout << "[Matcher] FRAUD DETECTED at second: gate=" << gate
+        std::cout << "[event_matcher.cpp] " << "[Matcher] FRAUD DETECTED at second: gate=" << gate
                   << " assigned=" << assigned_norm << " card=" << card_norm << " -> " << out_message << std::endl;
         return true;
     }
 
-    std::cout << "[Matcher] MATCH for gate=" << gate << " (assigned:" << assigned_norm << " card:" << card_norm << ")" << std::endl;
+    std::cout << "[event_matcher.cpp] " << "[Matcher] MATCH for gate=" << gate << " (assigned:" << assigned_norm << " card:" << card_norm << ")" << std::endl;
     return false;
 }
