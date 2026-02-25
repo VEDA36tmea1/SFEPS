@@ -179,6 +179,185 @@
     }
     ```
 
+### 2026-02-25 – ESP8266 TCP 자동 재접속 & AT 패스스루
+
+#### 1. 개요
+
+- ESP8266이 라즈베리 TCP 서버(`raspi_tcp_server`, 포트 5555)에 붙어 있다가
+  서버가 내려가면 **소켓 연결만 끊기는 문제**를 해결하기 위해,
+  STM32 펌웨어에서 **TCP 연결 상태를 추적하고 끊기면 자동으로 재접속(CIPSTART 재전송)** 하는 로직을 추가.
+- 동시에, **PC ↔ STM32(USART2) ↔ ESP(USART1)** 경로로 AT 명령을 넘길 수 있도록
+  간단한 AT 패스스루도 구현.
+
+#### 2. 상수 / 상태 변수 (`main.c`)
+
+- `/* USER CODE BEGIN PD */`:
+
+  ```c
+  #define WIFI_SERVER_IP           "192.168.4.1"
+  #define WIFI_SERVER_PORT         5555
+  #define WIFI_RECONNECT_INTERVAL  5000u  /* ms: 5초마다 체크 */
+  #define WIFI_CMD_TIMEOUT         10000u /* AT 응답 타임아웃 10초 */
+  ```
+
+- `/* USER CODE BEGIN PV */`:
+
+  ```c
+  static uint8_t   wifi_link_ok       = 0; /* TCP 소켓 연결 OK 여부 */
+  static uint8_t   wifi_connecting    = 0; /* CIPSTART 진행 중 여부   */
+  static uint32_t  wifi_last_check    = 0; /* 마지막 재접속 시도 시각 */
+  static uint32_t  wifi_last_cmd_tick = 0; /* 마지막 AT 명령 송신 시각 */
+  ```
+
+#### 3. AT 명령 패스스루 (PC → ESP)
+
+- `/* USER CODE BEGIN PFP */` / `/* USER CODE BEGIN 0 */` 에 헬퍼:
+
+  ```c
+  static void Wifi_SendLine(const char *line)
+  {
+    size_t len = strlen(line);
+    if (len > 0)
+    {
+      HAL_UART_Transmit(&huart1, (uint8_t *)line, (uint16_t)len, 100);
+    }
+    const char crlf[2] = {'\r', '\n'};
+    HAL_UART_Transmit(&huart1, (const uint8_t *)crlf, 2, 100);
+  }
+  ```
+
+- 메인 루프의 `if (rx_ready)` 처리에서,
+  PC(USART2)에서 들어온 한 줄이 `"AT"` 또는 `"at"` 로 시작하면:
+
+  ```c
+  if (strncmp(rx_line_buf, "AT", 2) == 0 || strncmp(rx_line_buf, "at", 2) == 0)
+  {
+    Wifi_SendLine(rx_line_buf);  /* ESP(USART1)로 AT+... 전송 (CRLF 자동 붙음) */
+
+    /* PC 터미널에도 에코 */
+    HAL_UART_Transmit(&huart2, (uint8_t *)rx_line_buf, (uint16_t)at_len, 100);
+    const char crlf2[2] = {'\r', '\n'};
+    HAL_UART_Transmit(&huart2, (const uint8_t *)crlf2, 2, 100);
+
+    rx_idx = 0;
+    HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
+    continue;
+  }
+  ```
+
+#### 4. ESP 응답 파싱 + 상태 갱신 (`wifi_rx_pending` 처리)
+
+- `wifi_rx_pending` 처리 부분:
+
+  ```c
+  if (wifi_rx_pending)
+  {
+    wifi_rx_pending = 0;
+    uint16_t len = wifi_rx_len;
+    if (len > 0)
+    {
+      char wifi_line[WIFI_RX_DMA_SIZE];
+      if (len >= WIFI_RX_DMA_SIZE)
+        len = WIFI_RX_DMA_SIZE - 1;
+      for (uint16_t i = 0; i < len; i++)
+        wifi_line[i] = (char)wifi_rx_dma_buffer[i];
+      wifi_line[len] = '\0';
+
+      /* ESP 응답을 PC(USART2)로 에코 */
+      HAL_UART_Transmit(&huart2, (uint8_t *)wifi_line, len, 50);
+      const char crlf[2] = {'\r', '\n'};
+      HAL_UART_Transmit(&huart2, (uint8_t*)crlf, 2, 50);
+
+      /* WiFi/TCP 상태 업데이트 */
+      if (strstr(wifi_line, "CLOSED") != NULL ||
+          strstr(wifi_line, "ERROR")  != NULL ||
+          strstr(wifi_line, "FAIL")   != NULL)
+      {
+        wifi_link_ok    = 0;
+        wifi_connecting = 0;
+      }
+      else if (strstr(wifi_line, "CONNECT") != NULL ||
+               strstr(wifi_line, "ALREADY CONNECTED") != NULL)
+      {
+        wifi_link_ok    = 1;
+        wifi_connecting = 0;
+      }
+      else if (strstr(wifi_line, "STATUS:") != NULL)
+      {
+        if (strstr(wifi_line, "STATUS:3") != NULL)
+          wifi_link_ok = 1;     /* 연결됨 */
+        else if (strstr(wifi_line, "STATUS:4") != NULL)
+        {
+          wifi_link_ok    = 0;  /* 끊김 */
+          wifi_connecting = 0;
+        }
+      }
+    }
+    (void)HAL_UART_Receive_DMA(&huart1, wifi_rx_dma_buffer, WIFI_RX_DMA_SIZE);
+  }
+  ```
+
+- 요약:
+  - `"CLOSED"`, `"ERROR"`, `"FAIL"`, `"STATUS:4"` → **연결 끊김 상태**로 마킹.
+  - `"CONNECT"`, `"ALREADY CONNECTED"`, `"STATUS:3"` → **연결 OK** 로 마킹.
+
+#### 5. TCP 자동 재접속 로직 (`Wifi_MaybeReconnect`)
+
+- `/* USER CODE BEGIN 0 */` 의 헬퍼:
+
+  ```c
+  static void Wifi_MaybeReconnect(void)
+  {
+    uint32_t now = HAL_GetTick();
+
+    /* 연결 시도 중인데 응답이 너무 오래 없으면(10초) 실패로 간주 */
+    if (wifi_connecting && (now - wifi_last_cmd_tick) > WIFI_CMD_TIMEOUT)
+    {
+      wifi_connecting = 0;
+      wifi_link_ok = 0;
+    }
+
+    /* 이미 연결(OK) 상태이거나, 현재 연결 시도 중이면 아무 것도 안 함 */
+    if (wifi_link_ok || wifi_connecting)
+      return;
+
+    /* 마지막 체크 이후 WIFI_RECONNECT_INTERVAL(5초) 이내면 패스 */
+    if ((now - wifi_last_check) < WIFI_RECONNECT_INTERVAL)
+      return;
+    wifi_last_check = now;
+
+    char cmd[80];
+    int n = snprintf(cmd, sizeof(cmd),
+                     "AT+CIPSTART=\"TCP\",\"%s\",%d",
+                     WIFI_SERVER_IP, WIFI_SERVER_PORT);
+    if (n > 0)
+    {
+      Wifi_SendLine(cmd);
+      wifi_connecting    = 1;
+      wifi_last_cmd_tick = now;
+
+      const char *info = "WiFi: try reconnect TCP\r\n";
+      HAL_UART_Transmit(&huart2, (const uint8_t *)info, (uint16_t)strlen(info), 50);
+    }
+  }
+  ```
+
+- 메인 루프 끝 부분:
+
+  ```c
+  /* 주기적으로 ESP8266 → 라즈베리 TCP 서버 재접속 시도 */
+  Wifi_MaybeReconnect();
+  ```
+
+- **CIPSTART 발송 조건 정리**:
+  - `wifi_link_ok == 0` **AND** `wifi_connecting == 0` 인 경우에만,
+  - 마지막 시도 이후 `WIFI_RECONNECT_INTERVAL`(5초) 이상 지났을 때 **한 번** 보냄.
+  - 즉,
+    - **정상 연결 상태**(`wifi_link_ok == 1`)에서는 **절대 CIPSTART를 반복해서 안 보냄**.
+    - `"CLOSED"`, `"ERROR"`, `"FAIL"`, `"STATUS:4"` 등으로 **끊김으로 판정**되거나,
+      혹은 CIPSTART 후 10초 타임아웃이 나서 `wifi_connecting` 이 0으로 돌아왔을 때만
+      다음 5초 주기에 재시도.
+
 ---
 
 이 문서는 **STM32 펌웨어 쪽 변경 이력/구조를 빠르게 복기**하기 위한 용도로 유지한다.
