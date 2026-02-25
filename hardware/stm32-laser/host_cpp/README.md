@@ -36,6 +36,36 @@ OpenCV와 GStreamer가 패키지로 설치되어 있고
 `find_package(OpenCV)`, `pkg_check_modules(GST ...)` 가 동작해야 한다.
 필요하면 `OpenCV_DIR`, `PKG_CONFIG_PATH` 등을 CMake 옵션/환경변수로 넘긴다.
 
+### Ninja 빌드 명령어 (복붙용)
+
+Ninja는 단독으로 configure를 하지 못하므로, 처음 1회는 CMake로 `build.ninja`를 생성해야 한다.
+
+#### 처음 1회 (configure + build)
+
+```bash
+cmake -S hardware/stm32-laser/host_cpp -B hardware/stm32-laser/host_cpp/build-ninja -G Ninja
+ninja -C hardware/stm32-laser/host_cpp/build-ninja
+```
+
+#### 이후 빌드만 다시
+
+```bash
+ninja -C hardware/stm32-laser/host_cpp/build-ninja
+```
+
+#### 클린 빌드
+
+```bash
+ninja -C hardware/stm32-laser/host_cpp/build-ninja -t clean
+ninja -C hardware/stm32-laser/host_cpp/build-ninja
+```
+
+#### 실행
+
+```bash
+./hardware/stm32-laser/host_cpp/build-ninja/ibvs_host /dev/ttyUSB0 0
+```
+
 ### 실행 예시
 
 ```bash
