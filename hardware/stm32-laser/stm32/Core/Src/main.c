@@ -24,6 +24,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include "servo_driver.h"
+#include "led_driver.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -33,10 +35,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-/* PWM 주파수 (Hz): 50=서보 표준 20ms, 100/250 등 테스트 가능 */
-#define PWM_FREQ_HZ   50
-#define PWM_US_MIN    800
-#define PWM_US_MAX    2200
+/* RX 라인 버퍼 크기 (문자열 파싱용) */
 #define RX_LINE_MAX   64
 
 /* 제어 모드 */
@@ -61,9 +60,15 @@ TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 
 UART_HandleTypeDef huart2;
+UART_HandleTypeDef huart1;   /* WiFi(ESP-8266) 수신용 USART1: PA9=TX, PA10=RX */
 DMA_HandleTypeDef hdma_usart2_rx;
+DMA_HandleTypeDef hdma_usart1_rx;
 
 /* USER CODE BEGIN PV */
+#define WIFI_RX_DMA_SIZE  256
+static uint8_t   wifi_rx_dma_buffer[WIFI_RX_DMA_SIZE];
+volatile uint8_t wifi_rx_pending = 0;   /* it.c USART1_IRQHandler에서 설정 */
+volatile uint16_t wifi_rx_len = 0;
 static uint8_t   rx_byte;
 static char      rx_line_buf[RX_LINE_MAX];
 static uint8_t   rx_idx;
@@ -93,20 +98,13 @@ static void MX_DMA_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
-static void PA5_D13_SetByMode(uint8_t mode)
-{
-  /* NUCLEO 계열에서 PA5는 보통 LD2(D13)로 연결됨 */
-  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin,
-                    (mode == MODE_MANUAL) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-}
-
 /* USER CODE END 0 */
 
 /**
@@ -142,30 +140,41 @@ int main(void)
   MX_TIM1_Init();
   MX_TIM2_Init();
   MX_USART2_UART_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+  /* 부팅 직후 USART2(PA2/PA3, ST-LINK VCP)로만 출력 → 터미널에서 보이면 포트/보드레이트 OK */
+  HAL_Delay(200);
+  {
+    const char boot[] = "\r\n[STM32 boot]\r\n";
+    (void)HAL_UART_Transmit(&huart2, (const uint8_t *)boot, (uint16_t)(sizeof(boot) - 1), 100);
+  }
   rx_idx = 0;
   rx_ready = 0;
+  /* WiFi(USART1) DMA 수신 시작 – IDLE 시 한 줄씩 처리 */
+  (void)HAL_UART_Receive_DMA(&huart1, wifi_rx_dma_buffer, WIFI_RX_DMA_SIZE);
+  __HAL_UART_ENABLE_IT(&huart1, UART_IT_IDLE);
   /* PWM 주기: PWM_FREQ_HZ에 따라 ARR 설정 (1 tick = 1 us) */
   {
     uint32_t pwm_period = (1000000u / (uint32_t)PWM_FREQ_HZ) - 1u;
     __HAL_TIM_SET_AUTORELOAD(&htim1, pwm_period);
     __HAL_TIM_SET_AUTORELOAD(&htim2, pwm_period);
   }
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 1500);
-  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 1500);
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
-  __HAL_TIM_MOE_ENABLE(&htim1);  /* TIM1(PA8) 실제 출력 위해 필수 */
+  Servo_Init();
   HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
   auto_last_tick = HAL_GetTick();
-  PA5_D13_SetByMode(control_mode);
+  Led_Init();
+  Led_SetAutoMode(control_mode == MODE_AUTO);
   {
     char msg[96];
     int n = snprintf(msg, sizeof(msg),
                      "%dHz PWM. MODE 0=manual, 1=auto.\r\n"
-                     "Send: 1500 or 1500 1200 or \"mode 0/1\".\r\n",
+                     "WiFi(USART1) or UART2: 1500 or 1500 1200 or \"mode 0/1\".\r\n",
                      (int)PWM_FREQ_HZ);
-    if (n > 0) HAL_UART_Transmit(&huart2, (uint8_t *)msg, (uint16_t)n, 100);
+    if (n > 0)
+    {
+      HAL_UART_Transmit(&huart1, (uint8_t *)msg, (uint16_t)n, 100);
+      HAL_UART_Transmit(&huart2, (uint8_t *)msg, (uint16_t)n, 100);
+    }
   }
   /* USER CODE END 2 */
 
@@ -181,8 +190,9 @@ int main(void)
       {
         /* AUTO → MANUAL로 전환: 현재 각도 유지, 스윕 중단 */
         control_mode = MODE_MANUAL;
-        PA5_D13_SetByMode(control_mode);
+        Led_SetAutoMode(control_mode == MODE_AUTO);
         const char *msg = "manual mode 실행\r\n";
+        HAL_UART_Transmit(&huart1, (const uint8_t *)msg, (uint16_t)strlen(msg), 50);
         HAL_UART_Transmit(&huart2, (const uint8_t *)msg, (uint16_t)strlen(msg), 50);
       }
       else
@@ -193,17 +203,38 @@ int main(void)
         auto_dir       = AUTO_STEP_US;
         auto_last_tick = HAL_GetTick();
         last_uart_tick = 0;
-        PA5_D13_SetByMode(control_mode);
+        Led_SetAutoMode(control_mode == MODE_AUTO);
         const char *msg = "auto mode 실행\r\n";
+        HAL_UART_Transmit(&huart1, (const uint8_t *)msg, (uint16_t)strlen(msg), 50);
         HAL_UART_Transmit(&huart2, (const uint8_t *)msg, (uint16_t)strlen(msg), 50);
       }
     }
 
-    /* 디버그: 수신된 마지막 바이트를 에코 (콜백이 실제로 불리는지 확인) */
+    /* 디버그: 수신된 마지막 바이트를 에코 (USART2용) */
     if (debug_rx_flag)
     {
       debug_rx_flag = 0;
       HAL_UART_Transmit(&huart2, &debug_rx_byte, 1, 20);
+    }
+
+    /* WiFi(USART1) DMA IDLE로 한 줄 수신 완료 시 버퍼 복사 후 처리 */
+    if (wifi_rx_pending)
+    {
+      wifi_rx_pending = 0;
+      uint16_t len = wifi_rx_len;
+      if (len > RX_LINE_MAX - 1) len = RX_LINE_MAX - 1;
+      for (uint16_t i = 0; i < len; i++)
+        rx_line_buf[i] = (char)wifi_rx_dma_buffer[i];
+      rx_idx = len;
+      rx_ready = 1;
+      /* 디버그용: WiFi에서 들어온 원본 라인을 USART2(PC 터미널)로 그대로 에코 */
+      if (len > 0)
+      {
+        HAL_UART_Transmit(&huart2, wifi_rx_dma_buffer, len, 50);
+        const char crlf[2] = {'\r', '\n'};
+        HAL_UART_Transmit(&huart2, (uint8_t*)crlf, 2, 50);
+      }
+      (void)HAL_UART_Receive_DMA(&huart1, wifi_rx_dma_buffer, WIFI_RX_DMA_SIZE);
     }
 
     if (rx_ready)
@@ -226,15 +257,17 @@ int main(void)
         if (sscanf(rx_line_buf + 4, "%lu", &m) == 1 && (m == 0ul || m == 1ul))
         {
           control_mode = (uint8_t)m;
-          PA5_D13_SetByMode(control_mode);
+          Led_SetAutoMode(control_mode == MODE_AUTO);
           const char *resp = (control_mode == MODE_MANUAL)
                              ? "MODE=0 (manual)\r\n"
                              : "MODE=1 (auto sweep 1200~1800us)\r\n";
+          HAL_UART_Transmit(&huart1, (const uint8_t *)resp, (uint16_t)strlen(resp), 50);
           HAL_UART_Transmit(&huart2, (const uint8_t *)resp, (uint16_t)strlen(resp), 50);
         }
         else
         {
           const char *err = "Usage: mode 0 (manual) or mode 1 (auto)\r\n";
+          HAL_UART_Transmit(&huart1, (const uint8_t *)err, (uint16_t)strlen(err), 50);
           HAL_UART_Transmit(&huart2, (const uint8_t *)err, (uint16_t)strlen(err), 50);
         }
       }
@@ -257,18 +290,21 @@ int main(void)
             u2 = u1;
           }
           /* CH1=PA8(TIM1), CH2=PA0(TIM2) */
-          __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (uint32_t)u1);
-          __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, (uint32_t)u2);
+          Servo_SetAllUs((uint32_t)u1, (uint32_t)u2);
           auto_pwm_val = (uint32_t)u1;
           last_uart_tick = HAL_GetTick();
           char ack[52];
           int len = snprintf(ack, sizeof(ack), "\nOK PA8=%lu PA0=%lu us\r\n", u1, u2);
           if (len > 0)
+          {
+            HAL_UART_Transmit(&huart1, (uint8_t *)ack, (uint16_t)len, 50);
             HAL_UART_Transmit(&huart2, (uint8_t *)ack, (uint16_t)len, 50);
+          }
         }
         else
         {
           const char *err = "? (send: 1500 or 1500 1200, or mode 0/1)\r\n";
+          HAL_UART_Transmit(&huart1, (const uint8_t *)err, (uint16_t)strlen(err), 50);
           HAL_UART_Transmit(&huart2, (const uint8_t *)err, (uint16_t)strlen(err), 50);
         }
       }
@@ -300,8 +336,7 @@ int main(void)
           auto_pwm_val = AUTO_PWM_MIN;
           auto_dir = (int32_t)AUTO_STEP_US;
         }
-        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, auto_pwm_val);
-        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, auto_pwm_val);
+        Servo_SetAllUs(auto_pwm_val, auto_pwm_val);
       }
     }
     /* USER CODE END WHILE */
@@ -492,6 +527,27 @@ static void MX_TIM2_Init(void)
 }
 
 /**
+  * @brief USART1 Initialization Function (WiFi ESP-8266: PA9=TX, PA10=RX)
+  * @param None
+  * @retval None
+  */
+static void MX_USART1_UART_Init(void)
+{
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 115200;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
   * @brief USART2 Initialization Function
   * @param None
   * @retval None
@@ -529,15 +585,16 @@ static void MX_USART2_UART_Init(void)
   */
 static void MX_DMA_Init(void)
 {
-
   /* DMA controller clock enable */
   __HAL_RCC_DMA1_CLK_ENABLE();
+  __HAL_RCC_DMA2_CLK_ENABLE();
 
   /* DMA interrupt init */
-  /* DMA1_Stream5_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
 
+  HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
 }
 
 /**

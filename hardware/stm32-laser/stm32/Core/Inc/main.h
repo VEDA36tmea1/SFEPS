@@ -72,6 +72,12 @@ void Error_Handler(void);
 #define SWO_Pin GPIO_PIN_3
 #define SWO_GPIO_Port GPIOB
 
+/* USART1: WiFi(ESP-8266)용 D8=PA9(TX), D2=PA10(RX) */
+#define USART1_TX_Pin GPIO_PIN_9
+#define USART1_TX_GPIO_Port GPIOA
+#define USART1_RX_Pin GPIO_PIN_10
+#define USART1_RX_GPIO_Port GPIOA
+
 /* USER CODE BEGIN Private defines */
 
 /* USER CODE END Private defines */

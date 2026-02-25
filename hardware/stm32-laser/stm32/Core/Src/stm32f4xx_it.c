@@ -56,7 +56,12 @@
 
 /* External variables --------------------------------------------------------*/
 extern DMA_HandleTypeDef hdma_usart2_rx;
+extern DMA_HandleTypeDef hdma_usart1_rx;
 extern UART_HandleTypeDef huart2;
+extern UART_HandleTypeDef huart1;
+extern volatile uint8_t wifi_rx_pending;
+extern volatile uint16_t wifi_rx_len;
+#define WIFI_RX_DMA_SIZE 256
 /* USER CODE BEGIN EV */
 /* USER CODE END EV */
 
@@ -217,13 +222,32 @@ void DMA1_Stream5_IRQHandler(void)
   */
 void USART2_IRQHandler(void)
 {
-  /* USER CODE BEGIN USART2_IRQn 0 */
-
-  /* USER CODE END USART2_IRQn 0 */
   HAL_UART_IRQHandler(&huart2);
-  /* USER CODE BEGIN USART2_IRQn 1 */
+}
 
-  /* USER CODE END USART2_IRQn 1 */
+/**
+  * @brief This function handles USART1 global interrupt (WiFi ESP-8266).
+  *        IDLE 라인 시 수신 길이 저장 후 AbortReceive → main에서 복사 후 재시작
+  */
+void USART1_IRQHandler(void)
+{
+  if (__HAL_UART_GET_FLAG(&huart1, UART_FLAG_IDLE))
+  {
+    __HAL_UART_CLEAR_IDLEFLAG(&huart1);
+    uint16_t n = (uint16_t)__HAL_DMA_GET_COUNTER(huart1.hdmarx);
+    wifi_rx_len = WIFI_RX_DMA_SIZE - n;
+    (void)HAL_UART_AbortReceive(&huart1);
+    wifi_rx_pending = 1;
+  }
+  HAL_UART_IRQHandler(&huart1);
+}
+
+/**
+  * @brief This function handles DMA2 stream2 global interrupt (USART1_RX).
+  */
+void DMA2_Stream2_IRQHandler(void)
+{
+  HAL_DMA_IRQHandler(&hdma_usart1_rx);
 }
 
 /* USER CODE BEGIN 1 */
