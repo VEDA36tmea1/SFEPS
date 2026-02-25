@@ -48,6 +48,12 @@
 #define AUTO_STEP_US  10
 #define AUTO_MS       30
 #define AUTO_HOLD_MS  2000   /* UART 입력 후 이 시간(ms) 동안 고정, 이후 스윕 재개 (AUTO 모드에서만 사용) */
+
+/* ESP8266 → 라즈베리 TCP 서버 자동 재접속 설정 */
+#define WIFI_SERVER_IP           "192.168.4.1"
+#define WIFI_SERVER_PORT         5555
+#define WIFI_RECONNECT_INTERVAL  5000u   /* ms 단위: 5초마다 상태 체크 */
+#define WIFI_CMD_TIMEOUT         10000u  /* AT 응답 타임아웃 10초 */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -59,10 +65,10 @@
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 
+UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
-UART_HandleTypeDef huart1;   /* WiFi(ESP-8266) 수신용 USART1: PA9=TX, PA10=RX */
-DMA_HandleTypeDef hdma_usart2_rx;
 DMA_HandleTypeDef hdma_usart1_rx;
+DMA_HandleTypeDef hdma_usart2_rx;
 
 /* USER CODE BEGIN PV */
 #define WIFI_RX_DMA_SIZE  256
@@ -73,6 +79,15 @@ static uint8_t   rx_byte;
 static char      rx_line_buf[RX_LINE_MAX];
 static uint8_t   rx_idx;
 static volatile uint8_t rx_ready;
+/* WiFi(TCP) 연결 상태 */
+static uint8_t   wifi_link_ok      = 0;
+static uint8_t   wifi_connecting   = 0;
+static uint32_t  wifi_last_check   = 0;
+static uint32_t  wifi_last_cmd_tick = 0;
+/* WiFi(TCP)로 보낼 사용자 데이터(PING→PONG 등)를 AT+CIPSEND로 전송하기 위한 버퍼 */
+static uint8_t   wifi_send_pending = 0;
+static char      wifi_send_buf[WIFI_RX_DMA_SIZE];
+static uint16_t  wifi_send_len = 0;
 
 /* UART 디버그: 콜백이 불리는지 확인용 에코 플래그 */
 static volatile uint8_t debug_rx_flag = 0;
@@ -100,11 +115,59 @@ static void MX_TIM2_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
-
+static void Wifi_SendLine(const char *line);
+static void Wifi_MaybeReconnect(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+/* ESP8266으로 AT 명령 한 줄(문자열 + CRLF) 전송 */
+static void Wifi_SendLine(const char *line)
+{
+  size_t len = strlen(line);
+  if (len > 0)
+  {
+    HAL_UART_Transmit(&huart1, (uint8_t *)line, (uint16_t)len, 100);
+  }
+  const char crlf[2] = {'\r', '\n'};
+  HAL_UART_Transmit(&huart1, (const uint8_t *)crlf, 2, 100);
+}
+
+/* 주기적으로 TCP 서버(라즈베리) 재접속 시도 */
+static void Wifi_MaybeReconnect(void)
+{
+  uint32_t now = HAL_GetTick();
+
+  /* 연결 시도 중인데 응답이 너무 오래 없으면 실패로 간주 */
+  if (wifi_connecting && (now - wifi_last_cmd_tick) > WIFI_CMD_TIMEOUT)
+  {
+    wifi_connecting = 0;
+    wifi_link_ok = 0;
+  }
+
+  /* 이미 연결된 상태면 아무 것도 안 함 */
+  if (wifi_link_ok || wifi_connecting)
+    return;
+
+  /* 일정 주기마다만 재접속 시도 */
+  if ((now - wifi_last_check) < WIFI_RECONNECT_INTERVAL)
+    return;
+  wifi_last_check = now;
+
+  char cmd[80];
+  int n = snprintf(cmd, sizeof(cmd),
+                   "AT+CIPSTART=\"TCP\",\"%s\",%d",
+                   WIFI_SERVER_IP, WIFI_SERVER_PORT);
+  if (n > 0)
+  {
+    Wifi_SendLine(cmd);
+    wifi_connecting    = 1;
+    wifi_last_cmd_tick = now;
+
+    const char *info = "WiFi: try reconnect TCP\r\n";
+    HAL_UART_Transmit(&huart2, (const uint8_t *)info, (uint16_t)strlen(info), 50);
+  }
+}
 /* USER CODE END 0 */
 
 /**
@@ -172,7 +235,6 @@ int main(void)
                      (int)PWM_FREQ_HZ);
     if (n > 0)
     {
-      HAL_UART_Transmit(&huart1, (uint8_t *)msg, (uint16_t)n, 100);
       HAL_UART_Transmit(&huart2, (uint8_t *)msg, (uint16_t)n, 100);
     }
   }
@@ -192,7 +254,6 @@ int main(void)
         control_mode = MODE_MANUAL;
         Led_SetAutoMode(control_mode == MODE_AUTO);
         const char *msg = "manual mode 실행\r\n";
-        HAL_UART_Transmit(&huart1, (const uint8_t *)msg, (uint16_t)strlen(msg), 50);
         HAL_UART_Transmit(&huart2, (const uint8_t *)msg, (uint16_t)strlen(msg), 50);
       }
       else
@@ -205,7 +266,6 @@ int main(void)
         last_uart_tick = 0;
         Led_SetAutoMode(control_mode == MODE_AUTO);
         const char *msg = "auto mode 실행\r\n";
-        HAL_UART_Transmit(&huart1, (const uint8_t *)msg, (uint16_t)strlen(msg), 50);
         HAL_UART_Transmit(&huart2, (const uint8_t *)msg, (uint16_t)strlen(msg), 50);
       }
     }
@@ -217,22 +277,129 @@ int main(void)
       HAL_UART_Transmit(&huart2, &debug_rx_byte, 1, 20);
     }
 
-    /* WiFi(USART1) DMA IDLE로 한 줄 수신 완료 시 버퍼 복사 후 처리 */
+    /* WiFi(USART1) DMA IDLE로 한 줄 수신 완료 시: ESP → PC 시리얼로 그대로 에코 + 상태 파싱 */
     if (wifi_rx_pending)
     {
       wifi_rx_pending = 0;
       uint16_t len = wifi_rx_len;
-      if (len > RX_LINE_MAX - 1) len = RX_LINE_MAX - 1;
-      for (uint16_t i = 0; i < len; i++)
-        rx_line_buf[i] = (char)wifi_rx_dma_buffer[i];
-      rx_idx = len;
-      rx_ready = 1;
-      /* 디버그용: WiFi에서 들어온 원본 라인을 USART2(PC 터미널)로 그대로 에코 */
       if (len > 0)
       {
-        HAL_UART_Transmit(&huart2, wifi_rx_dma_buffer, len, 50);
+        /* 문자열로 처리하기 위해 로컬 버퍼에 복사 & 널 종료 */
+        char wifi_line[WIFI_RX_DMA_SIZE];
+        if (len >= WIFI_RX_DMA_SIZE)
+          len = WIFI_RX_DMA_SIZE - 1;
+        for (uint16_t i = 0; i < len; i++)
+          wifi_line[i] = (char)wifi_rx_dma_buffer[i];
+        wifi_line[len] = '\0';
+
+        /* ESP → PC: 항상 그대로 에코 */
+        HAL_UART_Transmit(&huart2, (uint8_t *)wifi_line, len, 50);
         const char crlf[2] = {'\r', '\n'};
         HAL_UART_Transmit(&huart2, (uint8_t*)crlf, 2, 50);
+
+        /* 애플리케이션 레벨 PING/PONG 처리: Pi → ESP → STM → ESP → Pi 왕복 측정 */
+        /* ESP AT 모드에서는 "+IPD,xx:PING,..." 형태로 들어올 수 있으므로,
+           라인 어디에서든 "PING," 서브스트링을 찾아서 처리한다. */
+        char *ping_pos = strstr(wifi_line, "PING,");
+        if (ping_pos != NULL && !wifi_send_pending)
+        {
+          const char *payload = ping_pos + 5;          /* "PING," 뒤 payload (seq,t0_ms...) */
+
+          /* payload 끝에서 개행/캐리지리턴 제거 */
+          size_t payload_len = strlen(payload);
+          while (payload_len &&
+                 (payload[payload_len - 1] == '\r' ||
+                  payload[payload_len - 1] == '\n'))
+          {
+            payload_len--;
+          }
+
+          /* 1) 보낼 데이터(PONG,<payload>\n)를 전역 버퍼에 준비 */
+          if (5u + payload_len + 1u < sizeof(wifi_send_buf))
+          {
+            size_t idx = 0;
+            memcpy(&wifi_send_buf[idx], "PONG,", 5);
+            idx += 5;
+            memcpy(&wifi_send_buf[idx], payload, payload_len);
+            idx += payload_len;
+            wifi_send_buf[idx++] = '\n';      /* RTT 측정을 위한 개행 */
+            wifi_send_buf[idx]   = '\0';      /* 디버그 출력용 */
+            wifi_send_len        = (uint16_t)idx;
+
+            /* 2) AT+CIPSEND=<len> 을 먼저 전송 (ESP가 '>' 프롬프트를 보냄) */
+            char cmd[48];
+            int cn = snprintf(cmd, sizeof(cmd), "AT+CIPSEND=%u",
+                              (unsigned)wifi_send_len);
+            if (cn > 0)
+            {
+              Wifi_SendLine(cmd);             /* CRLF 포함 AT+CIPSEND=... */
+              wifi_last_cmd_tick = HAL_GetTick();
+              wifi_send_pending  = 1;
+
+              /* PC 터미널에도 디버그 출력 */
+              HAL_UART_Transmit(&huart2,
+                                (uint8_t *)cmd,
+                                (uint16_t)cn,
+                                50);
+              HAL_UART_Transmit(&huart2,
+                                (const uint8_t *)crlf,
+                                2,
+                                50);
+            }
+          }
+        }
+        else
+        {
+          /* WiFi/TCP 상태 업데이트 + CIPSEND 프롬프트 처리 */
+          /* 1) CIPSEND '>' 프롬프트 감지 후, 준비된 데이터(wifi_send_buf)를 실제 TCP 페이로드로 송신 */
+          if (wifi_send_pending && strchr(wifi_line, '>') != NULL)
+          {
+            HAL_UART_Transmit(&huart1,
+                              (uint8_t *)wifi_send_buf,
+                              wifi_send_len,
+                              200);
+            wifi_send_pending = 0;
+
+            /* PC 터미널에도 송신 내용을 표시 */
+            HAL_UART_Transmit(&huart2,
+                              (uint8_t *)wifi_send_buf,
+                              wifi_send_len,
+                              50);
+            HAL_UART_Transmit(&huart2,
+                              (const uint8_t *)crlf,
+                              2,
+                              50);
+          }
+          /* 2) 명확한 끊김 패턴 - CLOSED / STATUS:4 는 항상 연결 끊김으로 간주 */
+          else if (strstr(wifi_line, "CLOSED") != NULL ||
+                   strstr(wifi_line, "STATUS:4") != NULL)
+          {
+            wifi_link_ok     = 0;
+            wifi_connecting  = 0;
+            wifi_send_pending = 0;
+          }
+          /* 3) 명확한 성공/연결 패턴들을 먼저 처리 (한 줄에 OK + ERROR 같이 있어도 "성공 우선") */
+          else if (strstr(wifi_line, "ALREADY CONNECTED") != NULL ||
+                   strstr(wifi_line, "CONNECT") != NULL ||
+                   strstr(wifi_line, "STATUS:3") != NULL ||
+                   strstr(wifi_line, "+IPD") != NULL ||
+                   strstr(wifi_line, "SEND OK") != NULL ||
+                   strstr(wifi_line, "OK") != NULL)
+          {
+            wifi_link_ok    = 1;
+            wifi_connecting = 0;
+          }
+          /* 4) ERROR / FAIL
+           *  - 아직 연결 안 된 상태(wifi_link_ok == 0)에서 나오면 "연결 실패"로만 처리
+           *  - 이미 연결 OK 상태라면(예: ALREADY CONNECTED 이후) 단순 재요청 실패로 보고 연결은 유지  */
+          else if (strstr(wifi_line, "ERROR") != NULL ||
+                   strstr(wifi_line, "FAIL")  != NULL)
+          {
+            /* 연결 OK 상태면 wifi_link_ok 유지, 진행 중이던 연결 시도/송신만 중단 */
+            wifi_connecting   = 0;
+            wifi_send_pending = 0;
+          }
+        }
       }
       (void)HAL_UART_Receive_DMA(&huart1, wifi_rx_dma_buffer, WIFI_RX_DMA_SIZE);
     }
@@ -250,6 +417,48 @@ int main(void)
         continue;
       }
 
+      /* ESP: 프리픽스로 시작하는 라인은 ESP(USART1)로 그대로 AT 명령 전달 */
+      if (strncmp(rx_line_buf, "ESP:", 4) == 0 || strncmp(rx_line_buf, "esp:", 4) == 0)
+      {
+        char *cmd = rx_line_buf + 4;
+        /* 프리픽스 뒤 공백 스킵 */
+        while (*cmd == ' ' || *cmd == '\t')
+          cmd++;
+        if (*cmd != '\0')
+        {
+          Wifi_SendLine(cmd);  /* ESP(USART1)로 전송 (CRLF 자동 첨부) */
+
+          /* PC 터미널에도 내가 보낸 ESP 명령을 에코 */
+          size_t cmd_len = strlen(cmd);
+          HAL_UART_Transmit(&huart2, (uint8_t *)"ESP:", 4, 50);
+          HAL_UART_Transmit(&huart2, (uint8_t *)cmd, (uint16_t)cmd_len, 50);
+          const char crlf2[2] = {'\r', '\n'};
+          HAL_UART_Transmit(&huart2, (const uint8_t *)crlf2, 2, 50);
+        }
+        rx_idx = 0;
+        HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
+        continue;
+      }
+
+      /* AT 명령: PC(USART2)에서 들어온 라인을 ESP(USART1)로 그대로 패스스루 */
+      if (strncmp(rx_line_buf, "AT", 2) == 0 || strncmp(rx_line_buf, "at", 2) == 0)
+      {
+        size_t at_len = strlen(rx_line_buf);
+        /* ESP 쪽으로 AT 라인 + CRLF 전송 */
+        if (at_len > 0)
+        {
+          Wifi_SendLine(rx_line_buf);
+
+          /* PC 터미널에도 내가 보낸 AT 명령을 에코 */
+          HAL_UART_Transmit(&huart2, (uint8_t *)rx_line_buf, (uint16_t)at_len, 100);
+          const char crlf2[2] = {'\r', '\n'};
+          HAL_UART_Transmit(&huart2, (const uint8_t *)crlf2, 2, 100);
+        }
+        rx_idx = 0;
+        HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
+        continue;
+      }
+
       /* MODE 명령 처리: "mode 0" 또는 "mode 1" */
       if (strncmp(rx_line_buf, "mode", 4) == 0)
       {
@@ -261,13 +470,11 @@ int main(void)
           const char *resp = (control_mode == MODE_MANUAL)
                              ? "MODE=0 (manual)\r\n"
                              : "MODE=1 (auto sweep 1200~1800us)\r\n";
-          HAL_UART_Transmit(&huart1, (const uint8_t *)resp, (uint16_t)strlen(resp), 50);
           HAL_UART_Transmit(&huart2, (const uint8_t *)resp, (uint16_t)strlen(resp), 50);
         }
         else
         {
           const char *err = "Usage: mode 0 (manual) or mode 1 (auto)\r\n";
-          HAL_UART_Transmit(&huart1, (const uint8_t *)err, (uint16_t)strlen(err), 50);
           HAL_UART_Transmit(&huart2, (const uint8_t *)err, (uint16_t)strlen(err), 50);
         }
       }
@@ -297,14 +504,12 @@ int main(void)
           int len = snprintf(ack, sizeof(ack), "\nOK PA8=%lu PA0=%lu us\r\n", u1, u2);
           if (len > 0)
           {
-            HAL_UART_Transmit(&huart1, (uint8_t *)ack, (uint16_t)len, 50);
             HAL_UART_Transmit(&huart2, (uint8_t *)ack, (uint16_t)len, 50);
           }
         }
         else
         {
           const char *err = "? (send: 1500 or 1500 1200, or mode 0/1)\r\n";
-          HAL_UART_Transmit(&huart1, (const uint8_t *)err, (uint16_t)strlen(err), 50);
           HAL_UART_Transmit(&huart2, (const uint8_t *)err, (uint16_t)strlen(err), 50);
         }
       }
@@ -339,6 +544,9 @@ int main(void)
         Servo_SetAllUs(auto_pwm_val, auto_pwm_val);
       }
     }
+
+    /* 주기적으로 ESP8266 → 라즈베리 TCP 서버 재접속 시도 */
+    Wifi_MaybeReconnect();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -415,7 +623,7 @@ static void MX_TIM1_Init(void)
   htim1.Instance = TIM1;
   htim1.Init.Prescaler = 83;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 19999;  /* 50Hz, 20ms (20000us), 1us per tick */
+  htim1.Init.Period = 19999;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -440,8 +648,8 @@ static void MX_TIM1_Init(void)
   }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
   sConfigOC.Pulse = 0;
-  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;  /* 직결/버퍼 시 정극성; NPN 반전 회로면 LOW 사용 */
-  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_LOW;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_LOW;
+  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
   sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
   sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
@@ -489,7 +697,7 @@ static void MX_TIM2_Init(void)
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 83;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 19999;  /* 50Hz, 20ms (20000us), 1us per tick */
+  htim2.Init.Period = 4294967295;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
@@ -513,7 +721,7 @@ static void MX_TIM2_Init(void)
   }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
   sConfigOC.Pulse = 0;
-  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;  /* 직결/버퍼 시 정극성; NPN 반전 회로면 LOW 사용 */
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_LOW;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
   if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
   {
@@ -527,12 +735,20 @@ static void MX_TIM2_Init(void)
 }
 
 /**
-  * @brief USART1 Initialization Function (WiFi ESP-8266: PA9=TX, PA10=RX)
+  * @brief USART1 Initialization Function
   * @param None
   * @retval None
   */
 static void MX_USART1_UART_Init(void)
 {
+
+  /* USER CODE BEGIN USART1_Init 0 */
+
+  /* USER CODE END USART1_Init 0 */
+
+  /* USER CODE BEGIN USART1_Init 1 */
+
+  /* USER CODE END USART1_Init 1 */
   huart1.Instance = USART1;
   huart1.Init.BaudRate = 115200;
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
@@ -545,6 +761,10 @@ static void MX_USART1_UART_Init(void)
   {
     Error_Handler();
   }
+  /* USER CODE BEGIN USART1_Init 2 */
+
+  /* USER CODE END USART1_Init 2 */
+
 }
 
 /**
@@ -585,16 +805,15 @@ static void MX_USART2_UART_Init(void)
   */
 static void MX_DMA_Init(void)
 {
+
   /* DMA controller clock enable */
   __HAL_RCC_DMA1_CLK_ENABLE();
-  __HAL_RCC_DMA2_CLK_ENABLE();
 
   /* DMA interrupt init */
+  /* DMA1_Stream5_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
 
-  HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
 }
 
 /**
