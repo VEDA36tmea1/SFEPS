@@ -77,6 +77,27 @@ st-flash write build/Debug/stm32_laser.bin 0x8000000
 
 ---
 
+## WiFi(ESP-8266) 연결 및 DMA 수신
+
+ESP-8266를 USART1에 연결하면 **와이파이로 들어온 데이터를 DMA로 수신**해 같은 명령(펄스/모드)을 처리한다.
+
+### 핀 연결 (Nucleo-F401RE)
+
+| ESP-8266 핀 | Nucleo 핀 |
+|-------------|------------|
+| VBUS (5V)   | 5V         |
+| GND         | GND        |
+| **TX**      | **D2 (PA10)** USART1_RX |
+| **RX**      | **D8 (PA9)**  USART1_TX |
+
+### 동작
+
+- **USART1** (PA9=TX, PA10=RX) 115200 8N1.
+- 수신은 **DMA (DMA2 Stream2)** 로 버퍼에 적재하고, **IDLE 라인 인터럽트**로 한 줄 단위로 처리.
+- 프로토콜은 기존과 동일: `1500`, `1500 1200`, `mode 0` / `mode 1`. 응답은 USART1(WiFi)로 전송.
+
+---
+
 ## 터미널(UART)로 펄스 폭 제어
 
 PWM 주파수 기본 **50 Hz** (주기 20 ms = 20,000 us). `main.c`의 **`PWM_FREQ_HZ`** 를 바꿔서 50 / 100 / 250 Hz 등으로 빌드·테스트 가능. 펄스 폭 **800 us ~ 2,200 us** 범위를 UART로 입력해 CH1(PA8), CH2(PA0)에 적용할 수 있음.
