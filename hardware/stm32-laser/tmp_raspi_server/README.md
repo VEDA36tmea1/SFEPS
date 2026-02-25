@@ -69,11 +69,11 @@ cd /home/physical-100/SFEPS/hardware/stm32-laser/tmp_raspi_server
 make raspi_tcp_server
 ```
 
-### 2. 실행
+### 2. 실행 (수동 전송 모드)
 
 ```bash
 cd /home/physical-100/SFEPS/hardware/stm32-laser/tmp_raspi_server
-./raspi_tcp_server          # 기본 포트 5555
+./raspi_tcp_server          # 기본 포트 5555, 수동 전송 모드
 # 또는 ./raspi_tcp_server 5555
 ```
 
@@ -106,6 +106,23 @@ ESP가 접속하면:
   → 해당 문자열 + `\n` 이 그대로 ESP로 전송됩니다.
 
 ESP8266 쪽에서는 이 문자열을 수신해서 **좌표 파싱 또는 디버그 출력**만 해 보면 통신이 잘 되는지 바로 확인할 수 있습니다.
+
+---
+
+### 3. 실행 (RTT 측정 모드)
+
+ESP/STM 쪽에서 **수신한 `PING,<seq>` 라인을 그대로 echo** 해주도록 구현해 두었다면,
+아래 명령으로 전체 경로(Pi ↔ ESP ↔ STM ↔ ESP ↔ Pi)의 RTT를 측정할 수 있습니다.
+
+```bash
+cd /home/physical-100/SFEPS/hardware/stm32-laser/tmp_raspi_server
+./raspi_tcp_server rtt          # 기본 포트 5555, RTT 측정 모드
+# 또는 ./raspi_tcp_server rtt 6000
+```
+
+- 클라이언트(ESP/STM)가 접속하면 자동으로 여러 번 `PING,<seq>\n` 을 보내고,
+- 되돌아온 한 줄을 기준으로 **RTT(ms)** 를 계산해서 평균/최소/최대 및
+  **대략적인 편도 지연( avg/2 )** 을 로그로 출력합니다.
 
 ---
 
