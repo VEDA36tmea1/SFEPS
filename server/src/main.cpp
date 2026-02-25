@@ -9,7 +9,6 @@
 #include <filesystem>
 #include <iostream>
 #include <limits>
-#include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -33,6 +32,7 @@
 #include "recorder.h"
 #include "rfid_monitor.h"
 #include "runtime_config.h"
+#include "tls_server.h"
 
 namespace fs = std::filesystem;
 
@@ -40,19 +40,10 @@ constexpr int AUTH_PORT = 5555;
 constexpr int AUDIO_PORT = 5556;
 constexpr int ALERT_PORT = 5557;
 
-std::vector<int> g_client_sockets;
-std::mutex g_sockets_mutex;
 std::atomic<bool> g_running(true);
 
-void close_alert_client_sockets() {
-    std::lock_guard<std::mutex> lock(g_sockets_mutex);
-    for (int fd : g_client_sockets) {
-        close(fd);
-    }
-    g_client_sockets.clear();
-}
-
 namespace {
+
 struct SecurityRuntimeOptions {
     std::unordered_set<std::string> auth_allow_ips;
     std::unordered_set<std::string> audio_allow_ips;
@@ -61,6 +52,15 @@ struct SecurityRuntimeOptions {
     std::size_t audio_max_bytes = 4 * 1024 * 1024;
     std::size_t alert_max_clients = 64;
     int socket_read_timeout_ms = 5000;
+
+    bool app_tls_enable = false;
+    bool app_plaintext_enable = true;
+    int auth_tls_port = 6555;
+    int audio_tls_port = 6556;
+    int alert_tls_port = 6557;
+    std::string app_tls_cert_file;
+    std::string app_tls_key_file;
+    int app_tls_handshake_timeout_ms = 3000;
 };
 
 std::string trim_copy(const std::string& s) {
@@ -117,6 +117,33 @@ int load_env_int(const char* name, int default_value, int min_value) {
     return static_cast<int>(parsed);
 }
 
+bool load_env_bool(const char* name, bool default_value) {
+    const char* raw = std::getenv(name);
+    if (raw == nullptr || raw[0] == '\0') return default_value;
+
+    std::string token(raw);
+    std::transform(token.begin(), token.end(), token.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+
+    if (token == "1" || token == "true" || token == "yes" || token == "on") return true;
+    if (token == "0" || token == "false" || token == "no" || token == "off") return false;
+
+    std::cerr << "[main.cpp] [Config] Invalid boolean env " << name << "=" << raw
+              << ", using default=" << (default_value ? "1" : "0") << std::endl;
+    return default_value;
+}
+
+int load_env_port(const char* name, int default_value) {
+    const int parsed = load_env_int(name, default_value, 1);
+    if (parsed > 65535) {
+        std::cerr << "[main.cpp] [Config] Invalid port env " << name << "=" << parsed
+                  << ", using default=" << default_value << std::endl;
+        return default_value;
+    }
+    return parsed;
+}
+
 std::unordered_set<std::string> parse_allowlist_env(const char* name) {
     std::unordered_set<std::string> out;
     const char* raw = std::getenv(name);
@@ -140,6 +167,7 @@ std::unordered_set<std::string> parse_allowlist_env(const char* name) {
 
 SecurityRuntimeOptions load_security_runtime_options() {
     SecurityRuntimeOptions cfg;
+
     cfg.auth_allow_ips = parse_allowlist_env("SFEPS_AUTH_ALLOW_IPS");
     cfg.audio_allow_ips = parse_allowlist_env("SFEPS_AUDIO_ALLOW_IPS");
     cfg.alert_allow_ips = parse_allowlist_env("SFEPS_ALERT_ALLOW_IPS");
@@ -147,7 +175,73 @@ SecurityRuntimeOptions load_security_runtime_options() {
     cfg.audio_max_bytes = load_env_size_t("SFEPS_AUDIO_MAX_BYTES", 4 * 1024 * 1024, 1024);
     cfg.alert_max_clients = load_env_size_t("SFEPS_ALERT_MAX_CLIENTS", 64, 1);
     cfg.socket_read_timeout_ms = load_env_int("SFEPS_SOCKET_READ_TIMEOUT_MS", 5000, 1);
+
+    cfg.app_tls_enable = load_env_bool("SFEPS_APP_TLS_ENABLE", false);
+    cfg.app_plaintext_enable = load_env_bool("SFEPS_APP_PLAINTEXT_ENABLE", true);
+    cfg.auth_tls_port = load_env_port("SFEPS_AUTH_TLS_PORT", 6555);
+    cfg.audio_tls_port = load_env_port("SFEPS_AUDIO_TLS_PORT", 6556);
+    cfg.alert_tls_port = load_env_port("SFEPS_ALERT_TLS_PORT", 6557);
+    cfg.app_tls_handshake_timeout_ms =
+        load_env_int("SFEPS_APP_TLS_HANDSHAKE_TIMEOUT_MS", 3000, 1);
+
+    const char* cert_file = std::getenv("SFEPS_APP_TLS_CERT_FILE");
+    if (cert_file != nullptr && cert_file[0] != '\0') {
+        cfg.app_tls_cert_file = cert_file;
+    }
+
+    const char* key_file = std::getenv("SFEPS_APP_TLS_KEY_FILE");
+    if (key_file != nullptr && key_file[0] != '\0') {
+        cfg.app_tls_key_file = key_file;
+    }
+
     return cfg;
+}
+
+bool validate_security_runtime_options(const SecurityRuntimeOptions& cfg, std::string& err) {
+    if (!cfg.app_plaintext_enable && !cfg.app_tls_enable) {
+        err = "invalid runtime config: both plaintext and TLS are disabled";
+        return false;
+    }
+
+    if (!cfg.app_tls_enable) {
+        return true;
+    }
+
+    if (cfg.app_tls_cert_file.empty() || cfg.app_tls_key_file.empty()) {
+        err = "missing required env for TLS mode: SFEPS_APP_TLS_CERT_FILE/SFEPS_APP_TLS_KEY_FILE";
+        return false;
+    }
+
+    if (access(cfg.app_tls_cert_file.c_str(), R_OK) != 0) {
+        err = "TLS cert file is not readable: " + cfg.app_tls_cert_file;
+        return false;
+    }
+
+    if (access(cfg.app_tls_key_file.c_str(), R_OK) != 0) {
+        err = "TLS key file is not readable: " + cfg.app_tls_key_file;
+        return false;
+    }
+
+    std::unordered_set<int> tls_ports = {
+        cfg.auth_tls_port,
+        cfg.audio_tls_port,
+        cfg.alert_tls_port,
+    };
+    if (tls_ports.size() != 3) {
+        err = "invalid TLS port config: SFEPS_AUTH/AUDIO/ALERT_TLS_PORT must be unique";
+        return false;
+    }
+
+    if (cfg.app_plaintext_enable) {
+        std::unordered_set<int> plain_ports = {AUTH_PORT, AUDIO_PORT, ALERT_PORT};
+        if (plain_ports.count(cfg.auth_tls_port) > 0 || plain_ports.count(cfg.audio_tls_port) > 0 ||
+            plain_ports.count(cfg.alert_tls_port) > 0) {
+            err = "invalid TLS port config: TLS ports collide with plaintext ports (5555/5556/5557)";
+            return false;
+        }
+    }
+
+    return true;
 }
 
 void log_allowlist_mode(const char* env_name, const std::unordered_set<std::string>& allowlist) {
@@ -161,6 +255,24 @@ void log_allowlist_mode(const char* env_name, const std::unordered_set<std::stri
               << " IP(s)." << std::endl;
 }
 
+void log_transport_mode(const SecurityRuntimeOptions& cfg) {
+    if (cfg.app_plaintext_enable && cfg.app_tls_enable) {
+        std::cout << "[main.cpp] [Security] App port mode: dual-stack (plaintext + TLS)."
+                  << std::endl;
+    } else if (cfg.app_tls_enable) {
+        std::cout << "[main.cpp] [Security] App port mode: TLS-only." << std::endl;
+    } else {
+        std::cout << "[main.cpp] [Security] App port mode: plaintext-only." << std::endl;
+    }
+
+    if (cfg.app_tls_enable) {
+        std::cout << "[main.cpp] [Security] TLS ports auth/audio/alert=" << cfg.auth_tls_port << "/"
+                  << cfg.audio_tls_port << "/" << cfg.alert_tls_port
+                  << ", handshake_timeout_ms=" << cfg.app_tls_handshake_timeout_ms << std::endl;
+        std::cout << "[main.cpp] [Security] TLS cert file=" << cfg.app_tls_cert_file << std::endl;
+    }
+}
+
 bool is_ip_allowed(const std::unordered_set<std::string>& allowlist, const std::string& client_ip) {
     if (allowlist.empty()) return true;
     return allowlist.find(client_ip) != allowlist.end();
@@ -170,7 +282,7 @@ std::string peer_ip_to_string(const sockaddr_in& peer_addr) {
     char ip_buf[INET_ADDRSTRLEN] = {0};
     const char* ip_res =
         inet_ntop(AF_INET, &peer_addr.sin_addr, ip_buf, static_cast<socklen_t>(sizeof(ip_buf)));
-    return (ip_res != nullptr) ? std::string(ip_res) : std::string("Unknown_IP");
+    return (ip_res != nullptr) ? std::string(ip_buf) : std::string("Unknown_IP");
 }
 
 void apply_socket_read_timeout(int fd, int timeout_ms) {
@@ -219,6 +331,39 @@ int create_listen_socket(int port, const char* tag) {
 
     return server_fd;
 }
+
+bool send_all_plain(int fd, const char* data, size_t len) {
+    size_t sent = 0;
+    while (sent < len) {
+        const ssize_t n = send(fd, data + sent, len - sent, MSG_NOSIGNAL);
+        if (n > 0) {
+            sent += static_cast<size_t>(n);
+            continue;
+        }
+        if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
+bool send_all_tls(const TlsClientConnection& client, const char* data, size_t len) {
+    size_t sent = 0;
+    while (sent < len) {
+        const ssize_t n = tls_write(client, data + sent, len - sent);
+        if (n > 0) {
+            sent += static_cast<size_t>(n);
+            continue;
+        }
+        if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 void run_audio_receiver(const SecurityRuntimeOptions sec_cfg) {
@@ -233,19 +378,50 @@ void run_audio_receiver(const SecurityRuntimeOptions sec_cfg) {
         return;
     }
 
-    const int server_fd = create_listen_socket(AUDIO_PORT, "Audio");
-    if (server_fd < 0) {
-        ring.stop();
-        playback.stop();
-        return;
+    int plain_server_fd = -1;
+    if (sec_cfg.app_plaintext_enable) {
+        plain_server_fd = create_listen_socket(AUDIO_PORT, "Audio");
+        if (plain_server_fd < 0) {
+            ring.stop();
+            playback.stop();
+            g_running = false;
+            return;
+        }
+        std::cout << "[main.cpp] [Audio] listening plaintext on port " << AUDIO_PORT << std::endl;
     }
 
-    std::cout << "[main.cpp] [Audio] listening on port " << AUDIO_PORT << std::endl;
+    TlsServer tls_server;
+    if (sec_cfg.app_tls_enable) {
+        std::string tls_err;
+        TlsServerConfig tls_cfg;
+        tls_cfg.port = sec_cfg.audio_tls_port;
+        tls_cfg.cert_file = sec_cfg.app_tls_cert_file;
+        tls_cfg.key_file = sec_cfg.app_tls_key_file;
+        tls_cfg.handshake_timeout_ms = sec_cfg.app_tls_handshake_timeout_ms;
+        tls_cfg.tag = "AudioTLS";
+
+        if (!init_tls_server(tls_server, tls_cfg, tls_err)) {
+            std::cerr << "[main.cpp] [Audio] failed to start TLS listener: " << tls_err << std::endl;
+            if (plain_server_fd >= 0) close(plain_server_fd);
+            ring.stop();
+            playback.stop();
+            g_running = false;
+            return;
+        }
+
+        std::cout << "[main.cpp] [Audio] listening TLS on port " << sec_cfg.audio_tls_port
+                  << std::endl;
+    }
 
     char buf[kBufferSize];
     while (g_running.load()) {
-        pollfd pfd {server_fd, POLLIN, 0};
-        const int poll_ret = poll(&pfd, 1, 1000);
+        std::vector<pollfd> pfds;
+        if (plain_server_fd >= 0) pfds.push_back(pollfd {plain_server_fd, POLLIN, 0});
+        if (tls_server.listen_fd >= 0) pfds.push_back(pollfd {tls_server.listen_fd, POLLIN, 0});
+
+        if (pfds.empty()) break;
+
+        const int poll_ret = poll(pfds.data(), pfds.size(), 1000);
         if (poll_ret < 0) {
             if (errno == EINTR) continue;
             std::cerr << "[Audio] poll() failed: " << std::strerror(errno) << std::endl;
@@ -253,73 +429,164 @@ void run_audio_receiver(const SecurityRuntimeOptions sec_cfg) {
         }
         if (poll_ret == 0) continue;
 
-        sockaddr_in peer_addr {};
-        socklen_t peer_len = sizeof(peer_addr);
-        int client_fd =
-            accept(server_fd, reinterpret_cast<sockaddr*>(&peer_addr), &peer_len);
-        if (client_fd < 0) {
-            if (!g_running.load()) break;
-            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
-            std::cerr << "[Audio] accept() failed: " << std::strerror(errno) << std::endl;
-            continue;
-        }
+        for (const pollfd& pfd : pfds) {
+            if ((pfd.revents & POLLIN) == 0) continue;
 
-        const std::string client_ip = peer_ip_to_string(peer_addr);
-        if (!is_ip_allowed(sec_cfg.audio_allow_ips, client_ip)) {
-            std::cout << "[main.cpp] [Audio] Connection rejected by allowlist: ip=" << client_ip
-                      << std::endl;
-            close(client_fd);
-            continue;
-        }
+            if (pfd.fd == plain_server_fd) {
+                sockaddr_in peer_addr {};
+                socklen_t peer_len = sizeof(peer_addr);
+                const int client_fd =
+                    accept(plain_server_fd, reinterpret_cast<sockaddr*>(&peer_addr), &peer_len);
+                if (client_fd < 0) {
+                    if (!g_running.load()) break;
+                    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+                    std::cerr << "[Audio] accept() failed: " << std::strerror(errno) << std::endl;
+                    continue;
+                }
 
-        apply_socket_read_timeout(client_fd, sec_cfg.socket_read_timeout_ms);
+                const std::string client_ip = peer_ip_to_string(peer_addr);
+                if (!is_ip_allowed(sec_cfg.audio_allow_ips, client_ip)) {
+                    std::cout << "[main.cpp] [Audio] Plain connection rejected by allowlist: ip="
+                              << client_ip << std::endl;
+                    close(client_fd);
+                    continue;
+                }
 
-        bool oversize = false;
-        std::size_t total_bytes = 0;
-        while (g_running.load()) {
-            const ssize_t bytes_read = read(client_fd, buf, sizeof(buf));
-            if (bytes_read > 0) {
-                const std::size_t chunk = static_cast<std::size_t>(bytes_read);
-                if (total_bytes + chunk > sec_cfg.audio_max_bytes) {
-                    oversize = true;
+                apply_socket_read_timeout(client_fd, sec_cfg.socket_read_timeout_ms);
+
+                bool oversize = false;
+                std::size_t total_bytes = 0;
+                while (g_running.load()) {
+                    const ssize_t bytes_read = read(client_fd, buf, sizeof(buf));
+                    if (bytes_read > 0) {
+                        const std::size_t chunk = static_cast<std::size_t>(bytes_read);
+                        if (total_bytes + chunk > sec_cfg.audio_max_bytes) {
+                            oversize = true;
+                            break;
+                        }
+                        ring.push(buf, chunk);
+                        total_bytes += chunk;
+                        continue;
+                    }
+
+                    if (bytes_read == 0) break;
+                    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+                    std::cerr << "[Audio] read() failed: " << std::strerror(errno) << std::endl;
                     break;
                 }
-                ring.push(buf, chunk);
-                total_bytes += chunk;
+
+                if (oversize) {
+                    std::cout
+                        << "[main.cpp] [Audio] Plain payload rejected: exceeded SFEPS_AUDIO_MAX_BYTES="
+                        << sec_cfg.audio_max_bytes << " (ip=" << client_ip << ")" << std::endl;
+                }
+
+                close(client_fd);
                 continue;
             }
 
-            if (bytes_read == 0) break;
-            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
-            std::cerr << "[Audio] read() failed: " << std::strerror(errno) << std::endl;
-            break;
-        }
+            if (pfd.fd == tls_server.listen_fd) {
+                sockaddr_in peer_addr {};
+                TlsClientConnection client {};
+                std::string tls_err;
+                const int client_fd = accept_tls_client(tls_server, client, peer_addr, tls_err);
+                if (client_fd < 0) {
+                    if (!g_running.load()) break;
+                    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+                    std::cerr << "[main.cpp] [Audio] TLS accept failed: " << tls_err << std::endl;
+                    continue;
+                }
 
-        if (oversize) {
-            std::cout << "[main.cpp] [Audio] Payload rejected: exceeded SFEPS_AUDIO_MAX_BYTES="
-                      << sec_cfg.audio_max_bytes << " (ip=" << client_ip << ")" << std::endl;
-        }
+                const std::string client_ip = peer_ip_to_string(peer_addr);
+                if (!is_ip_allowed(sec_cfg.audio_allow_ips, client_ip)) {
+                    std::cout << "[main.cpp] [Audio] TLS connection rejected by allowlist: ip="
+                              << client_ip << std::endl;
+                    close_tls_client(client);
+                    continue;
+                }
 
-        close(client_fd);
+                apply_socket_read_timeout(client.fd, sec_cfg.socket_read_timeout_ms);
+
+                bool oversize = false;
+                std::size_t total_bytes = 0;
+                while (g_running.load()) {
+                    const ssize_t bytes_read = tls_read(client, buf, sizeof(buf));
+                    if (bytes_read > 0) {
+                        const std::size_t chunk = static_cast<std::size_t>(bytes_read);
+                        if (total_bytes + chunk > sec_cfg.audio_max_bytes) {
+                            oversize = true;
+                            break;
+                        }
+                        ring.push(buf, chunk);
+                        total_bytes += chunk;
+                        continue;
+                    }
+
+                    if (bytes_read == 0) break;
+                    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+                    std::cerr << "[Audio] TLS read() failed: " << std::strerror(errno) << std::endl;
+                    break;
+                }
+
+                if (oversize) {
+                    std::cout
+                        << "[main.cpp] [Audio] TLS payload rejected: exceeded SFEPS_AUDIO_MAX_BYTES="
+                        << sec_cfg.audio_max_bytes << " (ip=" << client_ip << ")" << std::endl;
+                }
+
+                close_tls_client(client);
+            }
+        }
     }
 
-    close(server_fd);
+    if (plain_server_fd >= 0) close(plain_server_fd);
+    close_tls_server(tls_server);
+
     ring.stop();
     playback.stop();
     std::cout << "[main.cpp] [Audio] receiver thread stopped." << std::endl;
 }
 
 void run_fraud_notifier(const SecurityRuntimeOptions sec_cfg) {
-    const int server_fd = create_listen_socket(ALERT_PORT, "Alert");
-    if (server_fd < 0) {
-        return;
+    int plain_server_fd = -1;
+    if (sec_cfg.app_plaintext_enable) {
+        plain_server_fd = create_listen_socket(ALERT_PORT, "Alert");
+        if (plain_server_fd < 0) {
+            g_running = false;
+            return;
+        }
+        std::cout << "[main.cpp] [Alert] listening plaintext on port " << ALERT_PORT << std::endl;
     }
 
-    std::cout << "[main.cpp] [Alert] listening on port " << ALERT_PORT << std::endl;
+    TlsServer tls_server;
+    if (sec_cfg.app_tls_enable) {
+        std::string tls_err;
+        TlsServerConfig tls_cfg;
+        tls_cfg.port = sec_cfg.alert_tls_port;
+        tls_cfg.cert_file = sec_cfg.app_tls_cert_file;
+        tls_cfg.key_file = sec_cfg.app_tls_key_file;
+        tls_cfg.handshake_timeout_ms = sec_cfg.app_tls_handshake_timeout_ms;
+        tls_cfg.tag = "AlertTLS";
+
+        if (!init_tls_server(tls_server, tls_cfg, tls_err)) {
+            std::cerr << "[main.cpp] [Alert] failed to start TLS listener: " << tls_err << std::endl;
+            if (plain_server_fd >= 0) close(plain_server_fd);
+            g_running = false;
+            return;
+        }
+
+        std::cout << "[main.cpp] [Alert] listening TLS on port " << sec_cfg.alert_tls_port
+                  << std::endl;
+    }
 
     while (g_running.load()) {
-        pollfd pfd {server_fd, POLLIN, 0};
-        const int poll_ret = poll(&pfd, 1, 1000);
+        std::vector<pollfd> pfds;
+        if (plain_server_fd >= 0) pfds.push_back(pollfd {plain_server_fd, POLLIN, 0});
+        if (tls_server.listen_fd >= 0) pfds.push_back(pollfd {tls_server.listen_fd, POLLIN, 0});
+
+        if (pfds.empty()) break;
+
+        const int poll_ret = poll(pfds.data(), pfds.size(), 1000);
         if (poll_ret < 0) {
             if (errno == EINTR) continue;
             std::cerr << "[Alert] poll() failed: " << std::strerror(errno) << std::endl;
@@ -327,45 +594,83 @@ void run_fraud_notifier(const SecurityRuntimeOptions sec_cfg) {
         }
         if (poll_ret == 0) continue;
 
-        sockaddr_in peer_addr {};
-        socklen_t peer_len = sizeof(peer_addr);
-        int client_fd =
-            accept(server_fd, reinterpret_cast<sockaddr*>(&peer_addr), &peer_len);
-        if (client_fd < 0) {
-            if (!g_running.load()) break;
-            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
-            std::cerr << "[Alert] accept() failed: " << std::strerror(errno) << std::endl;
-            continue;
-        }
+        for (const pollfd& pfd : pfds) {
+            if ((pfd.revents & POLLIN) == 0) continue;
 
-        const std::string client_ip = peer_ip_to_string(peer_addr);
-        if (!is_ip_allowed(sec_cfg.alert_allow_ips, client_ip)) {
-            std::cout << "[main.cpp] [Alert] Connection rejected by allowlist: ip=" << client_ip
-                      << std::endl;
-            close(client_fd);
-            continue;
-        }
+            if (pfd.fd == plain_server_fd) {
+                sockaddr_in peer_addr {};
+                socklen_t peer_len = sizeof(peer_addr);
+                const int client_fd =
+                    accept(plain_server_fd, reinterpret_cast<sockaddr*>(&peer_addr), &peer_len);
+                if (client_fd < 0) {
+                    if (!g_running.load()) break;
+                    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+                    std::cerr << "[Alert] accept() failed: " << std::strerror(errno) << std::endl;
+                    continue;
+                }
 
-        apply_socket_read_timeout(client_fd, sec_cfg.socket_read_timeout_ms);
+                const std::string client_ip = peer_ip_to_string(peer_addr);
+                if (!is_ip_allowed(sec_cfg.alert_allow_ips, client_ip)) {
+                    std::cout << "[main.cpp] [Alert] Plain connection rejected by allowlist: ip="
+                              << client_ip << std::endl;
+                    close(client_fd);
+                    continue;
+                }
 
-        {
-            std::lock_guard<std::mutex> lock(g_sockets_mutex);
-            if (g_client_sockets.size() >= sec_cfg.alert_max_clients) {
-                std::cout << "[main.cpp] [Alert] Connection rejected: max clients reached ("
-                          << sec_cfg.alert_max_clients << ")" << std::endl;
-                close(client_fd);
+                apply_socket_read_timeout(client_fd, sec_cfg.socket_read_timeout_ms);
+
+                if (alert_client_count() >= sec_cfg.alert_max_clients) {
+                    std::cout << "[main.cpp] [Alert] Plain connection rejected: max clients reached ("
+                              << sec_cfg.alert_max_clients << ")" << std::endl;
+                    close(client_fd);
+                    continue;
+                }
+
+                add_alert_plain_client(client_fd);
+                std::cout << "[main.cpp] [Alert] plain client connected: " << client_ip << ":"
+                          << ntohs(peer_addr.sin_port) << " (fd=" << client_fd << ")" << std::endl;
                 continue;
             }
 
-            g_client_sockets.push_back(client_fd);
-        }
+            if (pfd.fd == tls_server.listen_fd) {
+                sockaddr_in peer_addr {};
+                TlsClientConnection client {};
+                std::string tls_err;
+                const int client_fd = accept_tls_client(tls_server, client, peer_addr, tls_err);
+                if (client_fd < 0) {
+                    if (!g_running.load()) break;
+                    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+                    std::cerr << "[main.cpp] [Alert] TLS accept failed: " << tls_err << std::endl;
+                    continue;
+                }
 
-        std::cout << "[main.cpp] [Alert] client connected: " << client_ip << ":"
-                  << ntohs(peer_addr.sin_port) << " (fd=" << client_fd << ")" << std::endl;
+                const std::string client_ip = peer_ip_to_string(peer_addr);
+                if (!is_ip_allowed(sec_cfg.alert_allow_ips, client_ip)) {
+                    std::cout << "[main.cpp] [Alert] TLS connection rejected by allowlist: ip="
+                              << client_ip << std::endl;
+                    close_tls_client(client);
+                    continue;
+                }
+
+                apply_socket_read_timeout(client.fd, sec_cfg.socket_read_timeout_ms);
+
+                if (alert_client_count() >= sec_cfg.alert_max_clients) {
+                    std::cout << "[main.cpp] [Alert] TLS connection rejected: max clients reached ("
+                              << sec_cfg.alert_max_clients << ")" << std::endl;
+                    close_tls_client(client);
+                    continue;
+                }
+
+                add_alert_tls_client(std::move(client));
+                std::cout << "[main.cpp] [Alert] TLS client connected: " << client_ip << ":"
+                          << ntohs(peer_addr.sin_port) << " (fd=" << client_fd << ")" << std::endl;
+            }
+        }
     }
 
-    close(server_fd);
-    close_alert_client_sockets();
+    if (plain_server_fd >= 0) close(plain_server_fd);
+    close_tls_server(tls_server);
+    close_alert_client_connections();
     std::cout << "[main.cpp] [Alert] notifier thread stopped." << std::endl;
 }
 
@@ -398,63 +703,47 @@ void run_login_auth(const RuntimeConfig cfg, const SecurityRuntimeOptions sec_cf
                   << "Login service will continue without auth DB log writes." << std::endl;
     }
 
-    const int server_fd = create_listen_socket(AUTH_PORT, "Auth");
-    if (server_fd < 0) {
-        g_running = false;
-        return;
+    int plain_server_fd = -1;
+    if (sec_cfg.app_plaintext_enable) {
+        plain_server_fd = create_listen_socket(AUTH_PORT, "Auth");
+        if (plain_server_fd < 0) {
+            g_running = false;
+            return;
+        }
+        std::cout << "[main.cpp] [Auth] listening plaintext on port " << AUTH_PORT << std::endl;
+    }
+
+    TlsServer tls_server;
+    if (sec_cfg.app_tls_enable) {
+        std::string tls_err;
+        TlsServerConfig tls_cfg;
+        tls_cfg.port = sec_cfg.auth_tls_port;
+        tls_cfg.cert_file = sec_cfg.app_tls_cert_file;
+        tls_cfg.key_file = sec_cfg.app_tls_key_file;
+        tls_cfg.handshake_timeout_ms = sec_cfg.app_tls_handshake_timeout_ms;
+        tls_cfg.tag = "AuthTLS";
+
+        if (!init_tls_server(tls_server, tls_cfg, tls_err)) {
+            std::cerr << "[main.cpp] [Auth] failed to start TLS listener: " << tls_err << std::endl;
+            if (plain_server_fd >= 0) close(plain_server_fd);
+            g_running = false;
+            return;
+        }
+
+        std::cout << "[main.cpp] [Auth] listening TLS on port " << sec_cfg.auth_tls_port
+                  << std::endl;
     }
 
     std::unordered_map<std::string, AttemptState> attempts;
     int request_counter = 0;
 
-    while (g_running.load()) {
-        pollfd pfd {server_fd, POLLIN, 0};
-        const int poll_ret = poll(&pfd, 1, 1000);
-        if (poll_ret < 0) {
-            if (errno == EINTR) continue;
-            std::cerr << "[Auth] poll() failed: " << std::strerror(errno) << std::endl;
-            break;
-        }
-        if (poll_ret == 0) continue;
-
-        sockaddr_in peer_addr {};
-        socklen_t peer_len = sizeof(peer_addr);
-        int client_fd =
-            accept(server_fd, reinterpret_cast<sockaddr*>(&peer_addr), &peer_len);
-        if (client_fd < 0) {
-            if (!g_running.load()) break;
-            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
-            std::cerr << "[Auth] accept() failed: " << std::strerror(errno) << std::endl;
-            continue;
-        }
-
-        const std::string client_ip = peer_ip_to_string(peer_addr);
-        if (!is_ip_allowed(sec_cfg.auth_allow_ips, client_ip)) {
-            std::cout << "[main.cpp] [Auth] Connection rejected by allowlist: ip=" << client_ip
-                      << std::endl;
-            close(client_fd);
-            continue;
-        }
-
-        apply_socket_read_timeout(client_fd, sec_cfg.socket_read_timeout_ms);
-
-        std::vector<char> buf(sec_cfg.auth_max_bytes + 1, 0);
-        const ssize_t bytes_read = read(client_fd, buf.data(), buf.size());
-        if (bytes_read <= 0) {
-            if (bytes_read < 0 && errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
-                std::cerr << "[Auth] read() failed: " << std::strerror(errno) << std::endl;
-            }
-            close(client_fd);
-            continue;
-        }
-
-        const bool oversized = static_cast<std::size_t>(bytes_read) > sec_cfg.auth_max_bytes;
-        const std::size_t data_len =
-            oversized ? sec_cfg.auth_max_bytes : static_cast<std::size_t>(bytes_read);
-
-        std::string data(buf.data(), data_len);
-        std::string user = "Unknown";
-        bool success = false;
+    auto evaluate_auth = [&](const std::string& data,
+                             const std::string& client_ip,
+                             bool oversized,
+                             std::string& user,
+                             bool& success) {
+        user = "Unknown";
+        success = false;
         bool valid_format = false;
 
         if (!oversized) {
@@ -489,19 +778,10 @@ void run_login_auth(const RuntimeConfig cfg, const SecurityRuntimeOptions sec_cf
         }
 
         if (oversized) {
-            std::cout << "[main.cpp] [Auth] Payload rejected: exceeded SFEPS_AUTH_MAX_BYTES="
-                      << sec_cfg.auth_max_bytes << " (ip=" << client_ip << ")" << std::endl;
             success = false;
         } else if (!valid_format) {
             success = false;
         }
-
-        send(client_fd, success ? "PASS" : "FAIL", 4, MSG_NOSIGNAL);
-
-        if (success) {
-            send_alert_to_clients("TEST|LOGIN_OK|" + user + "\n");
-        }
-        auth_logger.enqueueLogin(user, client_ip, success);
 
         if (++request_counter % kCleanupInterval == 0) {
             auto now = std::chrono::steady_clock::now();
@@ -517,11 +797,148 @@ void run_login_auth(const RuntimeConfig cfg, const SecurityRuntimeOptions sec_cf
                 }
             }
         }
+    };
 
-        close(client_fd);
+    while (g_running.load()) {
+        std::vector<pollfd> pfds;
+        if (plain_server_fd >= 0) pfds.push_back(pollfd {plain_server_fd, POLLIN, 0});
+        if (tls_server.listen_fd >= 0) pfds.push_back(pollfd {tls_server.listen_fd, POLLIN, 0});
+
+        if (pfds.empty()) break;
+
+        const int poll_ret = poll(pfds.data(), pfds.size(), 1000);
+        if (poll_ret < 0) {
+            if (errno == EINTR) continue;
+            std::cerr << "[Auth] poll() failed: " << std::strerror(errno) << std::endl;
+            break;
+        }
+        if (poll_ret == 0) continue;
+
+        for (const pollfd& pfd : pfds) {
+            if ((pfd.revents & POLLIN) == 0) continue;
+
+            if (pfd.fd == plain_server_fd) {
+                sockaddr_in peer_addr {};
+                socklen_t peer_len = sizeof(peer_addr);
+                const int client_fd =
+                    accept(plain_server_fd, reinterpret_cast<sockaddr*>(&peer_addr), &peer_len);
+                if (client_fd < 0) {
+                    if (!g_running.load()) break;
+                    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+                    std::cerr << "[Auth] accept() failed: " << std::strerror(errno) << std::endl;
+                    continue;
+                }
+
+                const std::string client_ip = peer_ip_to_string(peer_addr);
+                if (!is_ip_allowed(sec_cfg.auth_allow_ips, client_ip)) {
+                    std::cout << "[main.cpp] [Auth] Plain connection rejected by allowlist: ip="
+                              << client_ip << std::endl;
+                    close(client_fd);
+                    continue;
+                }
+
+                apply_socket_read_timeout(client_fd, sec_cfg.socket_read_timeout_ms);
+
+                std::vector<char> buf(sec_cfg.auth_max_bytes + 1, 0);
+                const ssize_t bytes_read = read(client_fd, buf.data(), buf.size());
+                if (bytes_read <= 0) {
+                    if (bytes_read < 0 && errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
+                        std::cerr << "[Auth] read() failed: " << std::strerror(errno) << std::endl;
+                    }
+                    close(client_fd);
+                    continue;
+                }
+
+                const bool oversized = static_cast<std::size_t>(bytes_read) > sec_cfg.auth_max_bytes;
+                const std::size_t data_len =
+                    oversized ? sec_cfg.auth_max_bytes : static_cast<std::size_t>(bytes_read);
+                const std::string data(buf.data(), data_len);
+
+                std::string user;
+                bool success = false;
+                evaluate_auth(data, client_ip, oversized, user, success);
+
+                if (oversized) {
+                    std::cout
+                        << "[main.cpp] [Auth] Plain payload rejected: exceeded SFEPS_AUTH_MAX_BYTES="
+                        << sec_cfg.auth_max_bytes << " (ip=" << client_ip << ")" << std::endl;
+                }
+
+                const char* resp = success ? "PASS" : "FAIL";
+                send_all_plain(client_fd, resp, 4);
+
+                if (success) {
+                    send_alert_to_clients("TEST|LOGIN_OK|" + user + "\n");
+                }
+                auth_logger.enqueueLogin(user, client_ip, success);
+
+                close(client_fd);
+                continue;
+            }
+
+            if (pfd.fd == tls_server.listen_fd) {
+                sockaddr_in peer_addr {};
+                TlsClientConnection client {};
+                std::string tls_err;
+                const int client_fd = accept_tls_client(tls_server, client, peer_addr, tls_err);
+                if (client_fd < 0) {
+                    if (!g_running.load()) break;
+                    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+                    std::cerr << "[main.cpp] [Auth] TLS accept failed: " << tls_err << std::endl;
+                    continue;
+                }
+
+                const std::string client_ip = peer_ip_to_string(peer_addr);
+                if (!is_ip_allowed(sec_cfg.auth_allow_ips, client_ip)) {
+                    std::cout << "[main.cpp] [Auth] TLS connection rejected by allowlist: ip="
+                              << client_ip << std::endl;
+                    close_tls_client(client);
+                    continue;
+                }
+
+                apply_socket_read_timeout(client.fd, sec_cfg.socket_read_timeout_ms);
+
+                std::vector<char> buf(sec_cfg.auth_max_bytes + 1, 0);
+                const ssize_t bytes_read = tls_read(client, buf.data(), buf.size());
+                if (bytes_read <= 0) {
+                    if (bytes_read < 0 && errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
+                        std::cerr << "[Auth] TLS read() failed: " << std::strerror(errno) << std::endl;
+                    }
+                    close_tls_client(client);
+                    continue;
+                }
+
+                const bool oversized = static_cast<std::size_t>(bytes_read) > sec_cfg.auth_max_bytes;
+                const std::size_t data_len =
+                    oversized ? sec_cfg.auth_max_bytes : static_cast<std::size_t>(bytes_read);
+                const std::string data(buf.data(), data_len);
+
+                std::string user;
+                bool success = false;
+                evaluate_auth(data, client_ip, oversized, user, success);
+
+                if (oversized) {
+                    std::cout
+                        << "[main.cpp] [Auth] TLS payload rejected: exceeded SFEPS_AUTH_MAX_BYTES="
+                        << sec_cfg.auth_max_bytes << " (ip=" << client_ip << ")" << std::endl;
+                }
+
+                const char* resp = success ? "PASS" : "FAIL";
+                send_all_tls(client, resp, 4);
+
+                if (success) {
+                    send_alert_to_clients("TEST|LOGIN_OK|" + user + "\n");
+                }
+                auth_logger.enqueueLogin(user, client_ip, success);
+
+                close_tls_client(client);
+            }
+        }
     }
 
-    close(server_fd);
+    if (plain_server_fd >= 0) close(plain_server_fd);
+    close_tls_server(tls_server);
+
     std::cout << "[main.cpp] [Auth] auth thread stopped." << std::endl;
 }
 
@@ -538,6 +955,13 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
+    const SecurityRuntimeOptions sec_cfg = load_security_runtime_options();
+    std::string sec_cfg_err;
+    if (!validate_security_runtime_options(sec_cfg, sec_cfg_err)) {
+        std::cerr << "[Fatal] Security config error: " << sec_cfg_err << std::endl;
+        return -1;
+    }
+
     {
         Authenticator auth_probe(cfg.db_host.c_str(), cfg.db_user.c_str(), cfg.db_pass.c_str(),
                                  cfg.db_name_auth.c_str());
@@ -547,10 +971,10 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    const SecurityRuntimeOptions sec_cfg = load_security_runtime_options();
     log_allowlist_mode("SFEPS_AUTH_ALLOW_IPS", sec_cfg.auth_allow_ips);
     log_allowlist_mode("SFEPS_AUDIO_ALLOW_IPS", sec_cfg.audio_allow_ips);
     log_allowlist_mode("SFEPS_ALERT_ALLOW_IPS", sec_cfg.alert_allow_ips);
+    log_transport_mode(sec_cfg);
 
     std::cout << "[main.cpp] [Security] auth_max_bytes=" << sec_cfg.auth_max_bytes
               << ", audio_max_bytes=" << sec_cfg.audio_max_bytes
@@ -627,7 +1051,7 @@ int main(int argc, char* argv[]) {
 
     g_running = false;
 
-    close_alert_client_sockets();
+    close_alert_client_connections();
 
     if (t_test_ping.joinable()) t_test_ping.join();
     if (t_rfid.joinable()) t_rfid.join();

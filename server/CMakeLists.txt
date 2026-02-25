@@ -12,6 +12,7 @@ pkg_check_modules(MARIADB REQUIRED mariadb)
 pkg_check_modules(TINYXML2 REQUIRED tinyxml2)
 pkg_check_modules(FFMPEG REQUIRED libavformat libavcodec libavutil libswscale)
 find_package(Threads REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 # 3. Audio_Speaker_Unit 경로 (링 버퍼 + ALSA 재생)
 set(AUDIO_SPEAKER_UNIT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../hardware/Raspi-driver/Audio_Speaker_Unit)
@@ -28,6 +29,7 @@ add_executable(smart_server
     src/rfid_monitor.cpp
     src/event_matcher.cpp
     src/alert.cpp
+    src/tls_server.cpp
     ${AUDIO_SPEAKER_UNIT_DIR}/src/audio_ring_buffer.cpp
     ${AUDIO_SPEAKER_UNIT_DIR}/src/audio_playback.cpp
 )
@@ -56,6 +58,8 @@ target_link_libraries(smart_server PRIVATE
     ${MARIADB_LIBRARIES}
     ${TINYXML2_LIBRARIES}
     ${FFMPEG_LIBRARIES}
+    OpenSSL::SSL
+    OpenSSL::Crypto
     Threads::Threads
     asound
 )

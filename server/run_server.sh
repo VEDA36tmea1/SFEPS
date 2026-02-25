@@ -58,6 +58,14 @@ fi
 : "${SFEPS_ALERT_MAX_CLIENTS:=64}"
 : "${SFEPS_SOCKET_READ_TIMEOUT_MS:=5000}"
 
+# App port TLS (dual-stack migration defaults).
+: "${SFEPS_APP_TLS_ENABLE:=0}"
+: "${SFEPS_APP_PLAINTEXT_ENABLE:=1}"
+: "${SFEPS_AUTH_TLS_PORT:=6555}"
+: "${SFEPS_AUDIO_TLS_PORT:=6556}"
+: "${SFEPS_ALERT_TLS_PORT:=6557}"
+: "${SFEPS_APP_TLS_HANDSHAKE_TIMEOUT_MS:=3000}"
+
 required_envs=(
   SFEPS_DB_USER
   SFEPS_DB_PASS
@@ -75,6 +83,43 @@ done
 if [[ "${SFEPS_DB_HOST}" != "localhost" ]]; then
   echo "[run_server] SFEPS_DB_HOST must be localhost (local-only mode)." >&2
   exit 1
+fi
+
+if [[ "${SFEPS_APP_TLS_ENABLE}" != "0" && "${SFEPS_APP_TLS_ENABLE}" != "1" ]]; then
+  echo "[run_server] SFEPS_APP_TLS_ENABLE must be 0 or 1." >&2
+  exit 1
+fi
+
+if [[ "${SFEPS_APP_PLAINTEXT_ENABLE}" != "0" && "${SFEPS_APP_PLAINTEXT_ENABLE}" != "1" ]]; then
+  echo "[run_server] SFEPS_APP_PLAINTEXT_ENABLE must be 0 or 1." >&2
+  exit 1
+fi
+
+if [[ "${SFEPS_APP_TLS_ENABLE}" == "0" && "${SFEPS_APP_PLAINTEXT_ENABLE}" == "0" ]]; then
+  echo "[run_server] both SFEPS_APP_TLS_ENABLE and SFEPS_APP_PLAINTEXT_ENABLE cannot be 0." >&2
+  exit 1
+fi
+
+if [[ "${SFEPS_APP_TLS_ENABLE}" == "1" ]]; then
+  required_tls_envs=(
+    SFEPS_APP_TLS_CERT_FILE
+    SFEPS_APP_TLS_KEY_FILE
+  )
+  for var_name in "${required_tls_envs[@]}"; do
+    if [[ -z "${!var_name:-}" ]]; then
+      echo "[run_server] ${var_name} is not set (TLS fail-closed)." >&2
+      exit 1
+    fi
+  done
+
+  if [[ ! -r "${SFEPS_APP_TLS_CERT_FILE}" ]]; then
+    echo "[run_server] SFEPS_APP_TLS_CERT_FILE is not readable: ${SFEPS_APP_TLS_CERT_FILE}" >&2
+    exit 1
+  fi
+  if [[ ! -r "${SFEPS_APP_TLS_KEY_FILE}" ]]; then
+    echo "[run_server] SFEPS_APP_TLS_KEY_FILE is not readable: ${SFEPS_APP_TLS_KEY_FILE}" >&2
+    exit 1
+  fi
 fi
 
 if [[ ! -x "${BIN_PATH}" ]]; then
@@ -98,6 +143,18 @@ export SFEPS_AUTH_MAX_BYTES
 export SFEPS_AUDIO_MAX_BYTES
 export SFEPS_ALERT_MAX_CLIENTS
 export SFEPS_SOCKET_READ_TIMEOUT_MS
+export SFEPS_APP_TLS_ENABLE
+export SFEPS_APP_PLAINTEXT_ENABLE
+export SFEPS_AUTH_TLS_PORT
+export SFEPS_AUDIO_TLS_PORT
+export SFEPS_ALERT_TLS_PORT
+export SFEPS_APP_TLS_HANDSHAKE_TIMEOUT_MS
+if [[ -n "${SFEPS_APP_TLS_CERT_FILE:-}" ]]; then
+  export SFEPS_APP_TLS_CERT_FILE
+fi
+if [[ -n "${SFEPS_APP_TLS_KEY_FILE:-}" ]]; then
+  export SFEPS_APP_TLS_KEY_FILE
+fi
 
 log_info "RTSPS_TLS_CA=${RTSPS_TLS_CA}"
 log_info "SFEPS_DB_HOST=${SFEPS_DB_HOST}"
@@ -113,6 +170,18 @@ log_info "SFEPS_AUTH_MAX_BYTES=${SFEPS_AUTH_MAX_BYTES}"
 log_info "SFEPS_AUDIO_MAX_BYTES=${SFEPS_AUDIO_MAX_BYTES}"
 log_info "SFEPS_ALERT_MAX_CLIENTS=${SFEPS_ALERT_MAX_CLIENTS}"
 log_info "SFEPS_SOCKET_READ_TIMEOUT_MS=${SFEPS_SOCKET_READ_TIMEOUT_MS}"
+log_info "SFEPS_APP_TLS_ENABLE=${SFEPS_APP_TLS_ENABLE}"
+log_info "SFEPS_APP_PLAINTEXT_ENABLE=${SFEPS_APP_PLAINTEXT_ENABLE}"
+log_info "SFEPS_AUTH_TLS_PORT=${SFEPS_AUTH_TLS_PORT}"
+log_info "SFEPS_AUDIO_TLS_PORT=${SFEPS_AUDIO_TLS_PORT}"
+log_info "SFEPS_ALERT_TLS_PORT=${SFEPS_ALERT_TLS_PORT}"
+log_info "SFEPS_APP_TLS_HANDSHAKE_TIMEOUT_MS=${SFEPS_APP_TLS_HANDSHAKE_TIMEOUT_MS}"
+if [[ -n "${SFEPS_APP_TLS_CERT_FILE:-}" ]]; then
+  log_info "SFEPS_APP_TLS_CERT_FILE=${SFEPS_APP_TLS_CERT_FILE}"
+fi
+if [[ "${SFEPS_APP_TLS_ENABLE}" == "1" ]]; then
+  log_info "SFEPS_APP_TLS_KEY_FILE=[set]"
+fi
 if [[ -n "${SFEPS_AUTH_ALLOW_IPS:-}" ]]; then
   log_info "SFEPS_AUTH_ALLOW_IPS=${SFEPS_AUTH_ALLOW_IPS}"
 fi

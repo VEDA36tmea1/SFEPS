@@ -64,6 +64,16 @@ export SFEPS_AUDIO_MAX_BYTES=4194304
 export SFEPS_ALERT_MAX_CLIENTS=64
 export SFEPS_SOCKET_READ_TIMEOUT_MS=5000
 export SFEPS_RTSPS_VERIFYHOST=192.168.0.92
+
+export SFEPS_APP_TLS_ENABLE=0
+export SFEPS_APP_PLAINTEXT_ENABLE=1
+export SFEPS_AUTH_TLS_PORT=6555
+export SFEPS_AUDIO_TLS_PORT=6556
+export SFEPS_ALERT_TLS_PORT=6557
+export SFEPS_APP_TLS_HANDSHAKE_TIMEOUT_MS=3000
+# TLS 활성 시 필수
+# export SFEPS_APP_TLS_CERT_FILE=/etc/sfeps/pki/server.crt
+# export SFEPS_APP_TLS_KEY_FILE=/etc/sfeps/pki/server.key
 ```
 
 - `SFEPS_RTSPS_VERIFYHOST` 미설정 시 `RTSP_URL` 호스트를 자동 사용합니다.
@@ -85,6 +95,46 @@ export SFEPS_ALERT_ALLOW_IPS="192.168.0.10,192.168.0.12"
 | 5555 | 로그인 인증 | TCP |
 | 5556 | 음성 수신 | TCP |
 | 5557 | 클라이언트 알림 | TCP |
+
+TLS 점진 전환(dual-stack) 시 기본 TLS 포트:
+
+| 포트 | 용도 | 프로토콜 |
+|---|---|---|
+| 6555 | 로그인 인증(TLS) | TLS/TCP |
+| 6556 | 음성 수신(TLS) | TLS/TCP |
+| 6557 | 클라이언트 알림(TLS) | TLS/TCP |
+
+## 앱 포트 TLS 점진 전환
+
+서버는 3가지 모드를 지원합니다.
+
+1. plain only
+```bash
+export SFEPS_APP_TLS_ENABLE=0
+export SFEPS_APP_PLAINTEXT_ENABLE=1
+```
+
+2. dual-stack (권장 1차 롤아웃)
+```bash
+export SFEPS_APP_TLS_ENABLE=1
+export SFEPS_APP_PLAINTEXT_ENABLE=1
+export SFEPS_AUTH_TLS_PORT=6555
+export SFEPS_AUDIO_TLS_PORT=6556
+export SFEPS_ALERT_TLS_PORT=6557
+export SFEPS_APP_TLS_CERT_FILE=/etc/sfeps/pki/server.crt
+export SFEPS_APP_TLS_KEY_FILE=/etc/sfeps/pki/server.key
+```
+
+3. TLS-only (2차 전환)
+```bash
+export SFEPS_APP_TLS_ENABLE=1
+export SFEPS_APP_PLAINTEXT_ENABLE=0
+```
+
+주의:
+- `SFEPS_APP_TLS_ENABLE=1`이면 cert/key 경로가 필수이며 읽기 가능해야 합니다.
+- plain 활성 상태(`SFEPS_APP_PLAINTEXT_ENABLE=1`)에서는 TLS 포트가 `5555/5556/5557`과 겹치면 기동 실패합니다.
+- TLS 인증서는 SAN에 실제 접속 IP/DNS를 포함해야 합니다.
 
 ## 빠른 실행
 
