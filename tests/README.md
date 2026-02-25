@@ -2,7 +2,7 @@
 # SFEPS Test Case Specification (테스트케이스 명세서)
 Project: 지하철 부정승차 방지 시스템(SFEPS)  
 Version: 1.0  
-Author: 서형철
+Author: 서형철  
 Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), STM32(Nucleo F401RE, Laser only)
 
 ## 공통 전제/표기
