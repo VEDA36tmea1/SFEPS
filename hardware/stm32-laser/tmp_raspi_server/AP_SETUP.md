@@ -155,10 +155,11 @@ sudo iptables -A FORWARD -i wlan0 -o eth0 -j ACCEPT
 
 ---
 
-## 3. 통신 흐름 (ESP8266 ↔ Pi)
+## 3. 통신 흐름 (ESP8266 ↔ Pi ↔ STM32)
 
 1. **ESP8266**: Pi의 AP(예: `SFEPS_AP`)에 연결 → DHCP로 `192.168.4.x` 대역 IP 획득.
 2. **Pi**: AP의 게이트웨이 = `192.168.4.1`. 이 IP에서 **TCP 서버**(또는 UDP)를 열어 두면 됨.
+   - 예: `tmp_raspi_server/raspi_tcp_server` (좌표/텍스트 전송, RTT 측정 지원)
 3. **STM32**: UART로 ESP8266에 AT 명령 또는 펌웨어에서 정의한 프로토콜로 “Pi의 192.168.4.1:포트”로 접속하라고 지시.
 4. **Pi 서버**: `tmp_raspi_server` 또는 기존 서버 코드에서 해당 포트 listen → STM32와 메시지 주고받기.
 
@@ -178,7 +179,7 @@ ESP8266/STM32는 `192.168.4.1` 포트 `5555`로 접속하면 됨.
 | 항목 | 내용 |
 |------|------|
 | **연결** | ESP8266 TX→PA10(RX), RX→PA9(TX), GND, 5V(또는 3V3) |
-| **Pi 역할** | 랜선(eth0)=인터넷, wlan0=AP로 ESP8266/STM32 접속 허용 |
+| **Pi 역할** | 랜선(eth0)=인터넷, wlan0=AP로 ESP8266/STM32 접속 허용 + TCP 서버 구동(`raspi_tcp_server`) |
 | **AP 구성** | RaspAP(방법 A) 또는 hostapd+dnsmasq(방법 B) |
 | **통신** | ESP8266이 Pi AP에 접속 → Pi의 192.168.4.1:원하는포트 로 TCP/UDP |
 
