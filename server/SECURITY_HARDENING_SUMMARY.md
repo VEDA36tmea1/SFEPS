@@ -1,33 +1,23 @@
 # SFEPS Security Hardening Summary
 
-최종 갱신: 2026-02-23
+최종 갱신: 2026-02-25
 
 ## 1) 적용 목표
 
 현재 서버 보안 강화의 목적은 다음 3가지입니다.
-- DB 연결 강제 TLS 검증 (fail-closed)
+- DB 로컬 전용 접근 강제 (`localhost`만 허용)
 - RTSPS 인증서 검증 강제 (`tls_verify=0` 제거)
 - 로그인 보안 강화 (서버측 5회 실패 30초 락아웃)
 
 ## 2) 현재 적용된 보안 정책
 
-### A. DB TLS 강제 (클라이언트 측)
-- 공통 적용 코드: `server/src/db_tls.cpp`
+### A. DB 로컬 전용 정책
 - 적용 컴포넌트: `auth.cpp`, `log.cpp`, `analytics.cpp`
 - 핵심 동작:
-  - `DB_SSL_CA` 미설정 시 즉시 실패
-  - `MYSQL_OPT_SSL_ENFORCE=1`
-  - `MYSQL_OPT_SSL_VERIFY_SERVER_CERT=1`
-  - `MYSQL_OPT_SSL_CA=DB_SSL_CA`
-  - `MYSQL_OPT_TLS_VERSION=TLSv1.2,TLSv1.3`
+  - `SFEPS_DB_HOST`는 `localhost`만 허용
+  - 미설정 시 기본값 `localhost` 적용
 
-### B. DB TLS 강제 (서버 측)
-- 설정 파일: `/etc/mysql/mariadb.conf.d/70-sfeps-tls.cnf`
-- 핵심 동작:
-  - `require_secure_transport=ON`
-  - 평문 DB 접속 차단
-
-### C. RTSPS 인증서 검증 강제
+### B. RTSPS 인증서 검증 강제
 - 적용 코드: `server/src/recorder.cpp`
 - 핵심 동작:
   - `RTSPS_TLS_CA` 미설정/읽기불가 시 즉시 실패
@@ -35,7 +25,7 @@
   - `ca_file=<RTSPS_TLS_CA>`
   - `verifyhost=192.168.0.92`
 
-### D. 로그인 락아웃 정책 (서버 측)
+### C. 로그인 락아웃 정책 (서버 측)
 - 적용 코드: `server/src/main.cpp` (`run_login_auth`)
 - 기준: `계정 + 클라이언트 IP`
 - 규칙:
@@ -54,11 +44,13 @@
 - 헤더: `server/include/runtime_config.h`
 - 구현: `server/src/runtime_config.cpp`
 - fail-closed 필수 env:
-  - `SFEPS_DB_HOST`
   - `SFEPS_DB_USER`
   - `SFEPS_DB_PASS`
   - `SFEPS_DB_NAME_AUTH`
   - `SFEPS_DB_NAME_ANALYTICS`
+- DB host 정책:
+  - `SFEPS_DB_HOST` 미설정 시 `localhost`
+  - `localhost` 외 값은 즉시 실패
 
 ### DBLogger 하드코딩 제거
 - `DBLogger` 생성자 인자로 host/user/pass/db 주입
@@ -68,11 +60,10 @@
 
 ```bash
 # TLS 검증용
-DB_SSL_CA=/etc/sfeps/pki/ca.crt
 RTSPS_TLS_CA=/etc/sfeps/pki/ca.crt
 
 # DB 접속정보 (fail-closed)
-SFEPS_DB_HOST=192.168.0.92
+SFEPS_DB_HOST=localhost
 SFEPS_DB_USER=pi
 SFEPS_DB_PASS=...회전된비밀번호...
 SFEPS_DB_NAME_AUTH=Client_db
@@ -84,7 +75,8 @@ SFEPS_DB_NAME_ANALYTICS=CCgbd
 ### 실행 스크립트
 - 파일: `server/run_server.sh`
 - 역할:
-  - TLS env 검사
+  - RTSPS TLS env 검사
+  - DB host 로컬 전용 정책 검사
   - DB env 필수값 검사
   - 누락 시 즉시 종료(fail-closed)
   - `smart_server` 실행
@@ -110,11 +102,9 @@ journalctl -u sfeps-server -f
 journalctl -u sfeps-server -b | tail -n 100
 ```
 
-### DB TLS 검증
+### DB 로컬 연결 검증
 ```bash
-mysql -h 192.168.0.92 -u pi -p \
-  --ssl --ssl-ca=/etc/sfeps/pki/ca.crt --ssl-verify-server-cert \
-  -e "SHOW VARIABLES LIKE 'have_ssl'; SHOW VARIABLES LIKE 'require_secure_transport'; SHOW STATUS LIKE 'Ssl_cipher';"
+mysql -h localhost -u pi -p -e "SELECT 1;"
 ```
 
 ## 7) 회전(비밀번호 변경) 절차
@@ -128,12 +118,12 @@ mysql -h 192.168.0.92 -u pi -p \
 
 ### fail-closed 오류 예시
 - `missing required env: SFEPS_DB_PASS`
-- `DB_SSL_CA is not set`
+- `SFEPS_DB_HOST must be localhost (local-only mode)`
 - `RTSPS_TLS_CA is not readable`
 
 이 경우는 보안 정책상 정상 동작입니다.
 
-## 9) 별도 이슈 (TLS와 무관)
+## 9) 별도 이슈
 
 다음 로그는 현재 TLS 보안 작업과 별개 이슈입니다.
 - `rc522 socket connect: No such file or directory`
