@@ -67,6 +67,14 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
     # Add user defined libraries
 )
 
+# Linker script for STM32F401RE (defines _estack, _sdata, _sbss, etc.)
+set(LINKER_SCRIPT ${CMAKE_SOURCE_DIR}/STM32F401XX_FLASH.ld)
+target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
+    -T${LINKER_SCRIPT}
+    -Wl,-Map=${CMAKE_PROJECT_NAME}.map
+    -Wl,--gc-sections
+)
+
 # Generate .bin from .elf after build (for st-flash write)
 add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_OBJCOPY} -O binary
