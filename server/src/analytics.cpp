@@ -1,5 +1,4 @@
 #include "analytics.h"
-#include "db_tls.h"
 #include "event_matcher.h"
 
 #include <algorithm>
@@ -15,6 +14,8 @@
 #include <sstream>
 #include <unordered_map>
 #include <vector>
+
+#include <tinyxml2.h>
 
 #include "../../Camera/get_metadata/inc/Config.h"
 
@@ -85,20 +86,42 @@ bool is_first_or_second_event(const std::string& event_str) {
     return lower.find("first") != std::string::npos || lower.find("second") != std::string::npos;
 }
 
-bool extract_xml_value(const std::string& block, const std::string& key, std::string& out) {
-    const std::string name_key = "Name=\"" + key + "\"";
-    const size_t name_pos = block.find(name_key);
-    if (name_pos == std::string::npos) return false;
+bool has_local_name(const char* xml_name, const char* local_name) {
+    if (xml_name == nullptr || local_name == nullptr) return false;
+    const char* colon = std::strchr(xml_name, ':');
+    const char* normalized = (colon != nullptr) ? colon + 1 : xml_name;
+    return std::strcmp(normalized, local_name) == 0;
+}
 
-    const size_t value_pos = block.find("Value=\"", name_pos);
-    if (value_pos == std::string::npos) return false;
+void collect_notification_messages(tinyxml2::XMLNode* node,
+                                   std::vector<tinyxml2::XMLElement*>& out) {
+    for (tinyxml2::XMLNode* cur = node; cur != nullptr; cur = cur->NextSibling()) {
+        tinyxml2::XMLElement* element = cur->ToElement();
+        if (element != nullptr && has_local_name(element->Name(), "NotificationMessage")) {
+            out.push_back(element);
+        }
+        collect_notification_messages(cur->FirstChild(), out);
+    }
+}
 
-    const size_t start = value_pos + 7;
-    const size_t end = block.find('"', start);
-    if (end == std::string::npos) return false;
-
-    out = block.substr(start, end - start);
-    return true;
+bool find_simple_item_value(tinyxml2::XMLNode* node, const char* key, std::string& out) {
+    for (tinyxml2::XMLNode* cur = node; cur != nullptr; cur = cur->NextSibling()) {
+        tinyxml2::XMLElement* element = cur->ToElement();
+        if (element != nullptr && has_local_name(element->Name(), "SimpleItem")) {
+            const char* name_attr = element->Attribute("Name");
+            if (name_attr != nullptr && std::strcmp(name_attr, key) == 0) {
+                const char* value_attr = element->Attribute("Value");
+                if (value_attr != nullptr) {
+                    out = value_attr;
+                    return true;
+                }
+            }
+        }
+        if (find_simple_item_value(cur->FirstChild(), key, out)) {
+            return true;
+        }
+    }
+    return false;
 }
 }  // namespace
 
@@ -121,7 +144,8 @@ AnalyticsProcessor::AnalyticsProcessor(const char* h,
       max_queue_size(load_env_size_t("SFEPS_ANALYTICS_QUEUE_MAX", 200, 1)),
       drop_log_interval(load_env_size_t("SFEPS_DROP_LOG_INTERVAL", 100, 1)),
       dropped_line_limit_count(0),
-      dropped_queue_count(0) {}
+      dropped_queue_count(0),
+      dropped_invalid_xml_count(0) {}
 
 AnalyticsProcessor::~AnalyticsProcessor() {
     stop();
@@ -162,14 +186,6 @@ bool AnalyticsProcessor::start() {
     conn = mysql_init(nullptr);
     if (conn == nullptr) {
         std::cerr << "[Analytics] mysql_init failed." << std::endl;
-        return false;
-    }
-
-    std::string tls_err;
-    if (!configure_db_tls(conn, "analytics", tls_err)) {
-        std::cerr << "[Analytics DB TLS Error] " << tls_err << std::endl;
-        mysql_close(conn);
-        conn = nullptr;
         return false;
     }
 
@@ -215,15 +231,32 @@ void AnalyticsProcessor::stop() {
 
 void AnalyticsProcessor::publishRaw(const std::string& raw) {
     if (!running.load()) return;
-    if (raw.find("<wsnt:NotificationMessage") == std::string::npos) return;
+    if (raw.empty()) return;
 
-    const std::string open_msg = "<wsnt:NotificationMessage";
-    const std::string close_msg = "</wsnt:NotificationMessage>";
+    constexpr std::size_t kMaxRuleNameBytes = 128;
+    constexpr std::size_t kMaxObjectIdBytes = 128;
+
+    tinyxml2::XMLDocument doc;
+    const tinyxml2::XMLError parse_result = doc.Parse(raw.data(), raw.size());
+    if (parse_result != tinyxml2::XML_SUCCESS) {
+        const std::uint64_t dropped = ++dropped_invalid_xml_count;
+        if (should_sample(dropped, drop_log_interval)) {
+            std::cout << "[analytics.cpp] [Drop] invalid XML metadata payload: dropped_count="
+                      << dropped << ", parse_error=" << parse_result << std::endl;
+        }
+        return;
+    }
 
     std::size_t line_count = 0;
     bool line_limit_hit = false;
     bool has_event = false;
     std::string extracted_lines;
+
+    std::vector<tinyxml2::XMLElement*> notifications;
+    collect_notification_messages(doc.FirstChild(), notifications);
+    if (notifications.empty()) {
+        return;
+    }
 
     const std::time_t now = std::time(nullptr);
     std::tm* tm = std::localtime(&now);
@@ -232,46 +265,47 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
         std::strftime(tbuf, sizeof(tbuf), "%Y-%m-%d %H:%M:%S", tm);
     }
     const std::string now_str = (tm != nullptr) ? std::string(tbuf) : std::string();
-
-    size_t pos = 0;
-    while (true) {
-        const size_t msg_start = raw.find(open_msg, pos);
-        if (msg_start == std::string::npos) break;
-
-        const size_t msg_end = raw.find(close_msg, msg_start);
-        if (msg_end == std::string::npos) break;
-
-        const std::string block = raw.substr(msg_start, msg_end - msg_start);
-
+    for (tinyxml2::XMLElement* notification : notifications) {
+        if (line_count >= max_lines_per_batch) {
+            line_limit_hit = true;
+            break;
+        }
         std::string rule_name;
         std::string state;
         std::string obj_id;
-
-        if (!extract_xml_value(block, "RuleName", rule_name)) {
-            pos = msg_end + close_msg.size();
+        if (!find_simple_item_value(notification->FirstChild(), "RuleName", rule_name)) {
+            continue;
+        }
+        rule_name = trim(rule_name);
+        if (rule_name.empty() || rule_name.size() > kMaxRuleNameBytes) {
+            const std::uint64_t dropped = ++dropped_invalid_xml_count;
+            if (should_sample(dropped, drop_log_interval)) {
+                std::cout << "[analytics.cpp] [Drop] invalid RuleName in XML metadata: dropped_count="
+                          << dropped << std::endl;
+            }
             continue;
         }
 
-        extract_xml_value(block, "State", state);
+        if (!find_simple_item_value(notification->FirstChild(), "State", state)) {
+            continue;
+        }
+        state = to_lower_copy(trim(state));
         if (!(state == "true" || state == "1")) {
-            pos = msg_end + close_msg.size();
             continue;
         }
 
         const std::string lower_rule = to_lower_copy(rule_name);
         if (lower_rule.find("first") == std::string::npos &&
             lower_rule.find("second") == std::string::npos) {
-            pos = msg_end + close_msg.size();
             continue;
         }
 
-        if (line_count >= max_lines_per_batch) {
-            line_limit_hit = true;
-            break;
-        }
-
-        if (!extract_xml_value(block, "ObjectId", obj_id)) {
+        if (!find_simple_item_value(notification->FirstChild(), "ObjectId", obj_id)) {
             obj_id = "None";
+        }
+        obj_id = trim(obj_id);
+        if (obj_id.size() > kMaxObjectIdBytes) {
+            obj_id.resize(kMaxObjectIdBytes);
         }
 
         if (has_event) {
@@ -286,7 +320,6 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
 
         has_event = true;
         ++line_count;
-        pos = msg_end + close_msg.size();
     }
 
     if (line_limit_hit) {

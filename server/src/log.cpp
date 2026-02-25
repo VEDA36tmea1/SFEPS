@@ -1,5 +1,4 @@
 #include "log.h"
-#include "db_tls.h"
 
 #include <cstring>
 #include <iostream>
@@ -96,14 +95,6 @@ void DBLogger::closeStatements() {
 bool DBLogger::connect() {
     conn = mysql_init(nullptr);
     if (conn == nullptr) {
-        return false;
-    }
-
-    std::string tls_err;
-    if (!configure_db_tls(conn, "log", tls_err)) {
-        std::cerr << "[log.cpp] [DB TLS Error] " << tls_err << std::endl;
-        mysql_close(conn);
-        conn = nullptr;
         return false;
     }
 

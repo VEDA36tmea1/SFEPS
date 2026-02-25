@@ -57,6 +57,7 @@ private:
     std::size_t drop_log_interval;
     std::atomic<std::uint64_t> dropped_line_limit_count;
     std::atomic<std::uint64_t> dropped_queue_count;
+    std::atomic<std::uint64_t> dropped_invalid_xml_count;
 };
 
 #endif

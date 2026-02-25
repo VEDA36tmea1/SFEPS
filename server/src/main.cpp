@@ -394,9 +394,8 @@ void run_login_auth(const RuntimeConfig cfg, const SecurityRuntimeOptions sec_cf
     DBLogger auth_logger(cfg.db_host.c_str(), cfg.db_user.c_str(), cfg.db_pass.c_str(),
                          cfg.db_name_auth.c_str());
     if (!auth_logger.connect()) {
-        std::cerr << "[main.cpp] [Fatal] Auth logger DB connection failed (fail-closed)." << std::endl;
-        g_running = false;
-        return;
+        std::cerr << "[main.cpp] [Warn] Auth logger DB connection failed. "
+                  << "Login service will continue without auth DB log writes." << std::endl;
     }
 
     const int server_fd = create_listen_socket(AUTH_PORT, "Auth");

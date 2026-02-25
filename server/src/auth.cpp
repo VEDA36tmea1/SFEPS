@@ -1,5 +1,5 @@
 #include "auth.h"
-#include "db_tls.h"
+
 #include <cstring>
 #include <iostream>
 
@@ -22,14 +22,6 @@ Authenticator::~Authenticator() {
 bool Authenticator::connect() {
     conn = mysql_init(NULL);
     if (conn == NULL) return false;
-
-    std::string tls_err;
-    if (!configure_db_tls(conn, "auth", tls_err)) {
-        std::cerr << "[Auth DB TLS Error] " << tls_err << std::endl;
-        mysql_close(conn);
-        conn = NULL;
-        return false;
-    }
 
     if (mysql_real_connect(conn, host, user, pass, db_name, 3306, NULL, 0) == NULL) {
         std::cerr << "[Auth DB Error] " << mysql_error(conn) << std::endl;
