@@ -4,6 +4,18 @@ Nucleo STM32F401 기반 레이저 갈보 제어 펌웨어. TIM1/TIM2 PWM으로 �
 
 ---
 
+## 폴더 구성
+
+| 폴더 | 설명 |
+|------|------|
+| **stm32/** | Nucleo 보드 관련 프로젝트 (Core, Drivers, CMake, .ioc, 링커 스크립트 등) |
+| **host_cpp/** | 호스트 PC용 IBVS/제어 코드 (STM32와 통신) |
+| **tmp_raspi_server/** | 라즈베리 파이 서버 관련 임시/테스트용 |
+
+펌웨어 빌드·플래시는 **stm32/** 디렉터리 기준으로 진행.
+
+---
+
 ## 빌드 방법
 
 ### 1. 사전 요구사항
@@ -19,10 +31,10 @@ sudo apt install gcc-arm-none-eabi cmake ninja-build
 
 ### 2. 빌드
 
-프로젝트 루트에서:
+Nucleo 펌웨어는 **stm32/** 에서 빌드:
 
 ```bash
-cd hardware/stm32-laser
+cd hardware/stm32-laser/stm32
 rm -rf build
 cmake --preset Debug
 cmake --build build/Debug
@@ -37,8 +49,8 @@ cmake --build build/Release
 
 빌드 결과물 (예: Debug 기준):
 
-- `build/Debug/stm32_laser.elf` — 플래시/디버깅용
-- `build/Debug/stm32_laser.bin` — st-flash 업로드용 (빌드 시 자동 생성)
+- `stm32/build/Debug/stm32_laser.elf` — 플래시/디버깅용
+- `stm32/build/Debug/stm32_laser.bin` — st-flash 업로드용 (빌드 시 자동 생성)
 
 ---
 
@@ -57,7 +69,7 @@ sudo apt install stlink-tools
 현재 사용 중인 st-flash는 **.bin + 주소** 형식만 지원하므로:
 
 ```bash
-cd hardware/stm32-laser
+cd hardware/stm32-laser/stm32
 st-flash write build/Debug/stm32_laser.bin 0x8000000
 ```
 
@@ -174,8 +186,9 @@ CubeMX에서 위 타이머/채널 설정 시 해당 핀은 자동으로 AF로 �
 
 ## 요약
 
-- **빌드**: `cmake --preset Debug` → `cmake --build build/Debug`
-- **플래시**: `st-flash write build/Debug/stm32_laser.bin 0x8000000`
+- **폴더**: Nucleo 관련 코드는 `stm32/`, 호스트 코드는 `host_cpp/`, 라즈베리 파이 서버용은 `tmp_raspi_server/`
+- **빌드**: `cd stm32` 후 `cmake --preset Debug` → `cmake --build build/Debug`
+- **플래시**: `cd stm32` 후 `st-flash write build/Debug/stm32_laser.bin 0x8000000`
 - **PWM**: PA0(TIM2_CH1), PA8(TIM1_CH1), **50 Hz** (주기 20 ms, ARR 19999, PSC 83), 펄스 800~2200 us, UART(115200)로 제어
 
 ---
