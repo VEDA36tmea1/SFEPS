@@ -1,12 +1,22 @@
 #include "mainwindow.h"
 #include <QPainter>
 #include <QDebug>
+#include <QProcessEnvironment>
 
 MainWindow::MainWindow(QQuickItem *parent)
-    : QQuickPaintedItem(parent), worker(nullptr), m_running(false), m_brightness(0)
+    : QQuickPaintedItem(parent),
+      worker(nullptr),
+      m_reconnectTimer(new QTimer(this)),
+      m_running(false),
+      m_brightness(0),
+      m_streamStatus("STOPPED"),
+      m_streamConnected(false)
 {
     // 성능 최적화: QQuickPaintedItem은 기본적으로 FBO(FramebufferObject)에 렌더링하도록 설정
     setRenderTarget(QQuickPaintedItem::FramebufferObject);
+
+    m_reconnectTimer->setInterval(3000);
+    connect(m_reconnectTimer, &QTimer::timeout, this, &MainWindow::attemptReconnect);
 }
 
 MainWindow::~MainWindow()
@@ -24,25 +34,27 @@ void MainWindow::setRunning(bool running)
     emit runningChanged();
 
     if (m_running) {
-        if (!cap.isOpened()) {
-            QString rtspUrl = "rtsp://192.168.0.92:8554/cam1";
-            cap.open(rtspUrl.toStdString(), cv::CAP_FFMPEG);
-            if (cap.isOpened()) {
-                cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
+        if (openStream()) {
+            ensureWorkerRunning();
+            m_reconnectTimer->stop();
+            updateStreamStatus("CONNECTING", false);
+        } else {
+            updateStreamStatus("DISCONNECTED", false);
+            if (!m_reconnectTimer->isActive()) {
+                m_reconnectTimer->start();
             }
         }
-
-        if (cap.isOpened() && !worker) {
-            worker = new VideoCaptureWorker(&cap, this);
-            connect(worker, &VideoCaptureWorker::newFrame, this, &MainWindow::processFrame);
-            worker->start();
-        }
     } else {
+        m_reconnectTimer->stop();
         if (worker) {
             worker->stop();
             delete worker;
             worker = nullptr;
         }
+        if (cap.isOpened()) {
+            cap.release();
+        }
+        updateStreamStatus("STOPPED", false);
     }
 }
 
@@ -88,6 +100,13 @@ void MainWindow::setZoomFromItem(const QRectF &itemRect, const QSizeF &itemSize)
 
 void MainWindow::processFrame(const cv::Mat &frame)
 {
+    if (!m_running) return;
+    updateStreamStatus("ONLINE", true);
+
+    if (m_reconnectTimer->isActive()) {
+        m_reconnectTimer->stop();
+    }
+
     QMutexLocker locker(&m_mutex);
     
     // 원본 프레임 저장 (워커와의 분리를 위해 복사)
@@ -131,7 +150,7 @@ void MainWindow::paint(QPainter *painter)
     if (m_image.isNull()) {
         painter->fillRect(boundingRect(), Qt::black);
         painter->setPen(Qt::white);
-        painter->drawText(boundingRect(), Qt::AlignCenter, "WAITING FOR STREAM...");
+        painter->drawText(boundingRect(), Qt::AlignCenter, m_streamStatus == "DISCONNECTED" ? "STREAM DISCONNECTED" : "WAITING FOR STREAM...");
         return;
     }
 
@@ -146,4 +165,81 @@ void MainWindow::paint(QPainter *painter)
     }
 
     painter->drawImage(boundingRect(), m_image, sourceRect);
+}
+
+void MainWindow::onReadFailed()
+{
+    if (!m_running) return;
+
+    if (worker) {
+        worker->stop();
+        delete worker;
+        worker = nullptr;
+    }
+
+    if (cap.isOpened()) {
+        cap.release();
+    }
+
+    updateStreamStatus("RECONNECTING", false);
+
+    if (!m_reconnectTimer->isActive()) {
+        m_reconnectTimer->start();
+    }
+}
+
+void MainWindow::attemptReconnect()
+{
+    if (!m_running) return;
+
+    if (openStream()) {
+        ensureWorkerRunning();
+        updateStreamStatus("CONNECTING", false);
+    } else {
+        updateStreamStatus("DISCONNECTED", false);
+    }
+}
+
+bool MainWindow::openStream()
+{
+    if (cap.isOpened()) {
+        return true;
+    }
+
+    const QString rtspUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.92:8554/cam1");
+    cap.open(rtspUrl.toStdString(), cv::CAP_FFMPEG);
+    if (!cap.isOpened()) {
+        qWarning() << "[MainWindow] Failed to open stream:" << rtspUrl;
+        return false;
+    }
+
+    cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
+    qDebug() << "[MainWindow] Stream open success:" << rtspUrl;
+    return true;
+}
+
+void MainWindow::ensureWorkerRunning()
+{
+    if (!worker) {
+        worker = new VideoCaptureWorker(&cap, this);
+        connect(worker, &VideoCaptureWorker::newFrame, this, &MainWindow::processFrame);
+        connect(worker, &VideoCaptureWorker::readFailed, this, &MainWindow::onReadFailed);
+    }
+
+    if (!worker->isRunning()) {
+        worker->start();
+    }
+}
+
+void MainWindow::updateStreamStatus(const QString &status, bool connected)
+{
+    if (m_streamStatus != status) {
+        m_streamStatus = status;
+        emit streamStatusChanged();
+    }
+
+    if (m_streamConnected != connected) {
+        m_streamConnected = connected;
+        emit streamConnectedChanged();
+    }
 }

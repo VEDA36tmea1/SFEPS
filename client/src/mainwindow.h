@@ -5,6 +5,7 @@
 #include <QImage>
 #include <QThread>
 #include <QMutex>
+#include <QTimer>
 #include <opencv2/opencv.hpp>
 
 // 프레임 캡처를 위한 워커 스레드
@@ -21,16 +22,26 @@ public:
 
 signals:
     void newFrame(const cv::Mat &frame);
+    void readFailed();
 
 protected:
     void run() override {
         running = true;
         cv::Mat frame;
+        int failCount = 0;
         while (running) {
-            if (cap->read(frame)) {
+            if (cap && cap->isOpened() && cap->read(frame) && !frame.empty()) {
                 emit newFrame(frame);
+                failCount = 0;
+                QThread::msleep(10);
+            } else {
+                ++failCount;
+                if (failCount >= 20) {
+                    emit readFailed();
+                    failCount = 0;
+                }
+                QThread::msleep(100);
             }
-            QThread::msleep(10);
         }
     }
 
@@ -45,6 +56,8 @@ class MainWindow : public QQuickPaintedItem
     Q_PROPERTY(bool running READ isRunning WRITE setRunning NOTIFY runningChanged)
     Q_PROPERTY(int brightness READ brightness WRITE setBrightness NOTIFY brightnessChanged)
     Q_PROPERTY(QRectF zoomRect READ zoomRect WRITE setZoomRect NOTIFY zoomRectChanged)
+    Q_PROPERTY(QString streamStatus READ streamStatus NOTIFY streamStatusChanged)
+    Q_PROPERTY(bool streamConnected READ streamConnected NOTIFY streamConnectedChanged)
 
 public:
     explicit MainWindow(QQuickItem *parent = nullptr);
@@ -60,6 +73,8 @@ public:
     
     QRectF zoomRect() const { return m_zoomRect; }
     void setZoomRect(const QRectF &rect);
+    QString streamStatus() const { return m_streamStatus; }
+    bool streamConnected() const { return m_streamConnected; }
 
     Q_INVOKABLE void resetZoom();
     Q_INVOKABLE void setZoomFromItem(const QRectF &itemRect, const QSizeF &itemSize);
@@ -68,20 +83,31 @@ signals:
     void runningChanged();
     void brightnessChanged();
     void zoomRectChanged();
+    void streamStatusChanged();
+    void streamConnectedChanged();
 
 private slots:
     void processFrame(const cv::Mat &frame);
+    void onReadFailed();
+    void attemptReconnect();
 
 private:
+    bool openStream();
+    void ensureWorkerRunning();
+    void updateStreamStatus(const QString &status, bool connected);
+
     cv::VideoCapture cap;
     VideoCaptureWorker *worker;
     cv::Mat currentFrame;
     QImage m_image;
     QMutex m_mutex;
+    QTimer *m_reconnectTimer;
 
     bool m_running;
     int m_brightness;
     QRectF m_zoomRect;
+    QString m_streamStatus;
+    bool m_streamConnected;
 };
 
 #endif // MAINWINDOW_H
