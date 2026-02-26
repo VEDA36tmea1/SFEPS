@@ -1,6 +1,37 @@
 #include "fraudmanager.h"
 #include <QDebug>
 
+namespace {
+bool parseFraudMessage(const QString &msg, QString &cardId, QString &ageGroup, QString &gateId, int &estAge)
+{
+    if (!msg.startsWith("FRAUD|")) {
+        return false;
+    }
+
+    const QStringList parts = msg.split('|', Qt::KeepEmptyParts);
+    if (parts.size() < 5) {
+        qWarning() << "[FraudManager] Ignore malformed message (field missing):" << msg;
+        return false;
+    }
+
+    cardId = parts[1].trimmed();
+    ageGroup = parts[2].trimmed();
+    gateId = parts[3].trimmed();
+
+    bool ok = false;
+    estAge = parts[4].trimmed().toInt(&ok);
+    if (!ok || cardId.isEmpty() || ageGroup.isEmpty() || gateId.isEmpty()) {
+        qWarning() << "[FraudManager] Ignore malformed message (invalid value):" << msg;
+        return false;
+    }
+
+    if (!ageGroup.isEmpty()) {
+        ageGroup[0] = ageGroup[0].toUpper();
+    }
+    return true;
+}
+}
+
 FraudManager::FraudManager(QObject *parent) : QObject(parent)
 {
     socket = new QTcpSocket(this);
@@ -64,34 +95,26 @@ void FraudManager::onReadyRead()
         QString msg = QString::fromUtf8(line);
         qDebug() << "[FraudManager] Received:" << msg;
 
-        if (msg.startsWith("FRAUD|")) {
-            QStringList parts = msg.split("|", Qt::SkipEmptyParts);
-            if (parts.size() >= 5) {
-                QString cardId = parts[1];
-                QString ageGroup = parts[2];
-                QString gateId = parts[3];
-                int estAge = parts[4].toInt();
-                if (!ageGroup.isEmpty()) ageGroup[0] = ageGroup[0].toUpper();
-                emit fraudDetected(cardId, ageGroup, gateId, estAge);
-            }
+        QString cardId;
+        QString ageGroup;
+        QString gateId;
+        int estAge = 0;
+        if (parseFraudMessage(msg, cardId, ageGroup, gateId, estAge)) {
+            emit fraudDetected(cardId, ageGroup, gateId, estAge);
         }
     }
 
     // 폴백: 개행이 없더라도 버퍼 내용이 완전한 메시지 형식이면 처리
     if (!recvBuffer.isEmpty()) {
         QString s = QString::fromUtf8(recvBuffer).trimmed();
-        if (!s.isEmpty() && s.startsWith("FRAUD|")) {
-            QStringList parts = s.split("|", Qt::SkipEmptyParts);
-            if (parts.size() >= 5) {
-                QString cardId = parts[1];
-                QString ageGroup = parts[2];
-                QString gateId = parts[3];
-                int estAge = parts[4].toInt();
-                if (!ageGroup.isEmpty()) ageGroup[0] = ageGroup[0].toUpper();
-                qDebug() << "[FraudManager] Received (no-nl fallback):" << s;
-                emit fraudDetected(cardId, ageGroup, gateId, estAge);
-                recvBuffer.clear();
-            }
+        QString cardId;
+        QString ageGroup;
+        QString gateId;
+        int estAge = 0;
+        if (!s.isEmpty() && parseFraudMessage(s, cardId, ageGroup, gateId, estAge)) {
+            qDebug() << "[FraudManager] Received (no-nl fallback):" << s;
+            emit fraudDetected(cardId, ageGroup, gateId, estAge);
+            recvBuffer.clear();
         }
 
         // 안전장치: 버퍼가 너무 커지면 초기화하여 메모리/무한루프 방지

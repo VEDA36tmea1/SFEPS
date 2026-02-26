@@ -35,6 +35,13 @@
 *   `src/mainwindow.cpp`: RTSP 주소 (`rtsp://192.168.0.92:8554/cam1`) 설정.
 *   `src/voicemanager.cpp`: 오디오 서버 IP/Port 설정.
 
+환경변수로 런타임 네트워크 대상을 변경할 수도 있습니다.
+*   `AUTH_SERVER_HOST`: 로그인 인증 서버 호스트(기본값 `192.168.0.92`)
+*   `RTSP_STREAM_URL`: 모니터링 RTSP 스트림 URL(기본값 `rtsp://192.168.0.92:8554/cam1`)
+
+스트리밍 장애가 발생하면 Monitoring 화면에서 `CONNECTING/RECONNECTING/STREAM OFFLINE` 상태가 표시되며,
+클라이언트는 3초 간격으로 자동 재연결을 시도합니다.
+
 ---
 
 ## ⚙️ 설정 및 빌드 방법

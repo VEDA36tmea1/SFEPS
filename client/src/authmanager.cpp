@@ -1,5 +1,6 @@
 #include "authmanager.h"
 #include <QDebug>
+#include <QProcessEnvironment>
 
 AuthManager::AuthManager(QObject *parent) : QObject(parent)
 {
@@ -14,26 +15,41 @@ AuthManager::AuthManager(QObject *parent) : QObject(parent)
 
 void AuthManager::login(const QString &id, const QString &pw)
 {
+    const QString userId = id.trimmed();
+    if (userId.isEmpty() || pw.trimmed().isEmpty()) {
+        emit loginFailed("ID와 PW를 모두 입력하세요");
+        return;
+    }
+
     socket->abort();
-    socket->connectToHost("192.168.0.92", 5555);
+    const QString authHost = QProcessEnvironment::systemEnvironment().value("AUTH_SERVER_HOST", "192.168.0.92");
+    constexpr int authPort = 5555;
+    socket->connectToHost(authHost, authPort);
 
     bool authenticated = false;
     if (socket->waitForConnected(3000)) {
-        socket->write(QString("%1:%2").arg(id, pw).toUtf8());
+        socket->write(QString("%1:%2").arg(userId, pw).toUtf8());
         socket->flush();
         
         if (socket->waitForReadyRead(3000)) {
             authenticated = (socket->readAll().trimmed() == "PASS");
+        } else {
+            socket->disconnectFromHost();
+            emit loginFailed("인증 서버 응답이 없습니다");
+            return;
         }
         socket->disconnectFromHost();
+    } else {
+        emit loginFailed("인증 서버에 연결할 수 없습니다");
+        return;
     }
 
     if (authenticated) {
-        m_currentUserId = id;
+        m_currentUserId = userId;
         emit currentUserIdChanged();
         emit loginSuccess();
     } else {
-        emit loginFailed("ID/PW를 확인하세요");
+        emit loginFailed("존재하지 않는 계정이거나 비밀번호가 올바르지 않습니다");
     }
 }
 

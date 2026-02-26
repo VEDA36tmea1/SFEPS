@@ -43,6 +43,35 @@ Page {
                 Item {
                     Layout.fillWidth: true
                 }
+
+                Rectangle {
+                    Layout.preferredHeight: 24
+                    implicitWidth: streamStatusLabel.implicitWidth + 24
+                    radius: 12
+                    color: AppTheme.surfaceCard
+                    border.color: streamStatusColor(videoDisplay.streamStatus)
+                    border.width: 1
+
+                    RowLayout {
+                        anchors.centerIn: parent
+                        spacing: 6
+
+                        Rectangle {
+                            width: 8
+                            height: 8
+                            radius: 4
+                            color: streamStatusColor(videoDisplay.streamStatus)
+                        }
+
+                        Text {
+                            id: streamStatusLabel
+                            text: streamStatusText(videoDisplay.streamStatus)
+                            color: streamStatusColor(videoDisplay.streamStatus)
+                            font.pixelSize: 10
+                            font.bold: true
+                        }
+                    }
+                }
             }
 
             // Single Camera View (CAM-01)
@@ -150,6 +179,28 @@ Page {
                             font.bold: true
                             font.pixelSize: 11
                         }
+                    }
+                }
+
+                Rectangle {
+                    visible: videoDisplay.streamStatus === "DISCONNECTED" || videoDisplay.streamStatus === "RECONNECTING"
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: 16
+                    radius: 6
+                    color: AppTheme.surfaceCard
+                    border.color: streamStatusColor(videoDisplay.streamStatus)
+                    border.width: 1
+                    width: streamNoticeText.implicitWidth + 20
+                    height: 30
+
+                    Text {
+                        id: streamNoticeText
+                        anchors.centerIn: parent
+                        text: streamStatusText(videoDisplay.streamStatus)
+                        color: streamStatusColor(videoDisplay.streamStatus)
+                        font.pixelSize: 11
+                        font.bold: true
                     }
                 }
             }
@@ -639,5 +690,25 @@ Page {
         if (t === "CROWD ALERT")
             return "#6b7280";
         return "#4b5563";
+    }
+
+    function streamStatusColor(status) {
+        if (status === "ONLINE")
+            return AppTheme.statusOnline;
+        if (status === "CONNECTING" || status === "RECONNECTING")
+            return AppTheme.accent;
+        return AppTheme.statusOffline;
+    }
+
+    function streamStatusText(status) {
+        if (status === "ONLINE")
+            return "STREAM ONLINE";
+        if (status === "CONNECTING")
+            return "CONNECTING";
+        if (status === "RECONNECTING")
+            return "RECONNECTING";
+        if (status === "STOPPED")
+            return "STREAM STOPPED";
+        return "STREAM OFFLINE";
     }
 }
