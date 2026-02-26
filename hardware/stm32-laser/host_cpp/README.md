@@ -21,6 +21,7 @@
 - `src/stm_interface.cpp`
 - `src/gst_ibvs.cpp`
 - `src/main_ibvs.cpp`
+- `src/rtsp_laser_demo.cpp`
 
 ### 빌드 방법 (예시)
 
@@ -79,6 +80,50 @@ ninja -C hardware/stm32-laser/host_cpp/build-ninja
 실제 타겟/레이저 검출 알고리즘으로 교체해 사용해야 한다.
 
 ---
+
+### RTSP 레이저 검출 데모 (`rtsp_laser_demo`)
+
+카메라를 **RTSP 스트림**으로 받아서 `VisionDetector` 로 레이저를 찾는 간단한 데모 실행 파일.
+
+#### 1. 빌드
+
+일반 빌드와 동일하게 `host_cpp` 전체를 빌드하면 함께 생성된다.
+
+```bash
+cd hardware/stm32-laser/host_cpp
+mkdir -p build
+cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake --build . -j
+```
+
+#### 2. 실행
+
+기본 RTSP URI (하드코딩 값):
+
+```bash
+./build/rtsp_laser_demo
+```
+
+또는 다른 RTSP 주소를 인자로 넘길 수 있다:
+
+```bash
+./build/rtsp_laser_demo rtsp://admin:CCgbdCCgbd@192.168.0.11/profile2/media.smp
+```
+
+동작:
+
+- OpenCV `cv::VideoCapture` 로 RTSP 스트림을 열고,
+- 각 프레임마다 `VisionDetector::detectLaser(frame)` 을 호출해서 레이저 스폿을 찾는다.
+- 레이저를 찾으면:
+  - 콘솔에 좌표 로그 출력:
+
+    ```text
+    [rtsp_laser_demo] frame 123 laser=(x, y)
+    ```
+
+  - 영상 위에 빨간 점으로 시각화 후 `imshow("rtsp_laser_demo", frame)` 윈도우에 표시.
+- `ESC` 또는 `q` 키를 누르면 종료.
 
 ### GStreamer 파이프라인 사용 가이드
 
@@ -197,9 +242,20 @@ GStreamer 파이프라인 구성 시 `appsink` 에 위 콜백을 연결하면,
   - 실제 프로젝트에서는 객체 검출 결과(bbox 중심 등)로 교체해야 한다.
 
 - `detectLaser(const cv::Mat&)`
-  - 입력 `frame` 을 GRAY로 변환.
-  - `cv::minMaxLoc` 으로 최대 밝기 픽셀의 위치를 찾음.
-  - 최대 밝기 값이 일정 threshold 이상이면 `found=true` 로 간주.
+  - 입력 `frame` 을 GRAY로 변환 (`cvtColor` 또는 채널 수 1이면 그대로 사용).
+  - `cv::minMaxLoc` 으로 이미지 전체에서 **최대 밝기 픽셀**의 위치(`maxLoc`)와 값(`maxVal`)을 찾음.
+  - 최대 밝기 픽셀을 **레이저 포인터 스폿의 중심**이라고 가정:
+
+    ```cpp
+    result.point = cv::Point2f(maxLoc.x, maxLoc.y);
+    ```
+
+  - `maxVal > 50.0` (임계값, 경험적으로 조정) 인 경우에만 `found = true` 로 간주.
+
+  - 이 구현은 매우 단순한 스텁으로:
+    - 프레임 내에서 레이저 포인터가 **가장 밝은 점**이라는 가정을 둔다.
+    - 주변 조명이 강하거나 반사가 많으면 오검출될 수 있으므로,
+      실제 환경에서는 색/HSV threshold, 블러/열림 연산, contour 필터 등으로 보강해야 한다.
 
 흐름:
 

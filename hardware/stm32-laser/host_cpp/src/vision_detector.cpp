@@ -1,12 +1,16 @@
 #include "vision_detector.h"
 
 #include <opencv2/imgproc.hpp>
+#include <opencv2/highgui.hpp>
 
 // NOTE:
-// 현재 구현은 아주 단순한 스텁(stub) 예제이다.
+// 현재 구현은 데모용 레이저/타겟 검출 예제이다.
 // - 타겟: 프레임 중앙 근처의 고정 위치로 가정
-// - 레이저: 가장 밝은 픽셀을 찾는 방식의 간단한 예시
-// 실제 프로젝트에서는 색/threshold, contour, 딥러닝 detector 등으로 교체해야 한다.
+// - 레이저: HSV 색 공간에서 "빨간색" 범위를 마스크링한 뒤,
+//           컨투어들의 최소 외접원을 구해 가장 큰 붉은 원형 스폿의 중심을 선택.
+//           색 기반으로 실패하면 마지막 fallback 으로 GRAY에서 가장 밝은 픽셀을 사용.
+// 실제 프로젝트에서는 카메라/레이저 스펙에 맞게 HSV 범위, 모폴로지, contour 필터 등을
+// 튜닝하거나, 필요 시 딥러닝 detector 등으로 교체해야 한다.
 
 DetectionResult VisionDetector::detectTarget(const cv::Mat& frame)
 {
@@ -26,25 +30,63 @@ DetectionResult VisionDetector::detectLaser(const cv::Mat& frame)
     if (frame.empty())
         return result;
 
-    cv::Mat gray;
+    // 1) BGR → HSV 변환
+    cv::Mat hsv;
     if (frame.channels() == 3)
     {
-        cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
+        cv::cvtColor(frame, hsv, cv::COLOR_BGR2HSV);
     }
     else
     {
-        gray = frame;
+        // 단일 채널이면 컬러 정보를 잃었으므로 기존 밝기 기반 fallback 사용
+        cv::Mat gray = frame;
+        double minVal = 0.0, maxVal = 0.0;
+        cv::Point minLoc, maxLoc;
+        cv::minMaxLoc(gray, &minVal, &maxVal, &minLoc, &maxLoc);
+        if (maxVal > 50.0)
+        {
+            result.point = cv::Point2f(static_cast<float>(maxLoc.x),
+                                       static_cast<float>(maxLoc.y));
+            result.found = true;
+        }
+        return result;
     }
 
+    // 2) 빨간색 범위 HSV threshold (두 구간: 0~10, 170~180)
+    cv::Mat mask1, mask2, mask;
+    // Hue: [0,10] or [170,180], S/V 꽤 높게 설정 (경험적으로 조정)
+    cv::inRange(hsv,
+                cv::Scalar(0, 120, 150),
+                cv::Scalar(10, 255, 255),
+                mask1);
+    cv::inRange(hsv,
+                cv::Scalar(170, 120, 150),
+                cv::Scalar(180, 255, 255),
+                mask2);
+    cv::bitwise_or(mask1, mask2, mask);
+
+    // 3) 노이즈 제거 (블러 + 모폴로지)
+    cv::GaussianBlur(mask, mask, cv::Size(5, 5), 0);
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
+    cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel);
+    cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel);
+
+    // 4) 디버그용: 빨간색 마스크 영상 직접 보기
+    //    - 밝은 영역이 레이저로 마스킹된 부분
+    cv::imshow("laser_mask", mask);
+    cv::waitKey(1);
+
+    // 5) (임시 구현) 마스크에서 가장 밝은 픽셀을 레이저 중심으로 사용
     double minVal = 0.0, maxVal = 0.0;
     cv::Point minLoc, maxLoc;
-    cv::minMaxLoc(gray, &minVal, &maxVal, &minLoc, &maxLoc);
+    cv::minMaxLoc(mask, &minVal, &maxVal, &minLoc, &maxLoc);
+    if (maxVal > 50.0)  // 마스크 값 0~255 기준, 임계값은 경험적으로 조정
+    {
+        result.point = cv::Point2f(static_cast<float>(maxLoc.x),
+                                   static_cast<float>(maxLoc.y));
+        result.found = true;
+    }
 
-    // 최대 밝기 픽셀을 레이저 스폿으로 가정
-    result.point = cv::Point2f(static_cast<float>(maxLoc.x),
-                               static_cast<float>(maxLoc.y));
-    // 간단하게, 어느 정도 이상 밝으면 found 로 본다 (임계값은 경험적으로 조정)
-    result.found = (maxVal > 50.0);
     return result;
 }
 
