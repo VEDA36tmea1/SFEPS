@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.22)
+cmake_minimum_required(VERSION 3.18)
 
 #
 # This file is generated only once,
@@ -32,6 +32,19 @@ message("Build type: " ${CMAKE_BUILD_TYPE})
 # Enable CMake support for ASM and C languages
 enable_language(C ASM)
 
+# ------------------------------------------------------------
+# MCU / ABI flags (C/ASM 공통)
+# - Cortex-M4는 Thumb 전용이므로 -mthumb 가 반드시 필요
+# - 이 플래그는 "각 타깃"에 명시적으로 걸어야 하며,
+#   특히 subdir의 OBJECT 라이브러리에는 상위 타깃 옵션이 자동 전파되지 않음
+# ------------------------------------------------------------
+set(STM32_CPU_FLAGS
+    -mcpu=cortex-m4
+    -mthumb
+    -mfpu=fpv4-sp-d16
+    -mfloat-abi=hard
+)
+
 # Create an executable object type
 add_executable(${CMAKE_PROJECT_NAME})
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES SUFFIX ".elf")
@@ -55,19 +68,9 @@ target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
     -T${CMAKE_SOURCE_DIR}/STM32F401XX_FLASH.ld
 )
 
-# MCU flags (match stm32cubemx)
-target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE
-    -mcpu=cortex-m4
-    -mthumb
-    -mfpu=fpv4-sp-d16
-    -mfloat-abi=hard
-)
-target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
-    -mcpu=cortex-m4
-    -mthumb
-    -mfpu=fpv4-sp-d16
-    -mfloat-abi=hard
-)
+# MCU flags (C/ASM 모두 적용)
+target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE ${STM32_CPU_FLAGS})
+target_link_options(${CMAKE_PROJECT_NAME} PRIVATE ${STM32_CPU_FLAGS})
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
