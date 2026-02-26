@@ -209,3 +209,71 @@ else if (strstr(wifi_line, "ERROR") != NULL ||
 - 한 번 `ALREADY CONNECTED` / `OK` / `STATUS:3` / `+IPD` 가 찍힌 뒤에는  
   **TCP 연결이 실제로 끊기기 전까지는 `CIPSTART` 재시도를 더 이상 하지 않는다.**
 
+---
+---
+
+## 2026-02-26 – ST-LINK 인식 실패 (SWD 연결 & stlink-tools 빌드 이슈)
+
+### 1. 증상 요약
+
+- 라즈베리 파이에서 `st-flash` / `st-info --probe` 실행 시:
+  - `Failed to enter SWD mode`
+  - `flash: 0 (pagesize: 0)`, `sram: 0`, `chipid: 0x000`, `dev-type: unknown`
+- `lsusb` 에서는 `STMicroelectronics ST-LINK/V2.1` 가 정상적으로 보임.
+- 즉, **USB로 ST-LINK는 잡히는데, 타깃 STM32F401RE MCU와의 SWD 통신이 전혀 안 되는 상태**.
+
+### 2. 원인 1 – STM32를 브레드보드에 꽂은 상태에서 Nucleo ST-LINK만 사용
+
+- 실제로는 **Nucleo 보드의 ST-LINK (ST-LINK/V2.1)** 만 라즈베리 파이에 USB로 연결해두고,
+  STM32 칩 자체는 별도의 **브레드보드 위에 장착된 상태**였음.
+- 이 과정에서:
+  - 브레드보드 쪽 회로/배선이 **SWDIO / SWCLK / RESET / 전원 라인에 영향을 주고 있었고**,  
+  - 결과적으로 **SWD 라인이 깨끗하게 분리되지 않아 ST-LINK가 타깃과 핸드셰이크를 못 함**.
+- Nucleo 온보드 MCU만 사용할 때보다 배선/접촉 포인트가 늘어나면서,
+  ST-LINK 쪽에서는 항상 "프로그램머는 있음"으로 보이지만,
+  실제 MCU 정보는 전혀 읽어오지 못하는 상태가 됨.
+
+#### 해결
+
+- STM32를 브레드보드에서 제거하고, **Nucleo 온보드 MCU만 사용**한 상태에서 다시 테스트:
+  - `st-info --probe` 에서 정상적으로 flash/sram/chipid 가 읽힘.
+  - 이후 `st-flash write stm32_laser.bin 0x8000000` 가 정상 동작.
+- 결론:
+  - **SWDIO/SWCLK/RESET/전원 라인은 매우 민감**하므로,
+    브레드보드/외부 회로에 물려둘 경우 반드시 **전기적 상태(풀업/풀다운, 부하, 쇼트 가능성)를 먼저 확인**해야 한다.
+
+### 3. 원인 2 – stlink-tools(1.8.0) 빌드 시 의존성/CMake 환경 문제
+
+라즈베리 파이에서 최신 `stlink`(1.8.0)를 소스 빌드할 때, 다음 이슈들이 순차적으로 발생했다.
+
+1. **CMake 3.18 + C17 요구**
+   - 기본 CMake 3.18은 C17(C_STANDARD 17)에 대한 컴파일 플래그 정보를 갖고 있지 않아,
+     `Target ... requires the language dialect "C17" ... but CMake does not know the compile flags to use to enable it.` 에러 발생.
+   - `CMakeLists.txt` 에서 C 표준을 C11로 낮추거나
+     (`set(CMAKE_C_STANDARD 11)` + 필요 시 버전 분기) 로 해결.
+
+2. **libusb 개발 패키지 누락**
+   - `Could NOT find libusb (missing: LIBUSB_LIBRARY)` 에러.
+   - 해결:
+     - `sudo apt install libusb-1.0-0-dev pkg-config`
+     - 경로가 특이한 경우, CMake 호출 시
+       `-DLIBUSB_INCLUDE_DIR=/usr/include/libusb-1.0`
+       `-DLIBUSB_LIBRARY=/usr/lib/aarch64-linux-gnu/libusb-1.0.so`
+       를 명시적으로 지정.
+
+3. **설치 후 PATH/캐시 문제**
+   - `sudo make install` 이 `/usr/local/bin/st-flash` 에 설치됐는데도
+     `bash: /usr/bin/st-flash: No such file or directory` 가 뜸.
+   - 원인: bash가 예전 `/usr/bin/st-flash` 경로를 캐시하고 있었음.
+   - 해결: 새 터미널을 열거나 `hash -r` 로 명령 경로 캐시를 비운 뒤 다시 실행.
+
+### 4. 요약
+
+- **하드웨어**:
+  - 브레드보드에 STM32를 꽂은 상태 + Nucleo ST-LINK만 사용하면
+    SWD 라인이 외부 회로/배선에 의해 깨져 `Failed to enter SWD mode` 가 뜰 수 있다.
+  - 가능하면 **Nucleo 온보드 MCU만 단독으로 먼저 플래시/디버그가 되는지 확인**한 뒤,
+    이후에 외부 회로로 확장하는 것이 안전하다.
+- **소프트웨어/툴체인**:
+  - 라즈베리 파이 기본 CMake(3.18)는 C17 지원이 부족 → stlink 빌드 시 C 표준을 C11로 낮춰 해결.
+  - `libusb-1.0-0-dev`, `pkg-config` 설치 및 필요 시 `LIBUSB_INCLUDE_DIR`, `LIBUSB_LIBRARY` 수동 지정으로 CMake 단계 통과.
