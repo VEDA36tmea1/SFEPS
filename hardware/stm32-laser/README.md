@@ -21,31 +21,91 @@ Nucleo STM32F401 기반 레이저 갈보 제어 펌웨어. TIM1/TIM2 PWM으로 �
 ### 1. 사전 요구사항
 
 - **ARM 툴체인**: `gcc-arm-none-eabi`
-- **CMake** 3.22+
-- **Ninja** (또는 Make)
+- **CMake** 3.18+
+- **Ninja** 또는 **Make**
 
 ```bash
 sudo apt update
 sudo apt install gcc-arm-none-eabi cmake ninja-build
+# Ninja 없이 빌드할 경우: sudo apt install gcc-arm-none-eabi cmake make
 ```
 
 ### 2. 빌드
 
 Nucleo 펌웨어는 **stm32/** 에서 빌드:
 
+#### Ubuntu (PC) 권장 옵션
+
+- **권장**: Ninja + (가능하면) 최신 CMake
+- 장점: 빌드 속도/의존성 처리 안정적
+
+```bash
+sudo apt update
+sudo apt install gcc-arm-none-eabi cmake ninja-build
+```
+
+#### Raspberry Pi (라즈베리 파이) 권장 옵션
+
+- 라즈베리 파이 OS/기본 apt에서는 CMake가 3.18.x 인 경우가 있어, **Preset이 기대대로 동작하지 않거나**(preset 이름이 경로로 해석) 제너레이터가 없는 경우가 있습니다.
+- **권장**: `Unix Makefiles` + `-DCMAKE_TOOLCHAIN_FILE=...` 로 크로스 컴파일러를 확실히 지정
+
+```bash
+sudo apt update
+sudo apt install gcc-arm-none-eabi cmake make
+```
+
+**방법 1: Preset 사용 (소스 경로를 절대 경로로 명시)**
+
+일부 환경에서는 preset 이름 `Debug` 가 소스 경로로 잘못 해석되므로, **소스 디렉터리를 절대 경로로** 넘깁니다.
+
 ```bash
 cd hardware/stm32-laser/stm32
 rm -rf build
-cmake --preset Debug
+cmake --preset Debug "$(pwd)"
 cmake --build build/Debug
 ```
 
 또는 Release:
 
 ```bash
-cmake --preset Release
+cmake --preset Release "$(pwd)"
 cmake --build build/Release
 ```
+
+**방법 2: Preset 없이 직접 빌드 (라즈베리 파이 등 CMake 3.18 환경)**
+
+ARM 툴체인을 쓰려면 **반드시** `-DCMAKE_TOOLCHAIN_FILE` 로 툴체인 파일을 지정합니다.
+
+```bash
+cd hardware/stm32-laser/stm32
+mkdir -p build/Debug
+cd build/Debug
+cmake ../.. -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE=../../cmake/gcc-arm-none-eabi.cmake
+cd ../..
+cmake --build build/Debug
+```
+
+Ninja가 없으면 `-G "Unix Makefiles"` 로 Make 사용:
+
+```bash
+cd build/Debug
+cmake ../.. -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE=../../cmake/gcc-arm-none-eabi.cmake
+cd ../..
+cmake --build build/Debug
+```
+
+---
+
+## 운영체제별 빌드 옵션 차이 요약
+
+| 항목 | Ubuntu (PC) | Raspberry Pi |
+|------|-------------|--------------|
+| **CMake 버전** | 비교적 최신(환경 따라 3.22+ 가능) | 기본 apt가 3.18.x 인 경우 많음 |
+| **Generator** | `-G Ninja` 권장 | `-G "Unix Makefiles"` 권장 (Ninja 없으면 특히) |
+| **Preset 사용** | 가능(환경 따라 `cmake --preset Debug "$(pwd)"`) | 환경에 따라 preset 이름이 경로로 해석될 수 있어 비권장 |
+| **Toolchain 지정** | 가능하면 명시(권장) | **필수** (`-DCMAKE_TOOLCHAIN_FILE=../../cmake/gcc-arm-none-eabi.cmake`) |
+
+추가로, STM32CubeMX 서브 타깃(`STM32_Drivers`)에도 `-mthumb/-mcpu` 옵션을 명시적으로 걸어 **ASM/어셈블 단계가 ARM 모드로 떨어지는 문제**를 방지했습니다.
 
 빌드 결과물 (예: Debug 기준):
 

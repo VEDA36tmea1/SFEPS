@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.22)
+cmake_minimum_required(VERSION 3.18)
 # Enable CMake support for ASM and C languages
 enable_language(C ASM)
 # STM32CubeMX generated symbols (macros)
@@ -71,6 +71,19 @@ target_compile_definitions(stm32cubemx INTERFACE ${MX_Defines_Syms})
 add_library(STM32_Drivers OBJECT)
 target_sources(STM32_Drivers PRIVATE ${STM32_Drivers_Src})
 target_link_libraries(STM32_Drivers PUBLIC stm32cubemx)
+
+# ------------------------------------------------------------
+# MCU / ABI flags
+# - 상위 타깃(${CMAKE_PROJECT_NAME})의 compile 옵션은 OBJECT 라이브러리로 자동 전파되지 않음
+# - Cortex-M4(Thumb-only)에서 ARM 모드로 어셈블되는 문제를 막기 위해,
+#   STM32_Drivers에도 동일한 -mthumb/-mcpu 플래그를 명시적으로 적용
+# ------------------------------------------------------------
+target_compile_options(STM32_Drivers PRIVATE
+    -mcpu=cortex-m4
+    -mthumb
+    -mfpu=fpv4-sp-d16
+    -mfloat-abi=hard
+)
 
 
 # Add STM32CubeMX generated application sources to the project
