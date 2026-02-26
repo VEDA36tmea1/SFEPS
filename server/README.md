@@ -12,8 +12,9 @@ export RTSPS_TLS_CA=/etc/sfeps/pki/ca.crt
 export SFEPS_DB_HOST=localhost
 export SFEPS_DB_USER=pi
 export SFEPS_DB_PASS='***'
-export SFEPS_DB_NAME_AUTH=Client_db
 export SFEPS_DB_NAME_ANALYTICS=CCgbd
+# 호환용(선택): 지정해도 런타임은 SFEPS_DB_NAME_ANALYTICS 단일 스키마를 사용
+# export SFEPS_DB_NAME_AUTH=CCgbd
 ```
 
 누락된 값이 있으면 서버는 즉시 기동을 거부합니다.
@@ -39,7 +40,7 @@ Host: 127.0.0.1
 Port: 33060
 User: pi
 Password: (MariaDB 비밀번호)
-Database: Client_db (or CCgbd)
+Database: CCgbd
 ```
 
 터널이 살아 있는 상태에서 VSCode DB 확장에 추가 연결하면 라즈베리파이 DB를 조회할 수 있습니다.
@@ -171,6 +172,7 @@ cd ..
 - XML 메타데이터 엄격 파싱(tinyxml2) + 필수 필드 검증(`RuleName`, `State`) + 필드 길이 제한
 - 음성 RAW PCM 수신 후 `AudioRingBuffer + AudioPlayback(ALSA)` 경로로 재생
 - 부정승차/테스트 메시지 알림 브로드캐스트
+- DB 단일 스키마 모드: 인증/로그/분석 저장을 `SFEPS_DB_NAME_ANALYTICS`(예: `CCgbd`)로 통합
 - Auth/Startup 정책: fail-closed (`Auth DB`, `logger`, `analytics` 실패 시 중단)
 
 마지막 업데이트: 2026-02-24
