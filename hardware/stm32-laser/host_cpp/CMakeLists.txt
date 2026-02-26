@@ -34,3 +34,10 @@ add_executable(ibvs_host
 
 target_link_libraries(ibvs_host PRIVATE ibvs_core)
 
+# RTSP 레이저 검출 데모 (OpenCV VideoCapture 사용)
+add_executable(rtsp_laser_demo
+    src/rtsp_laser_demo.cpp
+)
+
+target_link_libraries(rtsp_laser_demo PRIVATE ibvs_core)
+
