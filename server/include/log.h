@@ -79,7 +79,6 @@ private:
     std::condition_variable cv;
     std::thread workerThread;
     std::atomic<bool> isRunning;
-    std::string cleanupSizeQuery;
 };
 
 #endif

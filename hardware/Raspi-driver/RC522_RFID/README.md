@@ -199,7 +199,8 @@ sudo ./test_rc522
    ```bash
    cd ~/SFEPS/hardware/Raspi-driver/RC522_RFID/Server_examples
    g++ -o rc522_uds_daemon rc522_uds_daemon.cpp -I../Kernel_Driver -std=c++17
-   sudo ./rc522_uds_daemon   # 데몬으로 동작 (또는 --no-daemon 으로 포그라운드)
+   sudo ./rc522_uds_daemon --socket-group iam --socket-mode 660
+   # 데몬으로 동작 (또는 --no-daemon 으로 포그라운드)
    ```
 3. **메인 서버**는 UDS 클라이언트로 기본 경로 `/tmp/rc522_events.sock` 에 connect 한 뒤, 소켓에서 **한 줄씩** 읽으면 NDJSON 이벤트(`device_id`, `id`, `text`, `timestamp`) 수신.
 

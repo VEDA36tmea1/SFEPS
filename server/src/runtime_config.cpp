@@ -35,7 +35,8 @@ bool load_runtime_config(RuntimeConfig& out, std::string& err) {
     if (!load_local_db_host(out.db_host, err)) return false;
     if (!load_required_env("SFEPS_DB_USER", out.db_user, err)) return false;
     if (!load_required_env("SFEPS_DB_PASS", out.db_pass, err)) return false;
-    if (!load_required_env("SFEPS_DB_NAME_AUTH", out.db_name_auth, err)) return false;
     if (!load_required_env("SFEPS_DB_NAME_ANALYTICS", out.db_name_analytics, err)) return false;
+    // Single-schema mode: auth/log/analytics are unified to SFEPS_DB_NAME_ANALYTICS.
+    out.db_name_auth = out.db_name_analytics;
     return true;
 }

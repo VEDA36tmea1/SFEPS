@@ -46,6 +46,8 @@ fi
 # Use defaults unless caller already exported custom paths.
 : "${SFEPS_DB_HOST:=localhost}"
 : "${RTSPS_TLS_CA:=${DEFAULT_RTSPS_CA_PATH}}"
+# Compatibility only: runtime uses SFEPS_DB_NAME_ANALYTICS single schema.
+: "${SFEPS_DB_NAME_AUTH:=${SFEPS_DB_NAME_ANALYTICS:-}}"
 
 # Optional security tuning (safe defaults).
 : "${SFEPS_META_MAX_PACKET_BYTES:=65536}"
@@ -69,7 +71,6 @@ fi
 required_envs=(
   SFEPS_DB_USER
   SFEPS_DB_PASS
-  SFEPS_DB_NAME_AUTH
   SFEPS_DB_NAME_ANALYTICS
 )
 
@@ -159,8 +160,8 @@ fi
 log_info "RTSPS_TLS_CA=${RTSPS_TLS_CA}"
 log_info "SFEPS_DB_HOST=${SFEPS_DB_HOST}"
 log_info "SFEPS_DB_USER=${SFEPS_DB_USER}"
-log_info "SFEPS_DB_NAME_AUTH=${SFEPS_DB_NAME_AUTH}"
 log_info "SFEPS_DB_NAME_ANALYTICS=${SFEPS_DB_NAME_ANALYTICS}"
+log_info "SFEPS_DB_NAME_AUTH=${SFEPS_DB_NAME_AUTH} (compat only)"
 log_info "SFEPS_META_MAX_PACKET_BYTES=${SFEPS_META_MAX_PACKET_BYTES}"
 log_info "SFEPS_META_BAD_STREAK_LIMIT=${SFEPS_META_BAD_STREAK_LIMIT}"
 log_info "SFEPS_META_MAX_LINES_PER_BATCH=${SFEPS_META_MAX_LINES_PER_BATCH}"

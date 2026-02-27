@@ -83,6 +83,23 @@ std::string normalize_login_key(const std::string& user) {
     return normalized;
 }
 
+bool sleep_interruptible(std::atomic<bool>& running_flag,
+                         std::chrono::milliseconds total,
+                         std::chrono::milliseconds step = std::chrono::milliseconds(200)) {
+    if (step <= std::chrono::milliseconds(0)) {
+        step = std::chrono::milliseconds(200);
+    }
+
+    std::chrono::milliseconds waited(0);
+    while (running_flag.load() && waited < total) {
+        const auto remain = total - waited;
+        const auto chunk = (remain < step) ? remain : step;
+        std::this_thread::sleep_for(chunk);
+        waited += chunk;
+    }
+    return running_flag.load();
+}
+
 std::size_t load_env_size_t(const char* name, std::size_t default_value, std::size_t min_value) {
     const char* raw = std::getenv(name);
     if (raw == nullptr || raw[0] == '\0') return default_value;
@@ -689,7 +706,7 @@ void run_login_auth(const RuntimeConfig cfg, const SecurityRuntimeOptions sec_cf
     const auto kStaleRetention = std::chrono::minutes(10);
 
     Authenticator auth(cfg.db_host.c_str(), cfg.db_user.c_str(), cfg.db_pass.c_str(),
-                       cfg.db_name_auth.c_str());
+                       cfg.db_name_analytics.c_str());
     if (!auth.connect()) {
         std::cerr << "[main.cpp] [Fatal] Auth DB connection failed (fail-closed)." << std::endl;
         g_running = false;
@@ -697,7 +714,7 @@ void run_login_auth(const RuntimeConfig cfg, const SecurityRuntimeOptions sec_cf
     }
 
     DBLogger auth_logger(cfg.db_host.c_str(), cfg.db_user.c_str(), cfg.db_pass.c_str(),
-                         cfg.db_name_auth.c_str());
+                         cfg.db_name_analytics.c_str());
     if (!auth_logger.connect()) {
         std::cerr << "[main.cpp] [Warn] Auth logger DB connection failed. "
                   << "Login service will continue without auth DB log writes." << std::endl;
@@ -964,7 +981,7 @@ int main(int argc, char* argv[]) {
 
     {
         Authenticator auth_probe(cfg.db_host.c_str(), cfg.db_user.c_str(), cfg.db_pass.c_str(),
-                                 cfg.db_name_auth.c_str());
+                                 cfg.db_name_analytics.c_str());
         if (!auth_probe.connect()) {
             std::cerr << "[Fatal] Auth DB startup check failed (fail-closed)." << std::endl;
             return -1;
@@ -1020,8 +1037,7 @@ int main(int argc, char* argv[]) {
 
     std::thread t_db_cleanup([&]() {
         while (g_running.load()) {
-            std::this_thread::sleep_for(std::chrono::seconds(60));
-            if (!g_running.load()) break;
+            if (!sleep_interruptible(g_running, std::chrono::seconds(60))) break;
             logger.requestDbCleanup();
         }
     });
@@ -1030,7 +1046,8 @@ int main(int argc, char* argv[]) {
     std::thread t_audio(run_audio_receiver, sec_cfg);
     std::thread t_alert(run_fraud_notifier, sec_cfg);
 
-    RfidMonitor rfid_monitor(g_running, cfg.db_host, cfg.db_user, cfg.db_pass, cfg.db_name_auth);
+    RfidMonitor rfid_monitor(g_running, cfg.db_host, cfg.db_user, cfg.db_pass,
+                             cfg.db_name_analytics);
     std::thread t_rfid(&RfidMonitor::start, &rfid_monitor);
 
     std::thread t_test_ping;
@@ -1039,7 +1056,7 @@ int main(int argc, char* argv[]) {
             int seq = 0;
             while (g_running.load()) {
                 send_test_alert_to_clients("TEST|PING|" + std::to_string(seq++));
-                std::this_thread::sleep_for(std::chrono::seconds(2));
+                if (!sleep_interruptible(g_running, std::chrono::seconds(2))) break;
             }
             std::cout << "[main.cpp] [Alert] test ping thread stopped." << std::endl;
         });
