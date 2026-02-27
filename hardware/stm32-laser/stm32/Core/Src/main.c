@@ -480,37 +480,99 @@ int main(void)
       }
       else
       {
-        /* 기본: "1500" 또는 "1500 1200" 형식으로 us 값 설정 */
-        unsigned long u1 = 1500, u2 = 1500;
-        int n = sscanf(rx_line_buf, "%lu %lu", &u1, &u2);
-        if (n >= 1)
+        /* 기본: 서보 제어 명령
+         * - "1500" 또는 "1500 1200"  → 두 채널 모두/각각 설정
+         * - "X:1500" 또는 "X 1500"   → PA0(TIM2_CH1)만 설정
+         * - "Y:1500" 또는 "Y 1500"   → PA8(TIM1_CH1)만 설정
+         */
+        char *p = rx_line_buf;
+        while (*p == ' ' || *p == '\t') p++;
+
+        if (*p == 'X' || *p == 'x')
         {
-          if (u1 < PWM_US_MIN) u1 = PWM_US_MIN;
-          if (u1 > PWM_US_MAX) u1 = PWM_US_MAX;
-          if (n >= 2)
+          p++; /* 'X' 지나침 */
+          if (*p == ':' || *p == ' ') p++;
+          unsigned long ux = 1500;
+          if (sscanf(p, "%lu", &ux) == 1)
           {
-            if (u2 < PWM_US_MIN) u2 = PWM_US_MIN;
-            if (u2 > PWM_US_MAX) u2 = PWM_US_MAX;
+            if (ux < PWM_US_MIN) ux = PWM_US_MIN;
+            if (ux > PWM_US_MAX) ux = PWM_US_MAX;
+            /* X: PA0(TIM2_CH1)만 변경 */
+            Servo_SetCh2Us((uint32_t)ux);
+            last_uart_tick = HAL_GetTick();
+            char ack[64];
+            int len = snprintf(ack, sizeof(ack), "\nOK X=PA0=%lu us\r\n", ux);
+            if (len > 0)
+            {
+              HAL_UART_Transmit(&huart2, (uint8_t *)ack, (uint16_t)len, 50);
+            }
           }
           else
           {
-            u2 = u1;
+            const char *err = "? Usage: X:1500\r\n";
+            HAL_UART_Transmit(&huart2, (const uint8_t *)err, (uint16_t)strlen(err), 50);
           }
-          /* CH1=PA8(TIM1), CH2=PA0(TIM2) */
-          Servo_SetAllUs((uint32_t)u1, (uint32_t)u2);
-          auto_pwm_val = (uint32_t)u1;
-          last_uart_tick = HAL_GetTick();
-          char ack[52];
-          int len = snprintf(ack, sizeof(ack), "\nOK PA8=%lu PA0=%lu us\r\n", u1, u2);
-          if (len > 0)
+        }
+        else if (*p == 'Y' || *p == 'y')
+        {
+          p++; /* 'Y' 지나침 */
+          if (*p == ':' || *p == ' ') p++;
+          unsigned long uy = 1500;
+          if (sscanf(p, "%lu", &uy) == 1)
           {
-            HAL_UART_Transmit(&huart2, (uint8_t *)ack, (uint16_t)len, 50);
+            if (uy < PWM_US_MIN) uy = PWM_US_MIN;
+            if (uy > PWM_US_MAX) uy = PWM_US_MAX;
+            /* Y: PA8(TIM1_CH1)만 변경 */
+            Servo_SetCh1Us((uint32_t)uy);
+            auto_pwm_val = (uint32_t)uy;
+            last_uart_tick = HAL_GetTick();
+            char ack[64];
+            int len = snprintf(ack, sizeof(ack), "\nOK Y=PA8=%lu us\r\n", uy);
+            if (len > 0)
+            {
+              HAL_UART_Transmit(&huart2, (uint8_t *)ack, (uint16_t)len, 50);
+            }
+          }
+          else
+          {
+            const char *err = "? Usage: Y:1500\r\n";
+            HAL_UART_Transmit(&huart2, (const uint8_t *)err, (uint16_t)strlen(err), 50);
           }
         }
         else
         {
-          const char *err = "? (send: 1500 or 1500 1200, or mode 0/1)\r\n";
-          HAL_UART_Transmit(&huart2, (const uint8_t *)err, (uint16_t)strlen(err), 50);
+          /* 기본: "1500" 또는 "1500 1200" 형식으로 us 값 설정 */
+          unsigned long u1 = 1500, u2 = 1500;
+          int n = sscanf(rx_line_buf, "%lu %lu", &u1, &u2);
+          if (n >= 1)
+          {
+            if (u1 < PWM_US_MIN) u1 = PWM_US_MIN;
+            if (u1 > PWM_US_MAX) u1 = PWM_US_MAX;
+            if (n >= 2)
+            {
+              if (u2 < PWM_US_MIN) u2 = PWM_US_MIN;
+              if (u2 > PWM_US_MAX) u2 = PWM_US_MAX;
+            }
+            else
+            {
+              u2 = u1;
+            }
+            /* CH1=PA8(TIM1), CH2=PA0(TIM2) */
+            Servo_SetAllUs((uint32_t)u1, (uint32_t)u2);
+            auto_pwm_val = (uint32_t)u1;
+            last_uart_tick = HAL_GetTick();
+            char ack[52];
+            int len = snprintf(ack, sizeof(ack), "\nOK PA8=%lu PA0=%lu us\r\n", u1, u2);
+            if (len > 0)
+            {
+              HAL_UART_Transmit(&huart2, (uint8_t *)ack, (uint16_t)len, 50);
+            }
+          }
+          else
+          {
+            const char *err = "? (send: 1500 or 1500 1200, X:1500, Y:1500, or mode 0/1)\r\n";
+            HAL_UART_Transmit(&huart2, (const uint8_t *)err, (uint16_t)strlen(err), 50);
+          }
         }
       }
       rx_idx = 0;
