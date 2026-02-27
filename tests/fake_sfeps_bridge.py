@@ -13,6 +13,7 @@ def main():
     alert_host = _env("SFEPS_PERF_ALERT_HOST", "127.0.0.1")
     alert_port = int(_env("SFEPS_PERF_ALERT_PORT", "5557"))
     rfid_socket_path = _env("SFEPS_PERF_RFID_SOCKET_PATH", "/tmp/rc522_events.sock")
+    accept_timeout = float(_env("SFEPS_PERF_RFID_ACCEPT_TIMEOUT_SEC", "10"))
 
     # Start alert TCP server to accept the test client
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -28,11 +29,18 @@ def main():
     # Connect to the UDS injector (the test's injector will bind and accept)
     try:
         uds = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        # wait for socket path to appear
-        for _ in range(50):
+        # wait for socket path to appear (respect accept timeout + small buffer)
+        wait_seconds = max(accept_timeout + 2.0, 2.0)
+        waited = 0.0
+        poll = 0.1
+        print(f"fake_sfeps_bridge: waiting up to {wait_seconds}s for UDS {rfid_socket_path}", flush=True)
+        while waited < wait_seconds:
             if os.path.exists(rfid_socket_path):
                 break
-            time.sleep(0.1)
+            time.sleep(poll)
+            waited += poll
+        if not os.path.exists(rfid_socket_path):
+            raise TimeoutError(f"UDS path did not appear within {wait_seconds}s: {rfid_socket_path}")
         uds.connect(rfid_socket_path)
     except Exception as exc:
         print(f"fake_sfeps_bridge: failed to connect to uds {rfid_socket_path}: {exc}", flush=True)
