@@ -1,5 +1,14 @@
 pipeline {
-    agent any
+    parameters {
+        string(name: 'AGENT_DOCKER_IMAGE', defaultValue: 'sfeps-jenkins-agent:latest', description: 'Docker image to use for Jenkins agent')
+    }
+
+    agent {
+        docker {
+            image "${params.AGENT_DOCKER_IMAGE}"
+            args '--user jenkins:jenkins -v /var/run/docker.sock:/var/run/docker.sock'
+        }
+    }
 
     options {
         timestamps()
@@ -53,6 +62,77 @@ pipeline {
             }
         }
 
+        stage('Build SFEPS') {
+            steps {
+                sh '''
+                    # Optional: install system packages on agent (requires sudo/root)
+                    if [ -x scripts/install_agent_deps.sh ]; then
+                        echo 'Running agent dependency installer (may require sudo)'
+                        scripts/install_agent_deps.sh || true
+                    else
+                        echo 'scripts/install_agent_deps.sh not found or not executable; ensure dependencies are installed on agent'
+                    fi
+
+                    # Build server (requires system packages installed on agent)
+                    cmake -S server -B server/build || (cat server/CMakeLists.txt && false)
+                    cmake --build server/build --parallel || true
+                '''
+            }
+        }
+
+        stage('Start SFEPS') {
+            steps {
+                sh '''
+                    # Prepare minimal .env for local-only mode so run_server.sh won't fail fast.
+                    mkdir -p server
+                    cat > server/.env <<'EOF'
+SFEPS_DB_HOST=localhost
+SFEPS_DB_USER=test
+SFEPS_DB_PASS=test
+SFEPS_DB_NAME_AUTH=test_auth
+SFEPS_DB_NAME_ANALYTICS=test_analytics
+SFEPS_APP_PLAINTEXT_ENABLE=1
+SFEPS_APP_TLS_ENABLE=0
+EOF
+
+                    # Start the real server in background and record its PID + logs.
+                    (cd server && ./run_server.sh > ../reports/sfeps_server.log 2>&1) &
+                    echo $! > reports/sfeps_server.pid || true
+
+                    # Wait for alert TCP port and UDS socket to appear before running tests.
+                    ALERT_PORT=${SFEPS_PERF_ALERT_PORT}
+                    UDS_PATH=${SFEPS_PERF_RFID_SOCKET_PATH}
+                    # wait up to 30s for TCP port
+                    for i in $(seq 1 60); do
+                        python3 - <<PY
+import socket,sys
+try:
+    s=socket.create_connection(('127.0.0.1', int($ALERT_PORT)), timeout=1)
+    s.close()
+    print('ok')
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+PY
+                        if [ $? -eq 0 ]; then break; fi
+                        sleep 0.5
+                    done
+                    # wait up to SFEPS_PERF_RFID_ACCEPT_TIMEOUT_SEC+2 for UDS
+                    WAIT_SEC=$(python3 - <<PY
+import os
+print(int(float(os.getenv('SFEPS_PERF_RFID_ACCEPT_TIMEOUT_SEC','10'))+2))
+PY
+)
+                    for i in $(seq 1 $WAIT_SEC); do
+                        if [ -e "$UDS_PATH" ]; then break; fi
+                        sleep 1
+                    done
+                    ls -l "$UDS_PATH" || true
+                    sleep 0.5
+                '''
+            }
+        }
+
         stage('Run TC-NF-PERF-02') {
             environment {
                 SFEPS_PERF_ALERT_HOST = "${params.SFEPS_PERF_ALERT_HOST}"
@@ -87,6 +167,34 @@ pipeline {
         always {
             junit testResults: 'reports/pytest_tc_nf_perf_02.xml', allowEmptyResults: true
             archiveArtifacts artifacts: 'reports/**', allowEmptyArchive: true
+
+            # Attempt to stop the started SFEPS server if PID file exists
+            sh '''
+                if [ -f reports/sfeps_server.pid ]; then
+                    pid=$(cat reports/sfeps_server.pid) || true
+                    if [ -n "${pid}" ]; then
+                        echo "Stopping SFEPS server pid=${pid}"
+                        kill ${pid} || true
+                        # wait up to 10s
+                        for i in $(seq 1 10); do
+                            if kill -0 ${pid} >/dev/null 2>&1; then
+                                sleep 1
+                            else
+                                break
+                            fi
+                        done
+                        if kill -0 ${pid} >/dev/null 2>&1; then
+                            echo "PID ${pid} still alive; forcing kill"
+                            kill -9 ${pid} || true
+                        fi
+                    fi
+                fi
+                # Show last lines of server log for diagnostics
+                if [ -f reports/sfeps_server.log ]; then
+                    echo '===== SFEPS server log (tail) ====='
+                    tail -n 200 reports/sfeps_server.log || true
+                fi
+            '''
         }
     }
 }
