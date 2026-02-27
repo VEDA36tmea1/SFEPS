@@ -101,6 +101,9 @@ pipeline {
         }
 
         stage('Start SFEPS') {
+            when {
+                expression { return params.SFEPS_PERF_ALERT_HOST == '127.0.0.1' }
+            }
             steps {
                 sh '''
                     # Prepare minimal .env for local-only mode so run_server.sh won't fail fast.
@@ -176,15 +179,19 @@ PY
                 SFEPS_PERF_RFID_ACCEPT_TIMEOUT_SEC = "${params.SFEPS_PERF_RFID_ACCEPT_TIMEOUT_SEC}"
             }
             steps {
-                sh '''
-                    mkdir -p reports
-                    . .venv-jenkins/bin/activate
-                    # Start lightweight fake SFEPS bridge to accept the test's alert connection
-                    # and relay NDJSON from the UDS injector as FRAUD messages.
-                    python3 tests/fake_sfeps_bridge.py > reports/fake_sfeps_bridge.log 2>&1 &
-                    sleep 0.5
-                    python -m pytest tests/test_tc_nf_perf_02.py -q --junitxml=reports/pytest_tc_nf_perf_02.xml
-                '''
+                withCredentials([sshUserPrivateKey(credentialsId: 'sfeps-ssh', keyFileVariable: 'SSH_KEY')]) {
+                    sh """
+                        mkdir -p reports
+                        REMOTE=iam@${params.SFEPS_PERF_ALERT_HOST}
+                        # Run pytest on the Pi so it uses Pi's UDS and server
+                        ssh -i "\$SSH_KEY" -o StrictHostKeyChecking=no \$REMOTE \
+                          "mkdir -p /tmp/sfeps_reports && python3 -m pytest /home/iam/finalProject/SFEPS/tests/test_tc_nf_perf_02.py -q --junitxml=/tmp/sfeps_reports/pytest_tc_nf_perf_02.xml" || true
+                        # Copy back the junit xml (if present)
+                        scp -i "\$SSH_KEY" -o StrictHostKeyChecking=no \$REMOTE:/tmp/sfeps_reports/pytest_tc_nf_perf_02.xml reports/ || true
+                        # (optional) fetch server log snippet
+                        scp -i "\$SSH_KEY" -o StrictHostKeyChecking=no \$REMOTE:/home/iam/finalProject/SFEPS/reports/sfeps_server.log reports/ || true
+                    """
+                }
             }
         }
     }
