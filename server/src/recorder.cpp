@@ -283,6 +283,15 @@ void RTSPRecorder::run() {
     while (running_flag) {
         if (!connect_and_record()) std::cerr << "[System] Connection Retry in 5s..." << std::endl;
         cleanup();
-        std::this_thread::sleep_for(std::chrono::seconds(5));
+        auto waited = std::chrono::milliseconds(0);
+        constexpr auto kRetrySleep = std::chrono::seconds(5);
+        constexpr auto kRetrySleepStep = std::chrono::milliseconds(200);
+        while (running_flag && waited < kRetrySleep) {
+            const auto remain =
+                std::chrono::duration_cast<std::chrono::milliseconds>(kRetrySleep - waited);
+            const auto chunk = (remain < kRetrySleepStep) ? remain : kRetrySleepStep;
+            std::this_thread::sleep_for(chunk);
+            waited += chunk;
+        }
     }
 }

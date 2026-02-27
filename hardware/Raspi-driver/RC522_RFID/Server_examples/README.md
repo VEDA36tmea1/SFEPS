@@ -17,13 +17,21 @@
 | **파일** | `rc522_uds_daemon.cpp` |
 | **역할** | `/dev/rc522`를 열고 UDS **서버**로 listen. 메인 서버가 connect 하면 태깅 시 NDJSON 한 줄씩 전송. |
 | **빌드** | `g++ -o rc522_uds_daemon rc522_uds_daemon.cpp -I../Kernel_Driver -std=c++17` |
-| **실행** | `sudo ./rc522_uds_daemon [--no-daemon] [--socket PATH] [--trailer N]` |
+| **실행** | `sudo ./rc522_uds_daemon [--no-daemon] [--socket PATH] [--trailer N] [--socket-mode OCTAL] [--socket-group GROUP]` |
 
 **옵션**
 
 - `--no-daemon`: 포그라운드 실행(디버깅용)
 - `--socket PATH`: UDS 경로 (기본 `/tmp/rc522_events.sock`)
 - `--trailer N`: 섹터 트레일러 블록 (기본 11)
+- `--socket-mode OCTAL`: UDS 파일 권한 (기본 `660`)
+- `--socket-group GROUP`: UDS 파일 그룹 소유자 (예: `iam`)
+
+권한 이슈(`rc522 socket connect: Permission denied`)가 있으면 아래처럼 실행:
+
+```bash
+sudo ./rc522_uds_daemon --socket-group iam --socket-mode 660
+```
 
 **메인 서버**: 위 소켓 경로에 **connect** 한 뒤, 소켓에서 한 줄씩 읽으면 NDJSON 이벤트 수신.
 

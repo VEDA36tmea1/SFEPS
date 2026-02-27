@@ -9,6 +9,7 @@
  *
  * 빌드: g++ -o rc522_uds_daemon rc522_uds_daemon.cpp -I../Kernel_Driver -std=c++17
  * 실행: sudo ./rc522_uds_daemon [--no-daemon] [--socket PATH] [--trailer N]
+ *                                 [--socket-mode OCTAL] [--socket-group GROUP]
  */
 
 #include <cerrno>
@@ -21,6 +22,7 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <grp.h>
 #include <signal.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -44,6 +46,8 @@ volatile sig_atomic_t g_running = 1;
 int g_trailer = DEFAULT_TRAILER;
 std::string g_socket_path = DEFAULT_SOCKET_PATH;
 bool g_no_daemon = false;
+mode_t g_socket_mode = static_cast<mode_t>(0660);
+gid_t g_socket_gid = static_cast<gid_t>(-1);
 
 void sig_handler(int) { g_running = 0; }
 
@@ -66,6 +70,45 @@ void daemonize() {
   open("/dev/null", O_RDONLY);
   open("/dev/null", O_WRONLY);
   dup(1);
+}
+
+bool parse_socket_mode(const char* raw, mode_t& out_mode) {
+  if (raw == nullptr || *raw == '\0') return false;
+  errno = 0;
+  char* end = nullptr;
+  unsigned long parsed = strtoul(raw, &end, 8);
+  if (errno != 0 || end == raw || *end != '\0' || parsed > 0777) return false;
+  out_mode = static_cast<mode_t>(parsed);
+  return true;
+}
+
+bool parse_gid(const char* raw, gid_t& out_gid) {
+  if (raw == nullptr || *raw == '\0') return false;
+  errno = 0;
+  char* end = nullptr;
+  unsigned long parsed = strtoul(raw, &end, 10);
+  if (errno != 0 || end == raw || *end != '\0') return false;
+  out_gid = static_cast<gid_t>(parsed);
+  return true;
+}
+
+bool resolve_group_gid(const char* group_name, gid_t& out_gid) {
+  if (group_name == nullptr || *group_name == '\0') return false;
+  struct group* gr = getgrnam(group_name);
+  if (gr == nullptr) return false;
+  out_gid = gr->gr_gid;
+  return true;
+}
+
+void init_socket_gid_from_sudo_env() {
+  // When daemon is started with sudo by a non-root user, default the socket group
+  // to caller's primary group to allow non-root client connect.
+  const char* sudo_gid = getenv("SUDO_GID");
+  if (sudo_gid == nullptr || *sudo_gid == '\0') return;
+  gid_t parsed = static_cast<gid_t>(-1);
+  if (parse_gid(sudo_gid, parsed)) {
+    g_socket_gid = parsed;
+  }
 }
 
 void escape_json_string(const char* text, std::string& out) {
@@ -104,8 +147,19 @@ int create_uds_server(const std::string& path) {
     close(fd);
     return -1;
   }
+  if (chmod(path.c_str(), g_socket_mode) < 0) {
+    close(fd);
+    unlink(path.c_str());
+    return -1;
+  }
+  if (g_socket_gid != static_cast<gid_t>(-1) && chown(path.c_str(), -1, g_socket_gid) < 0) {
+    close(fd);
+    unlink(path.c_str());
+    return -1;
+  }
   if (listen(fd, 1) < 0) {
     close(fd);
+    unlink(path.c_str());
     return -1;
   }
   return fd;
@@ -114,6 +168,8 @@ int create_uds_server(const std::string& path) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  init_socket_gid_from_sudo_env();
+
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--no-daemon") == 0)
       g_no_daemon = true;
@@ -125,6 +181,22 @@ int main(int argc, char** argv) {
         fprintf(stderr, "trailer는 11, 15, 19, ... (4의 배수-1) 이어야 함\n");
         return 1;
       }
+    } else if (strcmp(argv[i], "--socket-mode") == 0 && i + 1 < argc) {
+      if (!parse_socket_mode(argv[++i], g_socket_mode)) {
+        fprintf(stderr, "socket mode는 8진수 3자리(예: 660, 666)여야 함\n");
+        return 1;
+      }
+    } else if (strcmp(argv[i], "--socket-group") == 0 && i + 1 < argc) {
+      if (!resolve_group_gid(argv[++i], g_socket_gid)) {
+        fprintf(stderr, "socket group을 찾을 수 없음\n");
+        return 1;
+      }
+    } else {
+      fprintf(stderr,
+              "Usage: %s [--no-daemon] [--socket PATH] [--trailer N] "
+              "[--socket-mode OCTAL] [--socket-group GROUP]\n",
+              argv[0]);
+      return 1;
     }
   }
 
@@ -145,6 +217,10 @@ int main(int argc, char** argv) {
     close(rc522_fd);
     return 1;
   }
+  fprintf(stderr, "UDS socket ready: path=%s mode=%03o gid=%ld\n",
+          g_socket_path.c_str(),
+          static_cast<unsigned>(g_socket_mode),
+          static_cast<long>(g_socket_gid));
 
   while (g_running) {
     int client_fd = accept(listen_fd, nullptr, nullptr);

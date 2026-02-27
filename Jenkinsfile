@@ -7,7 +7,7 @@ pipeline {
     }
 
     parameters {
-        string(name: 'SFEPS_PERF_ALERT_HOST', defaultValue: '127.0.0.1', description: 'Alert TCP host (server alert listener host)')
+        string(name: 'SFEPS_PERF_ALERT_HOST', defaultValue: '192.168.0.92', description: 'Alert TCP host (server alert listener host)')
         string(name: 'SFEPS_PERF_ALERT_PORT', defaultValue: '5557', description: 'Alert TCP port')
 
         string(name: 'SFEPS_PERF_TARGET_COUNT', defaultValue: '20', description: 'Required suspicious event count')
@@ -22,6 +22,8 @@ pipeline {
         string(name: 'SFEPS_PERF_RFID_DEVICE_ID', defaultValue: '1', description: 'device_id in injected NDJSON')
         string(name: 'SFEPS_PERF_RFID_SEND_INTERVAL_SEC', defaultValue: '0.05', description: 'Interval between injected RFID lines')
         string(name: 'SFEPS_PERF_RFID_ACCEPT_TIMEOUT_SEC', defaultValue: '10', description: 'UDS accept timeout')
+        string(name: 'AGENT_DOCKER_IMAGE', defaultValue: 'my-registry.example.com/myorg/sfeps-jenkins-agent:latest', description: 'Optional: Docker image to run build steps inside')
+        string(name: 'SFEPS_PI_WORKDIR', defaultValue: '/home/iam/finalProject/SFEPS', description: 'SFEPS repo path on Raspberry Pi')
     }
 
     stages {
@@ -53,6 +55,113 @@ pipeline {
             }
         }
 
+        stage('Build SFEPS') {
+            steps {
+                sh '''
+                    # If running inside Docker (Jenkins container), build natively in this container.
+                    if [ -f /.dockerenv ]; then
+                        echo 'Detected running inside Docker container; building inside container'
+                        if [ -x scripts/install_agent_deps.sh ]; then
+                            scripts/install_agent_deps.sh || true
+                        fi
+                        cmake -S server -B server/build || (cat server/CMakeLists.txt && false)
+                        cmake --build server/build --parallel || true
+                    elif [ -n "${AGENT_DOCKER_IMAGE:-}" ] && command -v docker >/dev/null 2>&1; then
+                        echo "Running build inside Docker image: ${AGENT_DOCKER_IMAGE}"
+                        docker run --rm -v "$PWD":/workspace -w /workspace "${AGENT_DOCKER_IMAGE}" bash -lc "\
+                            if [ -x scripts/install_agent_deps.sh ]; then scripts/install_agent_deps.sh || true; else echo 'no installer'; fi && \
+                            cmake -S server -B server/build || (cat server/CMakeLists.txt && false) && \
+                            cmake --build server/build --parallel || true"
+                    else
+                        echo 'Running build on agent host'
+                        if [ -x scripts/install_agent_deps.sh ]; then
+                            echo 'Running agent dependency installer (may require sudo)'
+                            scripts/install_agent_deps.sh || true
+                        else
+                            echo 'scripts/install_agent_deps.sh not found or not executable; ensure dependencies are installed on agent'
+                        fi
+                        cmake -S server -B server/build || (cat server/CMakeLists.txt && false)
+                        cmake --build server/build --parallel || true
+                    fi
+                '''
+            }
+        }
+
+        stage('Build & Restart on Pi') {
+            steps {
+                withCredentials([sshUserPrivateKey(credentialsId: 'sfeps-ssh', keyFileVariable: 'SSH_KEY')]) {
+                    sh """
+                        REMOTE="iam@192.168.0.92"
+                        REMOTE_WORKDIR="${params.SFEPS_PI_WORKDIR}"
+
+                        ssh -i "\$SSH_KEY" -o StrictHostKeyChecking=no \$REMOTE "if [ ! -d \"\$REMOTE_WORKDIR/server\" ]; then echo 'Missing server dir:' \"\$REMOTE_WORKDIR/server\"; ls -la \"\$REMOTE_WORKDIR\" || true; exit 2; fi; cd \"\$REMOTE_WORKDIR\" && cmake -S server -B server/build && cmake --build server/build -j\$(nproc) && sudo -n systemctl restart sfeps-server"
+                    """
+                }
+            }
+        }
+
+        stage('Start SFEPS') {
+            when {
+                expression { return params.SFEPS_PERF_ALERT_HOST == '127.0.0.1' }
+            }
+            steps {
+                sh '''
+                    # Prepare minimal .env for local-only mode so run_server.sh won't fail fast.
+                    mkdir -p server
+                    mkdir -p server
+                    # Create dummy CA file so run_server.sh's readability check passes
+                    echo '-----BEGIN CERTIFICATE-----\nMIID...dummy...\n-----END CERTIFICATE-----' > server/ca.crt || true
+                    chmod 644 server/ca.crt || true
+                    cat > server/.env <<'EOF'
+SFEPS_DB_HOST=localhost
+SFEPS_DB_USER=test
+SFEPS_DB_PASS=test
+SFEPS_DB_NAME_AUTH=test_auth
+SFEPS_DB_NAME_ANALYTICS=test_analytics
+SFEPS_APP_PLAINTEXT_ENABLE=1
+SFEPS_APP_TLS_ENABLE=0
+# Point RTSPS_TLS_CA to workspace-local CA file (relative to server dir)
+RTSPS_TLS_CA=./ca.crt
+EOF
+
+                    # Start the real server in background and record its PID + logs.
+                    (cd server && ./run_server.sh > ../reports/sfeps_server.log 2>&1) &
+                    echo $! > reports/sfeps_server.pid || true
+
+                    # Wait for alert TCP port and UDS socket to appear before running tests.
+                    ALERT_PORT=${SFEPS_PERF_ALERT_PORT}
+                    UDS_PATH=${SFEPS_PERF_RFID_SOCKET_PATH}
+                    # wait up to 30s for TCP port
+                    for i in $(seq 1 60); do
+                        python3 - <<PY
+import socket,sys
+try:
+    s=socket.create_connection(('127.0.0.1', int($ALERT_PORT)), timeout=1)
+    s.close()
+    print('ok')
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+PY
+                        if [ $? -eq 0 ]; then break; fi
+                        sleep 0.5
+                    done
+                    # wait up to SFEPS_PERF_RFID_ACCEPT_TIMEOUT_SEC+2 for UDS
+                    WAIT_SEC=$(python3 - <<PY
+import os
+print(int(float(os.getenv('SFEPS_PERF_RFID_ACCEPT_TIMEOUT_SEC','10'))+2))
+PY
+)
+                    for i in $(seq 1 $WAIT_SEC); do
+                        if [ -e "$UDS_PATH" ]; then break; fi
+                        sleep 1
+                    done
+                    ls -l "$UDS_PATH" || true
+                    sleep 0.5
+                '''
+            }
+        }
+
         stage('Run TC-NF-PERF-02') {
             environment {
                 SFEPS_PERF_ALERT_HOST = "${params.SFEPS_PERF_ALERT_HOST}"
@@ -70,11 +179,19 @@ pipeline {
                 SFEPS_PERF_RFID_ACCEPT_TIMEOUT_SEC = "${params.SFEPS_PERF_RFID_ACCEPT_TIMEOUT_SEC}"
             }
             steps {
-                sh '''
-                    mkdir -p reports
-                    . .venv-jenkins/bin/activate
-                    python -m pytest tests/test_tc_nf_perf_02.py -q --junitxml=reports/pytest_tc_nf_perf_02.xml
-                '''
+                withCredentials([sshUserPrivateKey(credentialsId: 'sfeps-ssh', keyFileVariable: 'SSH_KEY')]) {
+                    sh """
+                        mkdir -p reports
+                        REMOTE=iam@${params.SFEPS_PERF_ALERT_HOST}
+                        # Run pytest on the Pi so it uses Pi's UDS and server
+                        ssh -i "\$SSH_KEY" -o StrictHostKeyChecking=no \$REMOTE \
+                          "mkdir -p /tmp/sfeps_reports && python3 -m pytest /home/iam/finalProject/SFEPS/tests/test_tc_nf_perf_02.py -q --junitxml=/tmp/sfeps_reports/pytest_tc_nf_perf_02.xml" || true
+                        # Copy back the junit xml (if present)
+                        scp -i "\$SSH_KEY" -o StrictHostKeyChecking=no \$REMOTE:/tmp/sfeps_reports/pytest_tc_nf_perf_02.xml reports/ || true
+                        # (optional) fetch server log snippet
+                        scp -i "\$SSH_KEY" -o StrictHostKeyChecking=no \$REMOTE:/home/iam/finalProject/SFEPS/reports/sfeps_server.log reports/ || true
+                    """
+                }
             }
         }
     }
@@ -83,6 +200,34 @@ pipeline {
         always {
             junit testResults: 'reports/pytest_tc_nf_perf_02.xml', allowEmptyResults: true
             archiveArtifacts artifacts: 'reports/**', allowEmptyArchive: true
+
+            // Attempt to stop the started SFEPS server if PID file exists
+            sh '''
+                if [ -f reports/sfeps_server.pid ]; then
+                    pid=$(cat reports/sfeps_server.pid) || true
+                    if [ -n "${pid}" ]; then
+                        echo "Stopping SFEPS server pid=${pid}"
+                        kill ${pid} || true
+                        # wait up to 10s
+                        for i in $(seq 1 10); do
+                            if kill -0 ${pid} >/dev/null 2>&1; then
+                                sleep 1
+                            else
+                                break
+                            fi
+                        done
+                        if kill -0 ${pid} >/dev/null 2>&1; then
+                            echo "PID ${pid} still alive; forcing kill"
+                            kill -9 ${pid} || true
+                        fi
+                    fi
+                fi
+                # Show last lines of server log for diagnostics
+                if [ -f reports/sfeps_server.log ]; then
+                    echo '===== SFEPS server log (tail) ====='
+                    tail -n 200 reports/sfeps_server.log || true
+                fi
+            '''
         }
     }
 }
