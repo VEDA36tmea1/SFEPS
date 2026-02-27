@@ -168,7 +168,7 @@ PY
             junit testResults: 'reports/pytest_tc_nf_perf_02.xml', allowEmptyResults: true
             archiveArtifacts artifacts: 'reports/**', allowEmptyArchive: true
 
-            # Attempt to stop the started SFEPS server if PID file exists
+            // Attempt to stop the started SFEPS server if PID file exists
             sh '''
                 if [ -f reports/sfeps_server.pid ]; then
                     pid=$(cat reports/sfeps_server.pid) || true
