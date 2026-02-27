@@ -88,14 +88,14 @@ pipeline {
 
         stage('Build & Restart on Pi') {
             steps {
-                sh '''
-                    SSH_KEY="$HOME/.ssh/id_sfeps"
-                    REMOTE="iam@192.168.0.92"
-                    REMOTE_WORKDIR="/home/iam/finalProject"
+                withCredentials([sshUserPrivateKey(credentialsId: 'sfeps-ssh', keyFileVariable: 'SSH_KEY')]) {
+                    sh '''
+                        REMOTE="iam@192.168.0.92"
+                        REMOTE_WORKDIR="/home/iam/finalProject"
 
-                    ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no $REMOTE \
-                      "cd $REMOTE_WORKDIR && cmake -S server -B server/build && cmake --build server/build -j\$(nproc) && sudo -n systemctl restart sfeps-server"
-                '''
+                        ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no $REMOTE "cd $REMOTE_WORKDIR && cmake -S server -B server/build && cmake --build server/build -j$(nproc) && sudo -n systemctl restart sfeps-server"
+                    '''
+                }
             }
         }
 
