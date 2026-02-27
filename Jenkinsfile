@@ -23,6 +23,7 @@ pipeline {
         string(name: 'SFEPS_PERF_RFID_SEND_INTERVAL_SEC', defaultValue: '0.05', description: 'Interval between injected RFID lines')
         string(name: 'SFEPS_PERF_RFID_ACCEPT_TIMEOUT_SEC', defaultValue: '10', description: 'UDS accept timeout')
         string(name: 'AGENT_DOCKER_IMAGE', defaultValue: 'my-registry.example.com/myorg/sfeps-jenkins-agent:latest', description: 'Optional: Docker image to run build steps inside')
+        string(name: 'SFEPS_PI_WORKDIR', defaultValue: '/home/iam/finalProject/SFEPS', description: 'SFEPS repo path on Raspberry Pi')
     }
 
     stages {
@@ -91,9 +92,9 @@ pipeline {
                 withCredentials([sshUserPrivateKey(credentialsId: 'sfeps-ssh', keyFileVariable: 'SSH_KEY')]) {
                     sh '''
                         REMOTE="iam@192.168.0.92"
-                        REMOTE_WORKDIR="/home/iam/finalProject"
+                        REMOTE_WORKDIR="${SFEPS_PI_WORKDIR}"
 
-                        ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no $REMOTE "cd $REMOTE_WORKDIR && cmake -S server -B server/build && cmake --build server/build -j$(nproc) && sudo -n systemctl restart sfeps-server"
+                        ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no $REMOTE "if [ ! -d \"$REMOTE_WORKDIR/server\" ]; then echo 'Missing server dir:' \"$REMOTE_WORKDIR/server\"; ls -la \"$REMOTE_WORKDIR\" || true; exit 2; fi; cd \"$REMOTE_WORKDIR\" && cmake -S server -B server/build && cmake --build server/build -j$(nproc) && sudo -n systemctl restart sfeps-server"
                     '''
                 }
             }
