@@ -7,7 +7,7 @@ pipeline {
     }
 
     parameters {
-        string(name: 'SFEPS_PERF_ALERT_HOST', defaultValue: '127.0.0.1', description: 'Alert TCP host (server alert listener host)')
+        string(name: 'SFEPS_PERF_ALERT_HOST', defaultValue: '192.168.0.92', description: 'Alert TCP host (server alert listener host)')
         string(name: 'SFEPS_PERF_ALERT_PORT', defaultValue: '5557', description: 'Alert TCP port')
 
         string(name: 'SFEPS_PERF_TARGET_COUNT', defaultValue: '20', description: 'Required suspicious event count')
@@ -90,12 +90,12 @@ pipeline {
         stage('Build & Restart on Pi') {
             steps {
                 withCredentials([sshUserPrivateKey(credentialsId: 'sfeps-ssh', keyFileVariable: 'SSH_KEY')]) {
-                    sh '''
+                    sh """
                         REMOTE="iam@192.168.0.92"
-                        REMOTE_WORKDIR="${SFEPS_PI_WORKDIR}"
+                        REMOTE_WORKDIR="${params.SFEPS_PI_WORKDIR}"
 
-                        ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no $REMOTE "if [ ! -d \"$REMOTE_WORKDIR/server\" ]; then echo 'Missing server dir:' \"$REMOTE_WORKDIR/server\"; ls -la \"$REMOTE_WORKDIR\" || true; exit 2; fi; cd \"$REMOTE_WORKDIR\" && cmake -S server -B server/build && cmake --build server/build -j$(nproc) && sudo -n systemctl restart sfeps-server"
-                    '''
+                        ssh -i "\$SSH_KEY" -o StrictHostKeyChecking=no \$REMOTE "if [ ! -d \"\$REMOTE_WORKDIR/server\" ]; then echo 'Missing server dir:' \"\$REMOTE_WORKDIR/server\"; ls -la \"\$REMOTE_WORKDIR\" || true; exit 2; fi; cd \"\$REMOTE_WORKDIR\" && cmake -S server -B server/build && cmake --build server/build -j\$(nproc) && sudo -n systemctl restart sfeps-server"
+                    """
                 }
             }
         }
