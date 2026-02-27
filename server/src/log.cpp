@@ -13,6 +13,15 @@ constexpr const char* kAnalyticsLogInsertQuery =
     "INSERT INTO analytics_logs (frame_time, object_type, created_at, estimated_age, photo_path, x, y, event) "
     "VALUES (?, ?, NOW(), ?, ?, ?, ?, ?)";
 constexpr const char* kRecordingInsertQuery = "INSERT INTO recordings (filename) VALUES (?)";
+constexpr const char* kAnalyticsRetentionDeleteQuery =
+    "DELETE FROM analytics_logs WHERE created_at < (NOW() - INTERVAL 1 DAY)";
+constexpr const char* kRecordingRetentionDeleteByCreatedAtQuery =
+    "DELETE FROM recordings WHERE created_at < (NOW() - INTERVAL 1 DAY)";
+constexpr const char* kRecordingRetentionDeleteByFilenameQuery =
+    "DELETE FROM recordings "
+    "WHERE SUBSTRING_INDEX(filename, '/', -1) REGEXP '^rec_[0-9]{8}_[0-9]{6}\\\\.mp4$' "
+    "AND STR_TO_DATE(SUBSTRING(SUBSTRING_INDEX(filename, '/', -1), 5, 15), '%Y%m%d_%H%i%s') "
+    "< (NOW() - INTERVAL 1 DAY)";
 
 bool prepare_stmt(MYSQL* conn, MYSQL_STMT*& stmt, const char* query, const char* name) {
     stmt = mysql_stmt_init(conn);
@@ -112,10 +121,6 @@ bool DBLogger::connect() {
         conn = nullptr;
         return false;
     }
-
-    cleanupSizeQuery =
-        "SELECT (data_length + index_length) / 1024 / 1024 FROM information_schema.tables WHERE table_schema = '" +
-        db_name + "' AND table_name = 'analytics_logs'";
 
     isRunning = true;
     workerThread = std::thread(&DBLogger::processQueue, this);
@@ -321,14 +326,50 @@ void DBLogger::processQueue() {
 
                 execute_stmt(recordingStmt, params, "recordings");
             } else if (item.type == CLEANUP_DB_LOG) {
-                if (mysql_query(conn, cleanupSizeQuery.c_str()) == 0) {
-                    MYSQL_RES* res = mysql_store_result(conn);
-                    if (res != nullptr) {
-                        mysql_free_result(res);
+                auto execute_delete = [&](const char* query, const char* label,
+                                          my_ulonglong* affected_rows) -> int {
+                    if (mysql_query(conn, query) != 0) {
+                        const int err = mysql_errno(conn);
+                        std::cerr << "[log.cpp] [DB Error] cleanup delete failed (" << label
+                                  << "): " << mysql_error(conn) << std::endl;
+                        return err;
+                    }
+                    if (affected_rows != nullptr) {
+                        *affected_rows = mysql_affected_rows(conn);
+                    }
+                    return 0;
+                };
+
+                my_ulonglong deleted_analytics = 0;
+                if (execute_delete(kAnalyticsRetentionDeleteQuery, "analytics_logs(created_at)",
+                                   &deleted_analytics) == 0 &&
+                    deleted_analytics > 0) {
+                    std::cout << "[log.cpp] [Cleanup] deleted analytics_logs rows: "
+                              << deleted_analytics << std::endl;
+                }
+
+                my_ulonglong deleted_recordings = 0;
+                int recording_cleanup_err = execute_delete(
+                    kRecordingRetentionDeleteByCreatedAtQuery, "recordings(created_at)",
+                    &deleted_recordings);
+                if (recording_cleanup_err == 0) {
+                    if (deleted_recordings > 0) {
+                        std::cout << "[log.cpp] [Cleanup] deleted recordings rows: "
+                                  << deleted_recordings << std::endl;
+                    }
+                } else if (recording_cleanup_err == 1054) {
+                    deleted_recordings = 0;
+                    if (execute_delete(kRecordingRetentionDeleteByFilenameQuery,
+                                       "recordings(filename timestamp fallback)",
+                                       &deleted_recordings) == 0 &&
+                        deleted_recordings > 0) {
+                        std::cout << "[log.cpp] [Cleanup] deleted recordings rows (filename fallback): "
+                                  << deleted_recordings << std::endl;
                     }
                 } else {
-                    std::cerr << "[log.cpp] [DB Error] cleanup query failed: " << mysql_error(conn)
-                              << std::endl;
+                    std::cerr
+                        << "[log.cpp] [DB Error] recordings cleanup skipped due to non-recoverable error."
+                        << std::endl;
                 }
             }
         }

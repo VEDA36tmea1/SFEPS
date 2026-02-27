@@ -83,6 +83,23 @@ std::string normalize_login_key(const std::string& user) {
     return normalized;
 }
 
+bool sleep_interruptible(std::atomic<bool>& running_flag,
+                         std::chrono::milliseconds total,
+                         std::chrono::milliseconds step = std::chrono::milliseconds(200)) {
+    if (step <= std::chrono::milliseconds(0)) {
+        step = std::chrono::milliseconds(200);
+    }
+
+    std::chrono::milliseconds waited(0);
+    while (running_flag.load() && waited < total) {
+        const auto remain = total - waited;
+        const auto chunk = (remain < step) ? remain : step;
+        std::this_thread::sleep_for(chunk);
+        waited += chunk;
+    }
+    return running_flag.load();
+}
+
 std::size_t load_env_size_t(const char* name, std::size_t default_value, std::size_t min_value) {
     const char* raw = std::getenv(name);
     if (raw == nullptr || raw[0] == '\0') return default_value;
@@ -1020,8 +1037,7 @@ int main(int argc, char* argv[]) {
 
     std::thread t_db_cleanup([&]() {
         while (g_running.load()) {
-            std::this_thread::sleep_for(std::chrono::seconds(60));
-            if (!g_running.load()) break;
+            if (!sleep_interruptible(g_running, std::chrono::seconds(60))) break;
             logger.requestDbCleanup();
         }
     });
@@ -1040,7 +1056,7 @@ int main(int argc, char* argv[]) {
             int seq = 0;
             while (g_running.load()) {
                 send_test_alert_to_clients("TEST|PING|" + std::to_string(seq++));
-                std::this_thread::sleep_for(std::chrono::seconds(2));
+                if (!sleep_interruptible(g_running, std::chrono::seconds(2))) break;
             }
             std::cout << "[main.cpp] [Alert] test ping thread stopped." << std::endl;
         });
