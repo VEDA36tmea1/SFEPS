@@ -22,7 +22,7 @@ pipeline {
         string(name: 'SFEPS_PERF_RFID_DEVICE_ID', defaultValue: '1', description: 'device_id in injected NDJSON')
         string(name: 'SFEPS_PERF_RFID_SEND_INTERVAL_SEC', defaultValue: '0.05', description: 'Interval between injected RFID lines')
         string(name: 'SFEPS_PERF_RFID_ACCEPT_TIMEOUT_SEC', defaultValue: '10', description: 'UDS accept timeout')
-        string(name: 'AGENT_DOCKER_IMAGE', defaultValue: 'sfeps-jenkins-agent:latest', description: 'Optional: Docker image to run build steps inside')
+        string(name: 'AGENT_DOCKER_IMAGE', defaultValue: 'my-registry.example.com/myorg/sfeps-jenkins-agent:latest', description: 'Optional: Docker image to run build steps inside')
     }
 
     stages {
@@ -99,7 +99,14 @@ SFEPS_DB_NAME_AUTH=test_auth
 SFEPS_DB_NAME_ANALYTICS=test_analytics
 SFEPS_APP_PLAINTEXT_ENABLE=1
 SFEPS_APP_TLS_ENABLE=0
+# Point RTSPS_TLS_CA to a readable dummy file in the workspace to avoid run_server.sh failing.
+RTSPS_TLS_CA=${PWD}/server/ca.crt
 EOF
+
+                    # Create dummy CA file so run_server.sh's readability check passes
+                    mkdir -p server
+                    echo '-----BEGIN CERTIFICATE-----\nMIID...dummy...\n-----END CERTIFICATE-----' > server/ca.crt || true
+                    chmod 644 server/ca.crt || true
 
                     # Start the real server in background and record its PID + logs.
                     (cd server && ./run_server.sh > ../reports/sfeps_server.log 2>&1) &
