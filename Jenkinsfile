@@ -73,6 +73,10 @@ pipeline {
                 sh '''
                     mkdir -p reports
                     . .venv-jenkins/bin/activate
+                    # Start lightweight fake SFEPS bridge to accept the test's alert connection
+                    # and relay NDJSON from the UDS injector as FRAUD messages.
+                    python3 tests/fake_sfeps_bridge.py > reports/fake_sfeps_bridge.log 2>&1 &
+                    sleep 0.5
                     python -m pytest tests/test_tc_nf_perf_02.py -q --junitxml=reports/pytest_tc_nf_perf_02.xml
                 '''
             }
