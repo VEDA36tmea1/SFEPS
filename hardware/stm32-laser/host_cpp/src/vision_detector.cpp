@@ -3,6 +3,8 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/highgui.hpp>
 
+#include <iostream>
+
 // NOTE:
 // 현재 구현은 데모용 레이저/타겟 검출 예제이다.
 // - 타겟: 프레임 중앙 근처의 고정 위치로 가정
@@ -55,15 +57,12 @@ DetectionResult VisionDetector::detectLaser(const cv::Mat& frame)
     // 2) 빨간색 범위 HSV threshold (두 구간: 0~10, 170~180)
     cv::Mat mask1, mask2, mask;
     // Hue: [0,10] or [170,180], S/V 꽤 높게 설정 (경험적으로 조정)
-    cv::inRange(hsv,
-                cv::Scalar(0, 120, 150),
-                cv::Scalar(10, 255, 255),
-                mask1);
-    cv::inRange(hsv,
-                cv::Scalar(170, 120, 150),
-                cv::Scalar(180, 255, 255),
-                mask2);
+    // S(채도)를 50~70 수준으로, V(명도)를 100 수준으로 대폭 낮춰보세요.
+    cv::inRange(hsv, cv::Scalar(0, 50, 100), cv::Scalar(10, 255, 255), mask1);
+    cv::inRange(hsv, cv::Scalar(160, 50, 100), cv::Scalar(180, 255, 255), mask2);
     cv::bitwise_or(mask1, mask2, mask);
+
+    cv::imshow("org_mask", mask);
 
     // 3) 노이즈 제거 (블러 + 모폴로지)
     cv::GaussianBlur(mask, mask, cv::Size(5, 5), 0);
@@ -85,6 +84,18 @@ DetectionResult VisionDetector::detectLaser(const cv::Mat& frame)
         result.point = cv::Point2f(static_cast<float>(maxLoc.x),
                                    static_cast<float>(maxLoc.y));
         result.found = true;
+
+        // 포인트 영역의 색상(BGR, HSV) 터미널 출력
+        int px = static_cast<int>(result.point.x + 0.5f);
+        int py = static_cast<int>(result.point.y + 0.5f);
+        if (px >= 0 && px < frame.cols && py >= 0 && py < frame.rows)
+        {
+            cv::Vec3b bgr = frame.at<cv::Vec3b>(py, px);
+            cv::Vec3b hsv_val = hsv.at<cv::Vec3b>(py, px);
+            std::cout << "[laser point] x=" << result.point.x << " y=" << result.point.y
+                      << " BGR=(" << (int)bgr[0] << "," << (int)bgr[1] << "," << (int)bgr[2] << ")"
+                      << " HSV=(" << (int)hsv_val[0] << "," << (int)hsv_val[1] << "," << (int)hsv_val[2] << ")\n";
+        }
     }
 
     return result;

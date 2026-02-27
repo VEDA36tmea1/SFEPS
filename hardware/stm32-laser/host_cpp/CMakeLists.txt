@@ -14,6 +14,7 @@ add_library(ibvs_core STATIC
     src/ibvs_controller.cpp
     src/stm_interface.cpp
     src/gst_ibvs.cpp
+    src/mouse_target_provider.cpp
 )
 
 target_include_directories(ibvs_core PUBLIC
