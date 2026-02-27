@@ -277,3 +277,52 @@ else if (strstr(wifi_line, "ERROR") != NULL ||
 - **소프트웨어/툴체인**:
   - 라즈베리 파이 기본 CMake(3.18)는 C17 지원이 부족 → stlink 빌드 시 C 표준을 C11로 낮춰 해결.
   - `libusb-1.0-0-dev`, `pkg-config` 설치 및 필요 시 `LIBUSB_INCLUDE_DIR`, `LIBUSB_LIBRARY` 수동 지정으로 CMake 단계 통과.
+
+---
+## 2026-02-24 - 모터 노이즈 문제 해결
+
+#### 1. 증상
+
+- 서보가 중립(예: 1500us)에서도 `지지직` 소음을 내며 떨림.
+- Servo tester에서는 정상 동작하고, STM32 PWM 출력에서만 이상 증상 발생.
+
+#### 2. 원인 분석
+
+- TIM PWM 채널 설정에서 출력 극성이 반대로 설정되어 있었음.
+- 문제 설정:
+
+  ```c
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_LOW;
+  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
+  ```
+
+- 위 상태에서는 PWM이 반전되어, 예를 들어 1500us 명령이 실제로는
+  거의 전체 주기 High에 가까운 형태로 전달됨.
+- 그 결과 서보 내부 제어 기준에서 비정상 펄스로 해석되어
+  엔드스톱 방향으로 과도하게 힘을 주면서 소음/발열/진동이 유발됨.
+
+#### 3. 수정 내용
+
+- TIM1/TIM2 PWM 채널의 극성을 서보 일반 규격에 맞게 정방향으로 조정:
+
+  ```c
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
+  ```
+
+- 50Hz(20ms) 기준에서 1000~2000us 펄스 폭이 정상 의미로 전달되도록 정렬.
+
+#### 4. 결과
+
+- 중립 및 수동 입력 구간에서 비정상 소음이 크게 감소.
+- AUTO 스윕/수동 명령 모두에서 목표 각도 추종 안정성 개선.
+
+#### 5. 체크 포인트
+
+- 동일 이슈 재발 방지를 위해 TIM 채널 생성/재생성(CubeMX) 후
+  `MX_TIM1_Init`, `MX_TIM2_Init`의 `OCPolarity`를 반드시 재검토.
+- PWM 관련 회귀 테스트 시 아래 항목 포함:
+  - 1500us 고정 시 소음/진동 확인
+  - 1200/1500/1800us 스텝 입력 시 응답 확인
+  - 50Hz 주기 및 극성(High-active) 확인
+
