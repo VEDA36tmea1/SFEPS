@@ -2,7 +2,9 @@
 #define AUTHMANAGER_H
 
 #include <QObject>
-#include <QTcpSocket>
+#include <QList>
+#include <QSslCertificate>
+#include <QSslSocket>
 
 class AuthManager : public QObject
 {
@@ -24,7 +26,29 @@ private slots:
     void onSocketError(QAbstractSocket::SocketError socketError);
 
 private:
-    QTcpSocket *socket;
+    enum class LoginAttemptResult {
+        AuthPass,
+        AuthFail,
+        TransportError
+    };
+
+    bool loadTrustedCaCertificates(const QString &caPathOverride,
+                                   QList<QSslCertificate> &outCerts,
+                                   QString &outSource,
+                                   QString &outError) const;
+
+    LoginAttemptResult attemptTlsLogin(const QString &host,
+                                       int port,
+                                       const QByteArray &payload,
+                                       const QString &caPathOverride,
+                                       QString &outTransportError);
+
+    LoginAttemptResult attemptPlainLogin(const QString &host,
+                                         int port,
+                                         const QByteArray &payload,
+                                         QString &outTransportError);
+
+    QSslSocket *socket;
     QString m_currentUserId;
 };
 
