@@ -91,6 +91,10 @@ pipeline {
                 sh '''
                     # Prepare minimal .env for local-only mode so run_server.sh won't fail fast.
                     mkdir -p server
+                    mkdir -p server
+                    # Create dummy CA file so run_server.sh's readability check passes
+                    echo '-----BEGIN CERTIFICATE-----\nMIID...dummy...\n-----END CERTIFICATE-----' > server/ca.crt || true
+                    chmod 644 server/ca.crt || true
                     cat > server/.env <<'EOF'
 SFEPS_DB_HOST=localhost
 SFEPS_DB_USER=test
@@ -99,14 +103,9 @@ SFEPS_DB_NAME_AUTH=test_auth
 SFEPS_DB_NAME_ANALYTICS=test_analytics
 SFEPS_APP_PLAINTEXT_ENABLE=1
 SFEPS_APP_TLS_ENABLE=0
-# Point RTSPS_TLS_CA to a readable dummy file in the workspace to avoid run_server.sh failing.
-RTSPS_TLS_CA=${PWD}/server/ca.crt
+# Point RTSPS_TLS_CA to workspace-local CA file (relative to server dir)
+RTSPS_TLS_CA=./ca.crt
 EOF
-
-                    # Create dummy CA file so run_server.sh's readability check passes
-                    mkdir -p server
-                    echo '-----BEGIN CERTIFICATE-----\nMIID...dummy...\n-----END CERTIFICATE-----' > server/ca.crt || true
-                    chmod 644 server/ca.crt || true
 
                     # Start the real server in background and record its PID + logs.
                     (cd server && ./run_server.sh > ../reports/sfeps_server.log 2>&1) &
