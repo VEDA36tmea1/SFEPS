@@ -1,14 +1,5 @@
 pipeline {
-    parameters {
-        string(name: 'AGENT_DOCKER_IMAGE', defaultValue: 'sfeps-jenkins-agent:latest', description: 'Docker image to use for Jenkins agent')
-    }
-
-    agent {
-        docker {
-            image "${params.AGENT_DOCKER_IMAGE}"
-            args '--user jenkins:jenkins -v /var/run/docker.sock:/var/run/docker.sock'
-        }
-    }
+    agent any
 
     options {
         timestamps()
@@ -31,6 +22,7 @@ pipeline {
         string(name: 'SFEPS_PERF_RFID_DEVICE_ID', defaultValue: '1', description: 'device_id in injected NDJSON')
         string(name: 'SFEPS_PERF_RFID_SEND_INTERVAL_SEC', defaultValue: '0.05', description: 'Interval between injected RFID lines')
         string(name: 'SFEPS_PERF_RFID_ACCEPT_TIMEOUT_SEC', defaultValue: '10', description: 'UDS accept timeout')
+        string(name: 'AGENT_DOCKER_IMAGE', defaultValue: 'sfeps-jenkins-agent:latest', description: 'Optional: Docker image to run build steps inside')
     }
 
     stages {
@@ -65,17 +57,31 @@ pipeline {
         stage('Build SFEPS') {
             steps {
                 sh '''
-                    # Optional: install system packages on agent (requires sudo/root)
-                    if [ -x scripts/install_agent_deps.sh ]; then
-                        echo 'Running agent dependency installer (may require sudo)'
-                        scripts/install_agent_deps.sh || true
+                    # If running inside Docker (Jenkins container), build natively in this container.
+                    if [ -f /.dockerenv ]; then
+                        echo 'Detected running inside Docker container; building inside container'
+                        if [ -x scripts/install_agent_deps.sh ]; then
+                            scripts/install_agent_deps.sh || true
+                        fi
+                        cmake -S server -B server/build || (cat server/CMakeLists.txt && false)
+                        cmake --build server/build --parallel || true
+                    elif [ -n "${AGENT_DOCKER_IMAGE:-}" ] && command -v docker >/dev/null 2>&1; then
+                        echo "Running build inside Docker image: ${AGENT_DOCKER_IMAGE}"
+                        docker run --rm -v "$PWD":/workspace -w /workspace "${AGENT_DOCKER_IMAGE}" bash -lc "\
+                            if [ -x scripts/install_agent_deps.sh ]; then scripts/install_agent_deps.sh || true; else echo 'no installer'; fi && \
+                            cmake -S server -B server/build || (cat server/CMakeLists.txt && false) && \
+                            cmake --build server/build --parallel || true"
                     else
-                        echo 'scripts/install_agent_deps.sh not found or not executable; ensure dependencies are installed on agent'
+                        echo 'Running build on agent host'
+                        if [ -x scripts/install_agent_deps.sh ]; then
+                            echo 'Running agent dependency installer (may require sudo)'
+                            scripts/install_agent_deps.sh || true
+                        else
+                            echo 'scripts/install_agent_deps.sh not found or not executable; ensure dependencies are installed on agent'
+                        fi
+                        cmake -S server -B server/build || (cat server/CMakeLists.txt && false)
+                        cmake --build server/build --parallel || true
                     fi
-
-                    # Build server (requires system packages installed on agent)
-                    cmake -S server -B server/build || (cat server/CMakeLists.txt && false)
-                    cmake --build server/build --parallel || true
                 '''
             }
         }
