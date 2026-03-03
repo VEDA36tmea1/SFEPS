@@ -1,97 +1,85 @@
-# tests 실행 가이드
+# 테스트 안내 (업데이트)
 
-이 문서는 `TC-NF-PERF-02` 자동 테스트(`pytest`) 실행 방법을 설명합니다.
-상세 테스트케이스 정의는 `tests/TestCase.md`를 참고하세요.
+이 문서는 `tests/` 디렉터리에 포함된 테스트들의 목적과 로컬 실행 방법을 정리합니다. 최근 변경으로 인해 로컬에서 일관되게 실행할 수 있도록 **모크 인증 서버**와 GUI 자동화 도우미가 추가되어 있습니다.
 
-## 1) 어디서 실행하나요?
-- **실행 위치(Workspace Root)**: `c:\Users\2-08\Desktop\SFEPS`
-- 아래 명령은 모두 PowerShell 기준입니다.
+## 요약
 
-## 2) 무엇을 실행하나요?
-- 대상 테스트 파일: `tests/test_tc_nf_perf_02.py`
-- 목적: **1분 내 20건 이상 의심 이벤트 처리(생성/전달/표시)** 검증
+- 로그인 관련 테스트: `tests/test_tc_func_login.py`
+- 스트리밍 관련 테스트: `tests/test_tc_func_stream.py` (OpenCV 필요)
+- 모의 인증 서버: `tests/mock_auth_server.py` (자동 시작 지원)
 
-## 3) 사전 준비
+## 핵심 파일
 
-### 3-1. 가상환경(.venv) 인터프리터 사용
-- 테스트 실행 인터프리터:
-  - `c:/Users/2-08/Desktop/SFEPS/.venv/Scripts/python.exe`
+- `tests/mock_auth_server.py`: 간단한 TCP 인증 스텁(기본: `127.0.0.1:5555`). `tests/conftest.py`의 세션 픽스처가 가능한 경우 자동으로 시작하거나, 이미 포트에 리스너가 있으면 재사용합니다.
+- `tests/test_tc_func_login.py`: 인증 프로토콜(PASS/FAIL), 빈 입력 검사, 클라이언트 소스의 로그인 연동을 확인합니다.
+- `tests/test_tc_func_stream.py`: RTSP/HTTP 스트림에서 프레임을 읽는 통합 테스트입니다. OpenCV(`cv2`)가 필요합니다. 이 모듈은 클라이언트가 로그인되어 있어야 정상적으로 실행됩니다.
+- `tests/start_client_with_env.py`: (선택) 클라이언트 실행을 돕는 스크립트 — 픽스처에서 사용됩니다.
+- `tests/gui_login.py`: (선택) `pywinauto` 기반의 GUI 자동화 스크립트로 로그인 입력을 수행합니다. `test_tc_func_stream.py`의 로그인 보장에 사용됩니다.
+- `tests/mock_server.log`: 모의 서버의 런타임 로그(테스트에서 PASS 응답 관찰용). 이 파일은 런타임에 생성/갱신됩니다.
 
-### 3-2. UDS 주입기 설정 (테스트 스크립트 내장)
-`test_tc_nf_perf_02.py`가 RC522 데몬 포맷 NDJSON을 직접 생성해 `/tmp/rc522_events.sock`으로 전송합니다.
+> 참고: 이전에 있던 `tests/inspect_ui.py`는 더 이상 필요하지 않아 제거되었습니다.
 
-옵션(기본값 있음):
+## 요구사항
 
-```powershell
-$env:SFEPS_PERF_RFID_SOCKET_PATH="/tmp/rc522_events.sock"
-$env:SFEPS_PERF_RFID_TEXT="Invalid"
-$env:SFEPS_PERF_RFID_UID_SEED="2684354560"  # 0xA0000000
-$env:SFEPS_PERF_RFID_DEVICE_ID="1"
-$env:SFEPS_PERF_RFID_SEND_INTERVAL_SEC="0.05"
-$env:SFEPS_PERF_RFID_ACCEPT_TIMEOUT_SEC="10"
-```
+- Python 3
+- 가상환경 사용 권장
+- 필수 패키지 (스트림 테스트 수행 시): `pytest`, `opencv-python` (또는 OpenCV가 설치된 환경)
+- GUI 자동화를 사용하는 경우(클라이언트 실행 + 로그인 자동화): `pywinauto`, `psutil`
 
-주의: `uds` 모드는 Linux/Unix(AF_UNIX) 환경에서만 동작합니다.
-
-### 3-3. 선택 환경변수(기본값 있음)
-필요할 때만 설정하세요.
+예시 설치 (가상환경 활성화 후):
 
 ```powershell
-$env:SFEPS_PERF_ALERT_HOST="192.168.0.92"   # 미설정 시 FRAUD_SERVER_HOST 또는 192.168.0.92
-$env:SFEPS_PERF_ALERT_PORT="5557"           # 미설정 시 5557
-$env:SFEPS_PERF_TARGET_COUNT="20"
-$env:SFEPS_PERF_WINDOW_SEC="60"
-$env:SFEPS_PERF_ALLOWED_MISSING="0"
-$env:SFEPS_PERF_ALLOWED_DUPLICATE="0"
-$env:SFEPS_PERF_MESSAGE_PREFIX="FRAUD|"
+python -m venv .venv
+& .\.venv\Scripts\Activate.ps1
+pip install --upgrade pip
+pip install pytest opencv-python pywinauto psutil
 ```
 
-## 4) 실행 명령
+## 로컬 실행 가이드
+
+1) 기본(로그인) 테스트
 
 ```powershell
-c:/Users/2-08/Desktop/SFEPS/.venv/Scripts/python.exe -m pytest tests/test_tc_nf_perf_02.py -q
+# 가상환경 활성화 후
+python -m pytest -q tests/test_tc_func_login.py
 ```
 
-## 5) 결과 해석
-- `1 passed`: 성능 기준 충족
-- `1 skipped`: Windows 환경(UDS 미지원)
-- `1 failed`: 시간 초과 또는 알림 채널 수신 건수 부족, 누락/중복 허용치 초과
+`tests/conftest.py`는 세션 시작 시 `mock_auth_server` 픽스처로 가능한 경우 모의 서버를 띄우고, 클라이언트 실행 파일이 있으면( `client/build-mingw/appHanwhaVisionSFEPS.exe`) 이를 자동으로 시작합니다.
 
-## 6) 테스트 동작 방식
-- 테스트는 SFEPS 알림 채널(TCP, 기본 `192.168.0.92:5557`)에 클라이언트로 접속합니다.
-- 테스트 스크립트가 RC522 NDJSON(`device_id`, `id`, `text`, `timestamp`)를 직접 전송합니다.
-- 수신 메시지 중 `FRAUD|`(기본 prefix)로 시작하는 라인을 집계해 성능 기준을 검증합니다.
+2) 스트림 테스트
 
-## 7) 빠른 점검 팁
-- 현재 셸에서 환경변수 확인:
+- 사전조건: 테스트 머신에서 대상 RTSP/HTTP 스트림에 접근 가능해야 합니다.
+- 스트림 테스트는 OpenCV가 필요합니다.
 
 ```powershell
-Get-ChildItem Env:SFEPS_PERF_*
+python -m pytest -q tests/test_tc_func_stream.py -r a
 ```
 
-- 환경변수 초기화(현재 셸만):
+스트림 테스트는 `tests/test_tc_func_stream.py` 내의 기본값(`rtsp://192.168.0.22:8554/cam1`)을 사용합니다. 필요하면 파일을 편집하거나 환경변수로 대체하도록 테스트를 수정하세요.
+
+3) GUI 자동화 및 로그 확인
+
+- 로그인 자동화가 필요하면 `tests/gui_login.py`가 실행되며, 정상 로그인 시 `tests/mock_server.log`에 `sent: PASS` 항목이 기록됩니다. 로그인 실패 시 로그에 `FAIL`이 남습니다.
 
 ```powershell
-Remove-Item Env:SFEPS_PERF_ALERT_HOST, Env:SFEPS_PERF_ALERT_PORT -ErrorAction SilentlyContinue
+# 모의 서버 로그 확인 (실행 중)
+Get-Content .\tests\mock_server.log -Wait
 ```
 
-## 8) Jenkins(VM)에서 실행
-- 저장소 루트의 `Jenkinsfile`이 `tests/test_tc_nf_perf_02.py`를 실행하도록 구성되어 있습니다.
-- Jenkins Job이 GitHub 저장소를 빌드하도록 연결되어 있으면, 별도 스크립트 없이 `Build Now`로 실행됩니다.
+## 문제 해결 노트
 
-### Jenkins 실행 전제(중요)
-- Jenkins 에이전트는 **Linux/Unix**여야 합니다(UDS `/tmp/rc522_events.sock` 사용).
-- 같은 VM/호스트에서 SFEPS 서버가 실행 중이어야 합니다.
-  - 서버의 Alert 리스너(TCP 5557 기본) 동작 필요
-  - 서버의 RFID 모니터가 `/tmp/rc522_events.sock`로 접속 시도 중이어야 함
+- 포트 충돌: `mock_auth_server`는 기본적으로 `127.0.0.1:5555`를 사용합니다. 다른 프로세스가 이미 포트를 점유하면 `tests/conftest.py`가 기존 리스너를 재사용하도록 설계되어 있습니다. 수동으로 포트를 해제하려면:
 
-### Jenkins 파라미터(필요 시)
-- `SFEPS_PERF_ALERT_HOST` (기본 `127.0.0.1`)
-- `SFEPS_PERF_ALERT_PORT` (기본 `5557`)
-- `SFEPS_PERF_TARGET_COUNT` (기본 `20`)
-- `SFEPS_PERF_WINDOW_SEC` (기본 `60`)
-- `SFEPS_PERF_RFID_SOCKET_PATH` (기본 `/tmp/rc522_events.sock`)
+```powershell
+# 점유 프로세스 확인
+netstat -ano | findstr ":5555"
+# 프로세스 종료
+taskkill /PID <PID> /F
+```
 
-### 결과 확인
-- Jenkins Test Result: `reports/pytest_tc_nf_perf_02.xml`
-- 콘솔 로그에서 `passed/failed/skipped` 확인
+- 스트림 접근 실패: OpenCV가 스트림을 열지 못하면 네트워크/방화벽 또는 카메라 접근성 문제일 가능성이 큽니다. 로컬에서 VLC/ffmpeg로 먼저 확인해 보세요.
+
+## 기타
+- CI에 통합할 때는 `tests/conftest.py`의 자동 시작 동작(모의 서버/클라이언트 시작)을 고려해 실행 노드의 환경을 맞춰 주세요.
+
+문의 사항이나 수정 요청이 있으면 알려주세요.

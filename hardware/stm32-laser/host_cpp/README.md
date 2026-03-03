@@ -84,6 +84,8 @@ ninja -C hardware/stm32-laser/host_cpp/build-ninja
 ### RTSP 레이저 검출 데모 (`rtsp_laser_demo`)
 
 카메라를 **RTSP 스트림**으로 받아서 `VisionDetector` 로 레이저를 찾는 간단한 데모 실행 파일.
+**타겟 ROI**: 마우스 클릭 후 드래그하면 고정 크기(120×120) 바운딩 박스가 마우스를 따라가며,
+향후 사람 검출로 전환 시 `ITargetProvider` 구현체만 교체하면 된다. (설계: `docs/TARGET_ROI_DESIGN.md`)
 
 #### 1. 빌드
 
@@ -114,6 +116,7 @@ cmake --build . -j
 동작:
 
 - OpenCV `cv::VideoCapture` 로 RTSP 스트림을 열고,
+- **마우스 클릭 후 드래그**로 타겟 바운딩 박스(120×120)를 지정. 박스 중심이 마우스를 따라감.
 - 각 프레임마다 `VisionDetector::detectLaser(frame)` 을 호출해서 레이저 스폿을 찾는다.
 - 레이저를 찾으면:
   - 콘솔에 좌표 로그 출력:
@@ -124,6 +127,12 @@ cmake --build . -j
 
   - 영상 위에 빨간 점으로 시각화 후 `imshow("rtsp_laser_demo", frame)` 윈도우에 표시.
 - `ESC` 또는 `q` 키를 누르면 종료.
+
+#### 타겟 ROI 설계 (`docs/TARGET_ROI_DESIGN.md`)
+
+- `ITargetProvider` 인터페이스로 타겟 ROI 제공.
+- 현재: `MouseDragTargetProvider` (마우스 드래그).
+- 향후: `PersonDetectorTargetProvider` (YOLO 등)로 교체 시 Provider만 교체하면 됨.
 
 ### GStreamer 파이프라인 사용 가이드
 
