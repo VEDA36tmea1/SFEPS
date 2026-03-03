@@ -19,6 +19,9 @@
         <file>src/views/SettingsView.qml</file>
         <file>src/views/qmldir</file>
 
+        <!-- Auth TLS fallback CA (replace with your real CA if not using AUTH_TLS_CA_FILE) -->
+        <file>certs/auth_ca.pem</file>
+
         <!-- Assets -->
         <file>assets/Alarm.png</file>
         <file>assets/Alert circle.svg</file>

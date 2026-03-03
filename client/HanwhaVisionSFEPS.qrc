@@ -60,5 +60,6 @@
         <file>src/views/LoginView.qml</file>
         <file>src/views/MonitoringView.qml</file>
         <file>src/views/SettingsView.qml</file>
+        <file>certs/auth_ca.pem</file>
     </qresource>
 </RCC>

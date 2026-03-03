@@ -37,6 +37,11 @@
 
 환경변수로 런타임 네트워크 대상을 변경할 수도 있습니다.
 *   `AUTH_SERVER_HOST`: 로그인 인증 서버 호스트(기본값 `192.168.0.92`)
+*   `AUTH_TLS_ENABLE`: 로그인 채널 TLS 사용 여부(기본값 `1`)
+*   `AUTH_TLS_PORT`: 로그인 TLS 포트(기본값 `6555`)
+*   `AUTH_PLAINTEXT_PORT`: 로그인 평문 포트(기본값 `5555`)
+*   `AUTH_ALLOW_PLAINTEXT_FALLBACK`: TLS 실패 시 평문 1회 재시도 허용(기본값 `0`)
+*   `AUTH_TLS_CA_FILE`: 서버 인증서 검증용 CA PEM 파일 경로(예: `.../client/certs/auth_ca.pem`)
 *   `RTSP_STREAM_URL`: 모니터링 RTSP 스트림 URL(기본값 `rtsp://192.168.0.92:8554/cam1`)
 
 스트리밍 장애가 발생하면 Monitoring 화면에서 `CONNECTING/RECONNECTING/STREAM OFFLINE` 상태가 표시되며,
@@ -78,6 +83,19 @@ git clone --branch OpenCV-4.5.5-x64 --depth 1 https://github.com/huihut/OpenCV-M
 ```powershell
 .\appHanwhaVisionSFEPS.exe
     ```
+
+### 4. TLS 로그인용 CA 설정 (중요)
+서버의 CA **인증서**(`ca.crt`)를 클라이언트 `certs/auth_ca.pem`으로 배포해야 TLS 검증이 성공합니다.
+
+*   복사 대상: `ca.crt` (공개 인증서)
+*   금지 대상: `ca.key` (개인키, 절대 클라이언트 배포 금지)
+
+Linux/WSL에서 실행할 때는 아래 스크립트로 환경변수를 자동 설정할 수 있습니다:
+
+```bash
+cd client
+./run_client_tls.sh ./build/appHanwhaVisionSFEPS
+```
 
 ---
 
