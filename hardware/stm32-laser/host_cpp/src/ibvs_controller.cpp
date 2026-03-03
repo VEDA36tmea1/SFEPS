@@ -9,8 +9,10 @@ IbvsController::IbvsController(int pwm_min_us, int pwm_max_us, int neutral_us,
       neutral_(neutral_us),
       Ku_(Ku),
       Kv_(Kv),
-      current_pan_us_(neutral_us),
-      current_tilt_us_(neutral_us)
+      // STM32 초기 PWM(Servo_Init)과 맞추기 위해 PAN/TILT 시작값을 하드코딩
+      // PA8(TIM1_CH1) ≈ 1250us, PA0(TIM2_CH1) ≈ 1430us
+      current_pan_us_(1430.0),
+      current_tilt_us_(1250.0)
 {
 }
 

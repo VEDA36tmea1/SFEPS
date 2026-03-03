@@ -13,9 +13,9 @@ static uint32_t clamp_us(uint32_t us)
 
 void Servo_Init(void)
 {
-  /* 기본 위치 1500us로 설정 후 PWM 시작 */
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 1500);
-  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 1500);
+  /* 기본 위치: PA8=1250us, PA0=1430us 로 설정 후 PWM 시작 */
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 1250);
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 1430);
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
   __HAL_TIM_MOE_ENABLE(&htim1);  /* TIM1(PA8) 실제 출력 위해 필수 */

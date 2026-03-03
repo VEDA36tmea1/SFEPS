@@ -116,10 +116,10 @@ cmake --build . -j
 동작:
 
 - OpenCV `cv::VideoCapture` 로 RTSP 스트림을 열고,
-- **마우스 클릭 후 드래그**로 타겟 바운딩 박스(120×120)를 지정. 박스 중심이 마우스를 따라감.
+- **마우스 클릭 후 드래그**로 타겟 바운딩 박스를 지정(가변 크기). 박스 안을 드래그하면 박스가 이동.
 - 각 프레임마다 `VisionDetector::detectLaser(frame)` 을 호출해서 레이저 스폿을 찾는다.
 - 레이저를 찾으면:
-  - 콘솔에 좌표 로그 출력:
+  - `stderr` 로 좌표 로그 출력:
 
     ```text
     [rtsp_laser_demo] frame 123 laser=(x, y)
@@ -127,6 +127,45 @@ cmake --build . -j
 
   - 영상 위에 빨간 점으로 시각화 후 `imshow("rtsp_laser_demo", frame)` 윈도우에 표시.
 - `ESC` 또는 `q` 키를 누르면 종료.
+
+#### 3. 파이프라인 기반 레이저 트래킹 (`rtsp_laser_demo | ubuntu_tcp_server`)
+
+`rtsp_laser_demo` 에 **IBVS P 제어기(`IbvsController`)** 를 붙여,
+타겟 박스 중심과 레이저 위치 사이 픽셀 오차를 기반으로 **PWM(us)** 를 계산하고,
+표준 출력(`stdout`)으로 `PAN_US TILT_US` 형식의 한 줄(`"1500 1400\n"`)을 출력하도록 구성했다.
+
+이를 `tmp_server/ubuntu_server/ubuntu_tcp_server` 와 파이프로 연결하면:
+
+```bash
+# 터미널 1: STM32 + ESP + Wi-Fi AP(10.42.0.1 등) 준비
+# 터미널 2: Ubuntu TCP 서버 실행
+cd hardware/stm32-laser/tmp_server/ubuntu_server
+make ubuntu_tcp_server
+./ubuntu_tcp_server          # stdin 에서 "us_x us_y" 를 읽어 ESP로 전송
+
+# 터미널 3: 카메라 RTSP → 레이저 트래킹 → PWM(us) 생성 → 파이프로 서버에 전달
+cd hardware/stm32-laser/host_cpp/build
+./rtsp_laser_demo | ../../tmp_server/ubuntu_server/ubuntu_tcp_server
+```
+
+파이프라인 전체 흐름:
+
+```text
+카메라/마우스           rtsp_laser_demo(stdout)         ubuntu_tcp_server(stdin)    ESP/TCP          STM32(UART1)        Servo
+--------------    -------------------------------    -----------------------------   ------------   -------------------   ---------------
+RTSP 프레임 ───▶  타겟ROI(center), 레이저검출 ───▶  "PAN_US TILT_US\n" ───────▶   "1500 1400"  ─▶  "+IPD,...1500 1400" ─▶  Servo_SetAllUs
+```
+
+- `rtsp_laser_demo`:
+  - 마우스로 만든 박스 중심(`TargetROI.center()`)과 레이저 위치 사이 픽셀 오차를 계산.
+  - `IbvsController(800, 2200, 1500, 0.5, 0.5)` 로 **단순 P 제어** 수행  
+    (현재 구현은 **P 제어만 있으며, I/D 항은 없음**).
+  - 결과 PWM(us)을 `stdout` 으로 `"pan_us tilt_us\n"` 형식으로 출력 (로그는 `stderr`).
+- `ubuntu_tcp_server`:
+  - `stdin` 에서 한 줄씩 `"1500 1400"` 을 읽어 ESP/STM32로 그대로 전송.
+- STM32 (`main.c`):
+  - WiFi(USART1)에서 들어온 `"1500 1400"` 을 UART2 명령 파서와 동일 형식으로 처리하도록  
+    `wifi_line` 파서에 서보 명령 해석을 추가하면, `Servo_SetAllUs(pan_us, tilt_us)` 로 PA8/PA0 PWM 제어 가능.
 
 #### 타겟 ROI 설계 (`docs/TARGET_ROI_DESIGN.md`)
 
