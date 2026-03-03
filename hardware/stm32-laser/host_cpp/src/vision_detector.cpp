@@ -85,16 +85,28 @@ DetectionResult VisionDetector::detectLaser(const cv::Mat& frame)
                                    static_cast<float>(maxLoc.y));
         result.found = true;
 
-        // 포인트 영역의 색상(BGR, HSV) 터미널 출력
-        int px = static_cast<int>(result.point.x + 0.5f);
-        int py = static_cast<int>(result.point.y + 0.5f);
-        if (px >= 0 && px < frame.cols && py >= 0 && py < frame.rows)
+        // 포인트 영역의 색상(BGR, HSV) 디버그 출력 (stderr로만 보냄 – 파이프라인 stdout에는 영향 없음)
+        // 단, 레이저 위치가 충분히 변했을 때만 출력해서 로그 스팸을 줄인다.
+        static cv::Point2f prev_point(-1.f, -1.f);
+        const float thresh2 = 4.0f * 4.0f; // 4픽셀 이상 이동했을 때만 (거리^2 기준)
+
+        float dx = result.point.x - prev_point.x;
+        float dy = result.point.y - prev_point.y;
+        float dist2 = dx * dx + dy * dy;
+
+        if (prev_point.x < 0.f || prev_point.y < 0.f || dist2 > thresh2)
         {
-            cv::Vec3b bgr = frame.at<cv::Vec3b>(py, px);
-            cv::Vec3b hsv_val = hsv.at<cv::Vec3b>(py, px);
-            std::cout << "[laser point] x=" << result.point.x << " y=" << result.point.y
-                      << " BGR=(" << (int)bgr[0] << "," << (int)bgr[1] << "," << (int)bgr[2] << ")"
-                      << " HSV=(" << (int)hsv_val[0] << "," << (int)hsv_val[1] << "," << (int)hsv_val[2] << ")\n";
+            int px = static_cast<int>(result.point.x + 0.5f);
+            int py = static_cast<int>(result.point.y + 0.5f);
+            if (px >= 0 && px < frame.cols && py >= 0 && py < frame.rows)
+            {
+                cv::Vec3b bgr = frame.at<cv::Vec3b>(py, px);
+                cv::Vec3b hsv_val = hsv.at<cv::Vec3b>(py, px);
+                std::cerr << "[laser point] x=" << result.point.x << " y=" << result.point.y
+                          << " BGR=(" << (int)bgr[0] << "," << (int)bgr[1] << "," << (int)bgr[2] << ")"
+                          << " HSV=(" << (int)hsv_val[0] << "," << (int)hsv_val[1] << "," << (int)hsv_val[2] << ")\n";
+            }
+            prev_point = result.point;
         }
     }
 
