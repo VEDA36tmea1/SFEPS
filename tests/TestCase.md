@@ -34,7 +34,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   - 메인 화면으로 전환(또는 메인 UI 로딩 완료)
 
 ### TC-FUNC-LOGIN-02 존재하지 않는 ID 입력 시 로그인 실패 및 오류 메시지 표시
-- **Level/Type/Priority**: System / Functional / High
+- **Level/Type/Priority**: System / Functional / Medium
 - **Execution**: Manual
 - **Pre-condition**: Server 접속 가능
 - **Input Data**: ID=`no_user_999`, PW=`1111`
@@ -44,7 +44,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   - 오류 메시지 표시(문구는 구현 정책, “존재하지 않는 계정/로그인 정보 오류” 등)
 
 ### TC-FUNC-LOGIN-03 잘못된 PW 입력 시 로그인 실패 및 오류 메시지 표시
-- **Level/Type/Priority**: System / Functional / High
+- **Level/Type/Priority**: System / Functional / Medium
 - **Execution**: Manual
 - **Pre-condition**: `admin` 계정 존재
 - **Input Data**: ID=`admin`, PW=`WrongPW!`
@@ -54,7 +54,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   - 오류 메시지 표시
 
 ### TC-FUNC-LOGIN-04 ID 또는 PW 공백(미입력 포함) 시 로그인 실패 및 안내
-- **Level/Type/Priority**: System / Functional / High
+- **Level/Type/Priority**: System / Functional / Medium
 - **Execution**: Manual
 - **Pre-condition**: 로그인 화면
 - **Input Data(서브케이스)**
@@ -68,24 +68,12 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   - 필수 입력 안내 메시지 표시
   - (가능하면) 서버 요청 미발생 또는 즉시 실패 처리
 
-### TC-FUNC-LOGIN-05 로그인 성공 후 메인 화면 전환 확인
-- **Level/Type/Priority**: System / Functional / Medium
-- **Execution**: Manual
-- **Pre-condition**: 유효 계정 존재
-- **Input Data**: ID=`admin`, PW=`1111`
-- **Steps**
-  1. TC-FUNC-LOGIN-01 수행
-  2. 메인 화면 주요 UI(스트리밍 패널/이벤트 영역 등) 표시 확인
-- **Expected Result**
-  - 메인 화면 정상 표시
-  - 사용자 조작 가능 상태
-
 ---
 
 ## 2) Functional Test Cases — STREAM
 
 ### TC-FUNC-STREAM-01 Server를 통해 Camera 영상 스트림 수신 및 화면 표시
-- **Level/Type/Priority**: Integration/System / Functional / High
+- **Level/Type/Priority**: Integration / Functional / High
 - **Execution**: Manual
 - **Pre-condition**
   - Camera(PNO-A9081R) 전원 ON 및 네트워크 연결
@@ -101,7 +89,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   - 프레임이 지속적으로 갱신
 
 ### TC-FUNC-STREAM-02 네트워크 단절/지연 등으로 스트리밍 불가 시 오류 상태 표시
-- **Level/Type/Priority**: Integration/System / Functional / High
+- **Level/Type/Priority**: Integration / Functional / Medium
 - **Execution**: Manual
 - **Pre-condition**: 스트리밍이 정상 표시 중(TC-FUNC-STREAM-01 통과 상태)
 - **Input Data**: 네트워크 단절(스위치/케이블/방화벽 룰) 또는 지연/차단 시뮬레이션
@@ -113,7 +101,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   - 오류/경고 상태가 UI에 표시
 
 ### TC-FUNC-STREAM-03 네트워크 복구 후 스트리밍 자동 재연결/복구 확인
-- **Level/Type/Priority**: Integration/System / Functional / High
+- **Level/Type/Priority**: Integration / Functional / Medium
 - **Execution**: Manual
 - **Pre-condition**: TC-FUNC-STREAM-02로 스트리밍 장애 상태
 - **Input Data**: 네트워크 복구
@@ -129,7 +117,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 ## 3) Functional Test Cases — RFID
 
 ### TC-FUNC-RFID-01 RFID 태그 데이터가 Raspberry Pi(Server)로 정상 수집됨
-- **Level/Type/Priority**: Integration / Functional / High
+- **Level/Type/Priority**: Integration / Functional / Medium
 - **Execution**: Manual
 - **Pre-condition**
   - RFID 리더/장치가 Raspberry Pi에 연결되어 동작
@@ -157,7 +145,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ## 4) Functional Test Cases — EVENT(의심 판정/이벤트 생성)
 ### TC-FUNC-EVENT-01 개찰구 2개 가상선 통과 시각이 정상 기록됨
-- **Level/Type/Priority**: Integration(또는 Unit 가능) / Functional / High
+- **Level/Type/Priority**: Integration / Functional / High
 - **Execution**: Manual
 - **Pre-condition**
   - 가상선 통과 이벤트를 생성할 수 있는 환경
@@ -171,7 +159,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   - t1, t2가 정상 저장/참조 가능
 
 ### TC-FUNC-EVENT-02 두 타임스탬프 사이 RFID 태그가 없으면 의심 판정됨
-- **Level/Type/Priority**: Unit/Integration / Functional / High
+- **Level/Type/Priority**: Unit / Functional / High
 - **Execution**: Auto
 - **Pre-condition**
   - t1, t2 생성 가능
@@ -187,7 +175,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   - 의심 이벤트 생성 조건 충족
 
 ### TC-FUNC-EVENT-03 청소년 우대카드 + age<20 → 정상 판정
-- **Level/Type/Priority**: Unit/Integration / Functional / High
+- **Level/Type/Priority**: Unit / Functional / Medium
 - **Execution**: Auto
 - **Pre-condition**: 우대카드(청소년) 태그 데이터 주입 가능, Mock age 주입 가능
 - **Input Data**
@@ -202,7 +190,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   - 의심 이벤트 미생성
 
 ### TC-FUNC-EVENT-04 청소년 우대카드 + age≥20 → 의심 판정
-- **Level/Type/Priority**: Unit/Integration / Functional / High
+- **Level/Type/Priority**: Unit / Functional / Medium
 - **Execution**: Auto
 - **Input Data**: CardType=청소년, age=20
 - **Steps**: TC-FUNC-EVENT-03과 동일 흐름
@@ -211,7 +199,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   - 의심 이벤트 생성 조건 충족
 
 ### TC-FUNC-EVENT-05 노인 우대카드 + age>60 → 정상 판정
-- **Level/Type/Priority**: Unit/Integration / Functional / High
+- **Level/Type/Priority**: Unit / Functional / Medium
 - **Execution**: Auto
 - **Input Data**: CardType=노인, age=61
 - **Expected Result**
@@ -219,7 +207,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   - 의심 이벤트 미생성
 
 ### TC-FUNC-EVENT-06 노인 우대카드 + age≤60 → 의심 판정
-- **Level/Type/Priority**: Unit/Integration / Functional / High
+- **Level/Type/Priority**: Unit / Functional / Medium
 - **Execution**: Auto
 - **Input Data**: CardType=노인, age=60
 - **Expected Result**
@@ -227,7 +215,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   - 의심 이벤트 생성 조건 충족
 
 ### TC-FUNC-EVENT-07 청소년 우대카드 경계값(19/20) 판정 일관성 검증
-- **Level/Type/Priority**: Unit/Integration / Functional / Medium
+- **Level/Type/Priority**: Unit / Functional / Medium
 - **Execution**: Auto
 - **Input Data(서브케이스)**
   - A: CardType=청소년, age=19 → 정상
@@ -239,7 +227,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   - 경계값에서 규칙대로 일관된 판정
 
 ### TC-FUNC-EVENT-08 노인 우대카드 경계값(60/61) 판정 일관성 검증
-- **Level/Type/Priority**: Unit/Integration / Functional / Medium
+- **Level/Type/Priority**: Unit / Functional / Medium
 - **Execution**: Auto
 - **Input Data(서브케이스)**
   - A: CardType=노인, age=60 → 의심
@@ -248,7 +236,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   - 경계값에서 규칙대로 일관된 판정
 
 ### TC-FUNC-EVENT-09 의심 판정 시 의심 이벤트 로그가 생성됨
-- **Level/Type/Priority**: Unit/Integration / Functional / High
+- **Level/Type/Priority**: Unit / Functional / High
 - **Execution**: Auto
 - **Pre-condition**: 의심 판정 유도 가능(TC-FUNC-EVENT-02/04/06 중 하나)
 - **Input Data**: 의심 판정 케이스 1개
@@ -272,7 +260,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   - 이벤트 목록에 신규 이벤트가 표시됨(이벤트 ID/시간 등)
 
 ### TC-FUNC-EVENT-11 의심 이벤트가 DB에 저장됨(필수 필드 포함)
-- **Level/Type/Priority**: Integration / Functional / High
+- **Level/Type/Priority**: Integration / Functional / Medium
 - **Execution**: Auto
 - **Pre-condition**: DB 연결 정상
 - **Input Data**: 의심 이벤트 1건
@@ -285,7 +273,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   - 필수 필드 누락 없음
 
 ### TC-FUNC-EVENT-12 정상 판정 시 의심 이벤트가 생성되지 않음
-- **Level/Type/Priority**: Unit/Integration / Functional / High
+- **Level/Type/Priority**: Unit / Functional / High
 - **Execution**: Auto
 - **Input Data**: 정상 판정 케이스(예: 청소년 age=19 또는 노인 age=61)
 - **Steps**
@@ -440,7 +428,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   - 누락/중복이 허용 범위를 벗어나지 않음(정량 기준은 팀 정책에 따름)
 
 ### TC-NF-PERF-03 1시간 연속 스트리밍 유지(중단 시 자동 복구 포함 가능)
-- **Level/Type/Priority**: System / Non-Functional(Performance) / High
+- **Level/Type/Priority**: System / Non-Functional(Performance) / Low
 - **Execution**: Manual
 - **Pre-condition**: 스트리밍 정상 상태
 - **Steps**
@@ -478,7 +466,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 ## 9) Non-Functional Test Cases — Recoverability
 
 ### TC-NF-REC-01 네트워크 단절 후 복구 시 시스템 정상 동작 상태로 복귀
-- **Level/Type/Priority**: Integration/System / Non-Functional(Recoverability) / High
+- **Level/Type/Priority**: Integration/System / Non-Functional(Recoverability) / Low
 - **Execution**: Manual
 - **Pre-condition**
   - QT Client와 Server 정상 연결
