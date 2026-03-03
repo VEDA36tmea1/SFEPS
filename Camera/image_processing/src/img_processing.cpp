@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <opencv2/core/utility.hpp>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/dnn.hpp>
 
 // 1. AGC
 void applyShadowBoost(const cv::Mat& src, cv::Mat& dst, double gamma_val, double alpha_val) {
@@ -166,8 +167,38 @@ void applySharpen(const cv::Mat& src, cv::Mat& dst, float strength) {
     }
 }
 
+double getPersonConfidence(const cv::Mat& frame, cv::dnn::Net& net) {
+    if (net.empty()) return 0.0;
+    
+    // YOLO는 416x416 해상도, RGB 변환(true), 1/255.0 정규화를 사용합니다.
+    cv::Mat blob = cv::dnn::blobFromImage(frame, 1/255.0, cv::Size(416, 416), cv::Scalar(0,0,0), true, false);
+    net.setInput(blob);
+    
+    std::vector<cv::String> outNames = net.getUnconnectedOutLayersNames();
+    std::vector<cv::Mat> outs;
+    net.forward(outs, outNames);
+
+    double max_person_conf = 0.0;
+    
+    for (size_t i = 0; i < outs.size(); ++i) {
+        float* data = (float*)outs[i].data;
+        for (int j = 0; j < outs[i].rows; ++j, data += outs[i].cols) {
+            cv::Mat scores = outs[i].row(j).colRange(5, outs[i].cols);
+            cv::Point classIdPoint;
+            double confidence;
+            cv::minMaxLoc(scores, 0, &confidence, 0, &classIdPoint);
+            
+            // COCO 데이터셋 기준, 0번 클래스가 '사람(Person)' 입니다.
+            if (classIdPoint.x == 0 && confidence > max_person_conf) {
+                max_person_conf = confidence;
+            }
+        }
+    }
+    return max_person_conf;
+}
+
 // 5. 8분할 이미지 생성
-void createTuningView(const cv::Mat& raw_frame_in, cv::Mat& tuning_view) {
+void createTuningView(const cv::Mat& raw_frame_in, cv::Mat& tuning_view, cv::dnn::Net& net) {
     if (raw_frame_in.empty()) return;
 
     // 해상도 정규화
@@ -229,14 +260,17 @@ void createTuningView(const cv::Mat& raw_frame_in, cv::Mat& tuning_view) {
             cv::Mat q_resized;
             cv::resize(results[q_idx].clone(), q_resized, cv::Size(q_cols, q_rows));
 
-            // 검정색 안티앨리어싱 텍스트 출력
-            cv::putText(q_resized, titles[q_idx], cv::Point(20, 35), 
-                        cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0,0,0), 2, cv::LINE_AA);
+            double conf = getPersonConfidence(results[q_idx], net);
+            std::string conf_text = cv::format("AI Confidence: %.1f%%", conf * 100.0);
+
+            // 노란색으로 제목 출력 (잘 보이게 색상 변경)
+            cv::putText(q_resized, titles[q_idx], cv::Point(15, 35), 
+                        cv::FONT_HERSHEY_SIMPLEX, 0.9, cv::Scalar(0, 255, 255), 2, cv::LINE_AA);
                         
-            if (!subtitles[q_idx].empty()) {
-                cv::putText(q_resized, subtitles[q_idx], cv::Point(20, 75), 
-                            cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0,0,0), 2, cv::LINE_AA);
-            }
+            // AI 신뢰도를 초록색(50% 이상) 또는 빨간색(미만)으로 출력
+            cv::Scalar color = (conf > 0.5) ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
+            cv::putText(q_resized, conf_text, cv::Point(15, 75), 
+                        cv::FONT_HERSHEY_SIMPLEX, 0.8, color, 2, cv::LINE_AA);
 
             q_resized.copyTo(tuning_view(cv::Rect(c * q_cols, r * q_rows, q_cols, q_rows)));
             q_idx++;

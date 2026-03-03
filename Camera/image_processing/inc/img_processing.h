@@ -2,6 +2,7 @@
 #define IMG_PROCESSING_H
 
 #include <opencv2/opencv.hpp>
+#include <opencv2/dnn.hpp>
 #include <vector>
 
 // 1. AGC
@@ -17,6 +18,8 @@ void applyCLAHE(const cv::Mat& src, cv::Mat& dst, double clip=1.5, cv::Size grid
 void applySharpen(const cv::Mat& src, cv::Mat& dst, float strength=1.0);
 
 // 5. 8분할 이미지 생성 함수
-void createTuningView(const cv::Mat& raw_frame_in, cv::Mat& tuning_view);
+void createTuningView(const cv::Mat& raw_frame_in, cv::Mat& tuning_view, cv::dnn::Net& net);
+
+double getPersonConfidence(const cv::Mat& frame, cv::dnn::Net& net);
 
 #endif

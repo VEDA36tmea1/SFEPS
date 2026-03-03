@@ -6,7 +6,7 @@
 #include <atomic>
 #include "../inc/img_processing.h"
 
-#define LIVE_CAMERA_MODE 0
+#define LIVE_CAMERA_MODE 1
 
 #if LIVE_CAMERA_MODE
 std::mutex mtx_raw;
@@ -65,8 +65,10 @@ int main() {
     }
 
     cv::imwrite("1_raw_FHD.jpg", target_frame);
+    cv::dnn::Net net = cv::dnn::readNetFromDarknet("model/yolov4-tiny.cfg", "model/yolov4-tiny.weights");
+
     cv::Mat tuning_view; // 선언
-    createTuningView(target_frame, tuning_view);
+    createTuningView(target_frame, tuning_view, net);
     cv::imwrite("2_tuning_viewer.jpg", tuning_view);
     
     is_running = false;
@@ -74,15 +76,17 @@ int main() {
     cap.release();
 
 #else
-    cv::Mat target_frame = cv::imread("img/test_image1.jpg", cv::IMREAD_COLOR);
+cv::Mat target_frame = cv::imread("img/test_image3.jpg", cv::IMREAD_COLOR);
     if (target_frame.empty()) return -1;
 
     int64 start_time = cv::getTickCount();
 
-    cv::Mat tuning_view;
-    createTuningView(target_frame, tuning_view);
+    cv::dnn::Net net = cv::dnn::readNetFromDarknet("model/yolov4-tiny.cfg", "model/yolov4-tiny.weights");
 
-    cv::imwrite("3_saved_tuning_viewer.jpg", tuning_view);
+    cv::Mat tuning_view; 
+    createTuningView(target_frame, tuning_view, net);
+
+    cv::imwrite("3_saved_tuning_viewer_with_AI.jpg", tuning_view);
 #endif
 
     double total_time = (cv::getTickCount() - start_time) / cv::getTickFrequency();
