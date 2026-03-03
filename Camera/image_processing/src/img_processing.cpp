@@ -244,15 +244,27 @@ void createTuningView(const cv::Mat& raw_frame_in, cv::Mat& tuning_view, cv::dnn
     applyCLAHE(tmp8_dn, tmp8_cl, 1.5, cv::Size(8,8));      
     applySharpen(tmp8_cl, results[7], 1.5);   
 
+    cv::Mat gray_raw;
+    cv::cvtColor(raw_frame, gray_raw, cv::COLOR_BGR2GRAY);
+    cv::Scalar mean_val, stddev_val;
+    cv::meanStdDev(gray_raw, mean_val, stddev_val);
+    
+    std::string raw_info = cv::format("Mean(B): %.1f, Std(C): %.1f", mean_val[0], stddev_val[0]);
+
     std::vector<std::string> titles = {
         "1. RAW", "2. ONLY AGC", "3. ONLY CLAHE", "4. AGC + CLAHE", 
         "5. AGC + CLAHE", "6. AGC + CLAHE", "7. AGC + CLAHE", "8. Final"
     };
 
     std::vector<std::string> subtitles = {
-        "", "(G=2.2, A=1.2)", "(Clip=4.0)", "(G=1.2, A=1.1, C=1.5)", 
+        raw_info, 
+        "(G=2.2, A=1.2)", "(Clip=4.0)", "(G=1.2, A=1.1, C=1.5)", 
         "(G=1.5, A=1.2, C=2.0)", "(G=1.8, A=1.4, C=2.5)", "(G=2.5, A=1.8, C=4.0)", "(AGC->DN->CLAHE->SHRP)"
     };
+
+    std::cout << "\n==========================================" << std::endl;
+    std::cout << "평균 : " << mean_val[0] << ", 표준편차 : " << stddev_val[0] << std::endl;
+    std::cout << "신뢰도" << std::endl;
 
     int q_idx = 0;
     for (int r = 0; r < 2; r++) { 
@@ -261,19 +273,30 @@ void createTuningView(const cv::Mat& raw_frame_in, cv::Mat& tuning_view, cv::dnn
             cv::resize(results[q_idx].clone(), q_resized, cv::Size(q_cols, q_rows));
 
             double conf = getPersonConfidence(results[q_idx], net);
+            std::string cmd_title = titles[q_idx];
+
+            if (q_idx >= 3) { // 4번부터 8번까지 적용
+                cmd_title += " " + subtitles[q_idx];
+            }
+            std::cout << cmd_title << " : " << conf * 100.0 << "%" << std::endl;
+            
             std::string conf_text = cv::format("AI Confidence: %.1f%%", conf * 100.0);
 
-            // 노란색으로 제목 출력 (잘 보이게 색상 변경)
             cv::putText(q_resized, titles[q_idx], cv::Point(15, 35), 
-                        cv::FONT_HERSHEY_SIMPLEX, 0.9, cv::Scalar(0, 255, 255), 2, cv::LINE_AA);
+                        cv::FONT_HERSHEY_SIMPLEX, 0.9, cv::Scalar(0, 0, 0), 2, cv::LINE_AA);
                         
-            // AI 신뢰도를 초록색(50% 이상) 또는 빨간색(미만)으로 출력
+            if (!subtitles[q_idx].empty()) {
+                cv::putText(q_resized, subtitles[q_idx], cv::Point(15, 70), 
+                            cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 0, 0), 2, cv::LINE_AA);
+            }
+
             cv::Scalar color = (conf > 0.5) ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
-            cv::putText(q_resized, conf_text, cv::Point(15, 75), 
+            cv::putText(q_resized, conf_text, cv::Point(15, 105), 
                         cv::FONT_HERSHEY_SIMPLEX, 0.8, color, 2, cv::LINE_AA);
 
             q_resized.copyTo(tuning_view(cv::Rect(c * q_cols, r * q_rows, q_cols, q_rows)));
             q_idx++;
         }
     }
+    std::cout << "==========================================\n" << std::endl;
 }

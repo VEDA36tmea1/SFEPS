@@ -6,7 +6,7 @@
 #include <atomic>
 #include "../inc/img_processing.h"
 
-#define LIVE_CAMERA_MODE 1
+#define LIVE_CAMERA_MODE 0
 
 #if LIVE_CAMERA_MODE
 std::mutex mtx_raw;
@@ -76,7 +76,7 @@ int main() {
     cap.release();
 
 #else
-cv::Mat target_frame = cv::imread("img/test_image3.jpg", cv::IMREAD_COLOR);
+cv::Mat target_frame = cv::imread("img/test_image1.jpg", cv::IMREAD_COLOR);
     if (target_frame.empty()) return -1;
 
     int64 start_time = cv::getTickCount();

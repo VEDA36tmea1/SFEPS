@@ -13,7 +13,7 @@ extern "C" {
 }
 
 // 설정 상수
-static const char* VIDEO_SAVE_DIR = "/home/iam/finalProject/SFEPS/videos";
+static const char* VIDEO_SAVE_DIR = "/home/iam/SFEPS/videos";
 static const char* RTSP_URL = "rtsps://192.168.0.92:8332/cam1";
 static const int SEGMENT_DURATION = 60; // 60초
 
