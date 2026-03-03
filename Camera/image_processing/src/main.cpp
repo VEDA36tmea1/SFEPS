@@ -76,7 +76,7 @@ int main() {
     cap.release();
 
 #else
-cv::Mat target_frame = cv::imread("img/test_image1.jpg", cv::IMREAD_COLOR);
+cv::Mat target_frame = cv::imread("img/test_image2.jpg", cv::IMREAD_COLOR);
     if (target_frame.empty()) return -1;
 
     int64 start_time = cv::getTickCount();
