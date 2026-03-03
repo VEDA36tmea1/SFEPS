@@ -62,7 +62,7 @@ DetectionResult VisionDetector::detectLaser(const cv::Mat& frame)
     cv::inRange(hsv, cv::Scalar(160, 50, 100), cv::Scalar(180, 255, 255), mask2);
     cv::bitwise_or(mask1, mask2, mask);
 
-    cv::imshow("org_mask", mask);
+    //cv::imshow("org_mask", mask);
 
     // 3) 노이즈 제거 (블러 + 모폴로지)
     cv::GaussianBlur(mask, mask, cv::Size(5, 5), 0);
@@ -72,8 +72,8 @@ DetectionResult VisionDetector::detectLaser(const cv::Mat& frame)
 
     // 4) 디버그용: 빨간색 마스크 영상 직접 보기
     //    - 밝은 영역이 레이저로 마스킹된 부분
-    cv::imshow("laser_mask", mask);
-    cv::waitKey(1);
+    //cv::imshow("laser_mask", mask);
+    //cv::waitKey(1);
 
     // 5) (임시 구현) 마스크에서 가장 밝은 픽셀을 레이저 중심으로 사용
     double minVal = 0.0, maxVal = 0.0;

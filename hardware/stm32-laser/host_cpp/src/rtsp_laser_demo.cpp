@@ -10,7 +10,7 @@
 
 int main(int argc, char** argv)
 {
-    std::string uri = "rtsp://admin:CCgbdCCgbd@192.168.0.21/profile2/media.smp";
+    std::string uri = "rtsp://admin:CCgbdCCgbd@192.168.0.22/profile2/media.smp";
     if (argc > 1)
         uri = argv[1];
 
@@ -25,15 +25,18 @@ int main(int argc, char** argv)
 
     VisionDetector detector;
 
-    // 타겟 ROI 제공: 마우스 드래그로 지정. 향후 PersonDetectorTargetProvider로 교체 가능.
-    auto mouseProvider = std::make_unique<MouseDragTargetProvider>(120, 120);
     cv::namedWindow("rtsp_laser_demo");
-    mouseProvider->attachToWindow("rtsp_laser_demo");
-    std::unique_ptr<ITargetProvider> targetProvider = std::move(mouseProvider);
+    // 타겟 ROI 제공: 마우스로 박스 생성/이동. 향후 PersonDetectorTargetProvider로 교체 가능.
+    std::unique_ptr<ITargetProvider> targetProvider =
+        std::make_unique<InteractiveBoxTargetProvider>(10, 10);
+    if (auto* wa = dynamic_cast<IWindowAttachable*>(targetProvider.get()))
+    {
+        wa->attachToWindow("rtsp_laser_demo");
+    }
 
     cv::Mat frame;
     int frame_id = 0;
-    std::cout << "[rtsp_laser_demo] 마우스 클릭 후 드래그하면 타겟 바운딩 박스가 따라갑니다.\n";
+    std::cout << "[rtsp_laser_demo] 빈 곳 드래그: 박스 생성(가변 크기), 박스 안 드래그: 박스 이동\n";
 
     while (true)
     {
