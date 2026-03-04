@@ -11,7 +11,8 @@
     \]
 - 장점:
   - 구현이 단순하고 직관적이다.
-  - 초기 bring-up(방향 확인, 배선/매핑 검증) 단계에서는 충분하다.
+  - 초기 bring-up(방향 확인, 배선/매핑 검증) 단계에서는 충분하다
+  .
 
 하지만 **실제 객체(레이저 점)를 바운딩 박스 중심으로 맞추는 “트래킹”** 관점에서 보면,
 P 제어만으로는 다음과 같은 한계가 드러난다.
@@ -114,3 +115,234 @@ P 제어만으로는 다음과 같은 한계가 드러난다.
   - PID 튜닝을 쉽게 하기 위해 dev 노트에 \(K_p, K_i, K_d\) 실험 로그를 계속 기록
 
 현재는 **P 제어만으로 기본 추종이 되는 상태**까지 확인한 단계이고,  
+
+---
+
+## 2026-03-04 – PID 제어를 STM32로 옮기고, PC에서는 오차만 보내도록 구조 변경
+
+### 1. 아키텍처 변경 개요
+
+- **이전 구조**
+  - PC(`rtsp_laser_demo`)에서:
+    - 바운딩 박스 중심과 레이저 포인트 차이 \((e_u, e_v)\)를 계산.
+    - `IbvsController` 로 P 제어 수행 후, **서보 PWM(us)을 직접 계산**.
+    - stdout 으로 `"PAN_US TILT_US\n"` (예: `1500 1400`) 을 매 프레임(또는 N프레임마다) 출력.
+  - Ubuntu TCP 서버(`ubuntu_tcp_server`)에서:
+    - `"1500 1400"` 을 읽어 `CX=...,CY=...` 포맷으로 ESP/STM32에 전달.
+  - STM32(`main.c`)에서:
+    - `+IPD, ... CX=...,CY=...` 를 파싱해 **PWM을 그대로 적용**하는 구조 (PC가 “외부 컨트롤러” 역할).
+
+- **현재 구조 (2026-03-04 기준)**
+  - PC(호스트)는 **픽셀 오차 \((e_u, e_v)\)만 계산해서 전송**하고,
+  - **PID 제어(및 최종 PWM 계산)는 STM32 내부에서 수행**한다.
+  - 즉, 역할을 명확히 나눔:
+    - **PC**: Vision + 에러 계산(센서/관측 레벨)
+    - **STM32**: PID + 서보 구동(제어기/액추에이터 레벨)
+
+### 2. 호스트 코드 변경 내용
+
+#### 2.1 `rtsp_laser_demo.cpp` – PWM 대신 픽셀 오차만 전송
+
+- 기존:
+  - `IbvsController` 로 P 제어 후:
+    ```cpp
+    IbvsOutput out = controller.update(e_u, e_v, dt_sec);
+    std::cout << out.pan_us << " " << out.tilt_us << std::endl; // "1500 1400"
+    ```
+- 변경:
+  - P 제어(PWM 계산)는 **디버그용**으로만 남기고,
+  - 파이프라인(stdout)으로는 **픽셀 오차만** 전송:
+    ```cpp
+    // 에러: 타겟 - 레이저 (픽셀)
+    double e_u = static_cast<double>(targetROI.center().x - laser.point.x);
+    double e_v = static_cast<double>(targetROI.center().y - laser.point.y);
+
+    IbvsOutput out = controller.update(e_u, e_v, dt_sec); // 디버그용
+
+    // N 프레임마다 픽셀 오차만 출력 (예: "15.0 -10.0")
+    constexpr int SEND_EVERY_N_FRAMES = 5;
+    if (frame_id % SEND_EVERY_N_FRAMES == 0)
+    {
+        std::cout << e_u << " " << e_v << std::endl;
+    }
+    ```
+- 요약:
+  - **표준 출력 → (e_u, e_v)** 로 변경.
+  - stderr 로는 여전히 `target/laser/e_u/e_v` 와 호스트측 P제어 결과(PWM)를 남겨,  
+    튜닝/디버깅에 활용 가능하도록 유지.
+
+#### 2.2 `ubuntu_tcp_server.cpp` – CX/CY → EX/EY 포맷으로 변경
+
+- 기존:
+  - `"x y"` 형식을 받으면 `CX=...,CY=...` 형태로 ESP/STM32 로 전송:
+    ```cpp
+    if (std::sscanf(trimmed.c_str(), "%f %f", &x, &y) == 2) {
+        int len = std::snprintf(send_buf, sizeof(send_buf),
+                                "CX=%.6f,CY=%.6f\n", x, y);
+        ...
+    }
+    ```
+- 변경:
+  - `"x y"` 를 **픽셀 오차(또는 일반적인 실수 두 개)** 라고 해석하고,
+  - `EX=...,EY=...` 포맷으로 전송:
+    ```cpp
+    if (std::sscanf(trimmed.c_str(), "%f %f", &x, &y) == 2) {
+        int len = std::snprintf(send_buf, sizeof(send_buf),
+                                "EX=%.6f,EY=%.6f\n", x, y);
+        ...
+    }
+    ```
+- 요약:
+  - `"e_u e_v"` → `"EX=...,EY=..."` → ESP/STM32 로 전달.
+  - 기존의 `CX/CY`·정수 `"1500 1400"` 전송 경로는 **수동 디버그용**으로 남겨둘 수 있음.
+
+### 3. STM32 `main.c` – PID 제어기 및 EX/EY 파서 추가
+
+#### 3.1 전역 상태 및 PID 축 구조체
+
+- 전역 변수:
+  ```c
+  static float     ibvs_err_x      = 0.0f;
+  static float     ibvs_err_y      = 0.0f;
+  static uint8_t   ibvs_err_valid  = 0;
+  static uint32_t  ibvs_last_err_tick = 0;  /* 마지막으로 오차를 받은 시각(ms) */
+
+  typedef struct
+  {
+    float kp;
+    float ki;
+    float kd;
+    float integ;
+    float prev_err;
+    float out_us;
+  } IbvsPidAxis;
+
+  static IbvsPidAxis pid_x; /* PAN  (PA0 / TIM2_CH1) */
+  static IbvsPidAxis pid_y; /* TILT (PA8 / TIM1_CH1) */
+
+  static uint32_t    ibvs_last_update_tick = 0;
+  #define IBVS_UPDATE_PERIOD_MS  20u   /* IBVS PID 업데이트 주기 ≈ 50Hz */
+  #define IBVS_ERR_TIMEOUT_MS  500u    /* 이 시간 동안 새 오차가 없으면 PID 정지 */
+  ```
+
+- 축별 PID 초기화 함수:
+  ```c
+  static void IbvsPid_AxisInit(IbvsPidAxis *a, float kp, float ki, float kd, float initial_us)
+  {
+    if (!a) return;
+    a->kp      = kp;
+    a->ki      = ki;
+    a->kd      = kd;
+    a->integ   = 0.0f;
+    a->prev_err= 0.0f;
+    a->out_us  = initial_us;
+  }
+  ```
+
+- 전체 IBVS PID 초기화:
+  ```c
+  static void IbvsPid_Init(void)
+  {
+    // STM32 Servo_Init 과 동일한 초기 PWM:
+    // PAN(X) = PA0/TIM2_CH1 ≈ 1430us, TILT(Y) = PA8/TIM1_CH1 ≈ 1250us
+    // X: 오른쪽으로 갈수록 PWM 증가 → Kp_x > 0
+    // Y: 아래로 갈수록 PWM 감소   → Kp_y < 0
+    IbvsPid_AxisInit(&pid_x, 0.02f, 0.0f, 0.0f, 1430.0f);
+    IbvsPid_AxisInit(&pid_y, -0.02f, 0.0f, 0.0f, 1250.0f);
+
+    ibvs_err_x = 0.0f;
+    ibvs_err_y = 0.0f;
+    ibvs_err_valid = 0;
+    ibvs_last_err_tick = 0;
+    ibvs_last_update_tick = HAL_GetTick();
+  }
+  ```
+
+- `main()` 초기화 시:
+  ```c
+  Servo_Init();
+  ...
+  Led_Init();
+  Led_SetAutoMode(control_mode == MODE_AUTO);
+  IbvsPid_Init();  // IBVS PID 초기화
+  ```
+
+#### 3.2 +IPD 파서 – EX/EY → 오차 입력, CX/CY·정수는 기존처럼 PWM 직접 제어
+
+- 기존 `+IPD` 처리 블록에서, 줄 단위 파싱 루프 안에 **우선순위**를 추가:
+  ```c
+  /* 형식 0: EX=...,EY=... (픽셀 오차) */
+  float ex_f = 0.0f, ey_f = 0.0f;
+  float cx_f = 0.0f, cy_f = 0.0f;
+  if (sscanf(cursor, "EX=%f,EY=%f", &ex_f, &ey_f) == 2)
+  {
+    ibvs_err_x         = ex_f;
+    ibvs_err_y         = ey_f;
+    ibvs_err_valid     = 1;
+    ibvs_last_err_tick = HAL_GetTick();
+  }
+  else if (sscanf(cursor, "CX=%f,CY=%f", &cx_f, &cy_f) == 2)
+  {
+    // 형식 1: CX/CY → 기존 PWM 직접 명령
+    ...
+    Servo_SetAllUs(u2, u1); // PA8=CY, PA0=CX
+  }
+  else
+  {
+    // 형식 2: "1500 1400" 또는 "1500"
+    ...
+    Servo_SetAllUs((uint32_t)uy, (uint32_t)ux);
+  }
+  ```
+
+- 요약:
+  - **EX/EY** 가 오면 → `ibvs_err_x / ibvs_err_y` 에 저장 → PID 입력으로 사용.
+  - 없으면(또는 수동 디버깅 모드) 여전히 `CX/CY` 나 `"1500 1400"` 으로 **직접 PWM 제어 가능**.
+
+#### 3.3 메인 루프에서 주기적인 PID 업데이트
+
+- `while(1)` 루프 안에 IBVS PID 섹션 추가:
+  ```c
+  {
+    uint32_t now = HAL_GetTick();
+
+    // 일정 시간 동안 새 오차가 없으면 PID 정지 (failsafe)
+    if (ibvs_err_valid && (now - ibvs_last_err_tick) > IBVS_ERR_TIMEOUT_MS)
+    {
+      ibvs_err_valid = 0;
+    }
+
+    // 주기적으로 PID 업데이트 (예: 50Hz)
+    uint32_t dt_ms = now - ibvs_last_update_tick;
+    if (dt_ms >= IBVS_UPDATE_PERIOD_MS)
+    {
+      float dt_sec = (float)dt_ms / 1000.0f;
+      ibvs_last_update_tick = now;
+      IbvsPid_Update(dt_sec);
+    }
+  }
+  ```
+
+- `IbvsPid_Update()` 에서는:
+  - X/Y 오차에 대해 각각:
+    - 적분/미분 항 갱신 (현재는 Ki, Kd=0 → 사실상 P제어와 동일)
+    - `pid_x.out_us`, `pid_y.out_us` 업데이트 후 `PWM_US_MIN/MAX` 범위로 클램프
+  - `Servo_SetAllUs(uy, ux);` 호출로 실제 PA8/PA0 PWM 갱신.
+
+### 4. 현재 상태 및 다음 단계
+
+- **현재**
+  - Vision(오차 계산)은 PC(호스트),  
+    PID(제어)는 STM32 내부로 역할이 분리된 상태.
+  - STM32 PID는 아직 **P만 활성화**(Ki=Kd=0) 이며,
+    기존 호스트 P 제어에서 쓰던 \(K_p\) 값을 그대로 가져와 사용 중.
+  - 외부 루프(비전) 주기는 카메라 FPS/`SEND_EVERY_N_FRAMES` 에 따라 결정되고,  
+    내부 PID 루프는 약 50Hz (`IBVS_UPDATE_PERIOD_MS=20ms`) 로 동작.
+
+- **다음 단계**
+  - `pid_x/ pid_y` 의 `ki`, `kd` 를 하나씩 키워가며:
+    - steady-state 오차 감소(I 항)
+    - overshoot/진동 감쇠(D 항)
+    를 실험/튜닝.
+  - 튜닝 결과(좋았던 \(K_p, K_i, K_d\) 조합과 로그)를 이 문서에 순차적으로 추가 기록할 예정.
+
