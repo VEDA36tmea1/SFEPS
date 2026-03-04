@@ -260,9 +260,7 @@ void createTuningView(const cv::Mat& raw_frame_in, cv::Mat& tuning_view) {
         "(G=1.5, A=1.2, C=2.0)", "(G=1.8, A=1.4, C=2.5)", "(G=2.5, A=1.8, C=4.0)", "(AGC->DN->CLAHE->SHRP)"
     };
 
-    // ==========================================================
-    // 터미널 출력 포맷 (엔트로피 기준)
-    // ==========================================================
+    // 터미널 출력 포맷
     std::cout << "\n==========================================" << std::endl;
     std::cout << "[Entropy 지표]" << std::endl;
     std::cout << "원본 평균 밝기 : " << mean_val[0] << ", 표준편차(대비) : " << stddev_val[0] << std::endl;
@@ -290,7 +288,7 @@ void createTuningView(const cv::Mat& raw_frame_in, cv::Mat& tuning_view) {
                 cv::putText(q_resized, subtitles[q_idx], cv::Point(15, 70), 
                             cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 0, 0), 2, cv::LINE_AA);
             }
-.
+
             cv::Scalar color = (entropy >= 7.2) ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
             cv::putText(q_resized, entropy_text, cv::Point(15, 105), 
                         cv::FONT_HERSHEY_SIMPLEX, 0.8, color, 2, cv::LINE_AA);
