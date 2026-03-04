@@ -47,6 +47,22 @@
 스트리밍 장애가 발생하면 Monitoring 화면에서 `CONNECTING/RECONNECTING/STREAM OFFLINE` 상태가 표시되며,
 클라이언트는 3초 간격으로 자동 재연결을 시도합니다.
 
+### TLS 관련 클라이언트 환경변수 (새)
+
+- `SFEPS_CLIENT_TLS_ENABLE`: `0` 또는 `1`. `1`이면 클라이언트는 auth/alert/audio 채널에서 TLS(`QSslSocket`)로 접속을 시도합니다. 제공되지 않으면 기존 `AUTH_TLS_ENABLE`을 참고합니다.
+- `SFEPS_CLIENT_CA_FILE`: TLS 모드에서 사용할 CA PEM 파일 경로. (예: `C:/path/to/ca.pem`) 클라이언트는 해당 CA로 서버 인증서를 검증합니다.
+- `SFEPS_CLIENT_TLS_SERVER_NAME`: TLS 호스트명 검증용 서버 이름(SAN 또는 CN과 일치해야 함). 비어있으면 연결 대상의 호스트명을 사용합니다.
+
+포트 매핑(기본)
+- Plain: Auth `5555`, Audio `5556`, Alert `5557`
+- TLS: Auth `6555`, Audio `6556`, Alert `6557`
+
+동작 요약
+- TLS 모드(`SFEPS_CLIENT_TLS_ENABLE=1`)일 때는 `QSslSocket`을 사용하고 `connectToHostEncrypted()`를 호출합니다.
+- 서버 인증서 검증은 필수이며(`VerifyPeer`), `ignoreSslErrors()`는 사용하지 않습니다.
+- TLS 검증 실패(잘못된 CA, 호스트명 불일치 등)가 발생하면 TLS 연결은 실패로 처리됩니다. 인증 채널의 경우 평문 폴백 동작은 `AUTH_ALLOW_PLAINTEXT_FALLBACK` 환경변수로 제어됩니다(기본: 비허용).
+
+
 ---
 
 ## ⚙️ 설정 및 빌드 방법
@@ -61,28 +77,43 @@ git clone --branch OpenCV-4.5.5-x64 --depth 1 https://github.com/huihut/OpenCV-M
 ```
 
 ### 2. 빌드 방법 (Command Line)
-
 1.  **PowerShell** 또는 터미널을 엽니다.
 2.  프로젝트 디렉토리로 이동합니다:
     ```powershell
-    cd C:\path\to\SFEPS\client
+    cd C:\Users\2-08\Desktop\SFEPS\client
     ```
 3.  **빌드 디렉토리 생성**:
     ```powershell
-    mkdir build
-    cd build
+    mkdir build-mingw
+    cd build-mingw
     ```
-4.  **CMake 구성 및 빌드**:
+4.  **CMake 구성 및 빌드**
+
+    - Qt/CMake 경로와 OpenCV 경로를 명시해 주세요. 예:
     ```powershell
-    cmake -G "MinGW Makefiles" ..
-    cmake --build .
+    cmake -G "MinGW Makefiles" \
+      -DOpenCV_DIR="C:/Users/2-08/OpenCV-MinGW-Build/x64/mingw" \
+      -DCMAKE_PREFIX_PATH="C:/Qt/6.10.0/mingw_64/lib/cmake" \
+      ..
+    cmake --build . --config Release
+    # 또는 병렬 빌드
+    mingw32-make -j4
     ```
+
+    - 만약 CMake가 Qt를 못 찾는다면 `-DCMAKE_PREFIX_PATH`에 Qt의 `lib/cmake` 경로를 지정하세요.
+    - OpenCV의 `OpenCVConfig.cmake`가 있는 디렉토리를 `-DOpenCV_DIR`로 지정해야 합니다.
 
 ### 3. 애플리케이션 실행
 빌드가 성공하면 빌드 디렉토리 내의 실행 파일을 실행합니다:
 ```powershell
 .\appHanwhaVisionSFEPS.exe
     ```
+
+또는 완전한 예:
+```powershell
+cd C:\Users\2-08\Desktop\SFEPS\client\build-mingw
+.\appHanwhaVisionSFEPS.exe
+```
 
 ### 4. TLS 로그인용 CA 설정 (중요)
 서버의 CA **인증서**(`ca.crt`)를 클라이언트 `certs/auth_ca.pem`으로 배포해야 TLS 검증이 성공합니다.
@@ -98,6 +129,20 @@ cd client
 ```
 
 ---
+
+## 빌드 중 발견된 컴파일 문제
+
+- 빌드 중 `QSslConfiguration` 관련 incomplete type 에러가 발생할 수 있습니다. 이 경우 소스 파일 `src/authmanager.cpp`에
+    `#include <QSslConfiguration>` 헤더가 누락되어 있을 수 있으므로 추가하면 해결됩니다. (현재 저장소에 해당 패치가 적용되어 있습니다.)
+
+## 윈도우 배포 팁
+
+- 런타임에 DLL 누락 에러가 발생하면 Qt와 OpenCV의 `bin` 폴더를 `PATH`에 추가하거나 필요한 DLL들을 실행파일 옆에 복사하세요.
+- Qt 배포 도구 사용 예:
+```powershell
+# Qt의 windeployqt로 필요한 Qt DLL과 QML 종속성을 복사
+C:\Qt\6.10.0\mingw_64\bin\windeployqt.exe --qmldir ..\src appHanwhaVisionSFEPS.exe
+```
 
 ## 📂 프로젝트 구조
 

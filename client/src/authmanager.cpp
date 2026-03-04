@@ -3,6 +3,7 @@
 #include <QDebug>
 #include <QFile>
 #include <QProcessEnvironment>
+#include <QSslConfiguration>
 #include <QSslError>
 #include <QStringList>
 
@@ -68,11 +69,18 @@ void AuthManager::login(const QString &id, const QString &pw)
     const QString authHost = env.value("AUTH_SERVER_HOST", QString::fromUtf8(kDefaultAuthHost));
     const int authTlsPort = parseEnvPort(env, "AUTH_TLS_PORT", kDefaultAuthTlsPort);
     const int authPlainPort = parseEnvPort(env, "AUTH_PLAINTEXT_PORT", kDefaultAuthPlainPort);
-    const bool authTlsEnable = parseEnvBool(env, "AUTH_TLS_ENABLE", kDefaultAuthTlsEnable);
+    // Prefer SFEPS_CLIENT_TLS_ENABLE if provided, otherwise fall back to AUTH_TLS_ENABLE
+    const bool clientTlsEnvProvided = !env.value("SFEPS_CLIENT_TLS_ENABLE").trimmed().isEmpty();
+    const bool authTlsEnable = clientTlsEnvProvided
+        ? parseEnvBool(env, "SFEPS_CLIENT_TLS_ENABLE", kDefaultAuthTlsEnable)
+        : parseEnvBool(env, "AUTH_TLS_ENABLE", kDefaultAuthTlsEnable);
     const bool allowPlainFallback = parseEnvBool(env,
                                                  "AUTH_ALLOW_PLAINTEXT_FALLBACK",
                                                  kDefaultPlainFallbackEnable);
-    const QString authTlsCaPath = env.value("AUTH_TLS_CA_FILE").trimmed();
+    // Prefer SFEPS_CLIENT_CA_FILE if provided
+    const QString authTlsCaPath = env.value("SFEPS_CLIENT_CA_FILE", env.value("AUTH_TLS_CA_FILE")).trimmed();
+    // Allow overriding the TLS server name used for hostname verification
+    const QString tlsServerName = env.value("SFEPS_CLIENT_TLS_SERVER_NAME").trimmed();
     const QByteArray payload = QString("%1:%2").arg(userId, pw).toUtf8();
 
     LoginAttemptResult result = LoginAttemptResult::TransportError;
@@ -82,7 +90,7 @@ void AuthManager::login(const QString &id, const QString &pw)
 
     if (authTlsEnable) {
         attemptedTls = true;
-        result = attemptTlsLogin(authHost, authTlsPort, payload, authTlsCaPath, transportError);
+        result = attemptTlsLogin(authHost, authTlsPort, payload, authTlsCaPath, tlsServerName, transportError);
 
         if (result == LoginAttemptResult::TransportError) {
             qWarning() << "[AuthManager] TLS auth transport failed:" << transportError;
@@ -193,6 +201,7 @@ AuthManager::LoginAttemptResult AuthManager::attemptTlsLogin(const QString &host
                                                              int port,
                                                              const QByteArray &payload,
                                                              const QString &caPathOverride,
+                                                             const QString &tlsServerName,
                                                              QString &outTransportError)
 {
     QList<QSslCertificate> trustedCerts;
@@ -205,7 +214,11 @@ AuthManager::LoginAttemptResult AuthManager::attemptTlsLogin(const QString &host
 
     socket->abort();
     socket->setPeerVerifyMode(QSslSocket::VerifyPeer);
-    socket->setPeerVerifyName(host);
+    if (!tlsServerName.isEmpty()) {
+        socket->setPeerVerifyName(tlsServerName);
+    } else {
+        socket->setPeerVerifyName(host);
+    }
 
     QSslConfiguration sslConfig = socket->sslConfiguration();
     sslConfig.setProtocol(QSsl::TlsV1_2OrLater);
