@@ -189,7 +189,7 @@ int main(int argc, char** argv) {
             run_rtt_test(client_fd);
         } else {
             // 기존 수동 입력 모드
-            std::cout << "[TCP] 좌표 입력 예시: \"0.5 0.3\" (x y)" << std::endl;
+            std::cout << "[TCP] 좌표/오차 입력 예시: \"0.5 0.3\" (x y)" << std::endl;
             std::cout << "[TCP] 일반 문자열도 전송 가능, \"quit\" 입력 시 연결 종료" << std::endl;
 
             std::string line;
@@ -216,11 +216,12 @@ int main(int argc, char** argv) {
                     continue;
                 }
 
-                // "x y" 형식이면 좌표로 해석해서 CX/CY 포맷으로 전송
+                // "x y" 형식이면 (여기서는 일반적인 실수 두 개)로 해석해서
+                // EX/EY 포맷(픽셀 오차 등)으로 전송한다.
                 float x = 0.0f, y = 0.0f;
                 if (std::sscanf(trimmed.c_str(), "%f %f", &x, &y) == 2) {
                     int len = std::snprintf(send_buf, sizeof(send_buf),
-                                            "CX=%.6f,CY=%.6f\n", x, y);
+                                            "EX=%.6f,EY=%.6f\n", x, y);
                     if (len <= 0 || len >= static_cast<int>(sizeof(send_buf))) {
                         std::cerr << "[TCP] 좌표 포맷 실패" << std::endl;
                         continue;

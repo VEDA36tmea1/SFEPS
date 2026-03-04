@@ -1,5 +1,7 @@
 #include "vision_detector.h"
 #include "target_provider.h"
+// STM32 쪽으로 PID 제어를 옮기고, 호스트에서는 픽셀 오차만 전송한다.
+// 필요하면 호스트 측 P 제어 디버깅을 위해 ibvs_controller 를 다시 사용할 수 있다.
 #include "ibvs_controller.h"
 
 #include <opencv2/highgui.hpp>
@@ -28,9 +30,7 @@ int main(int argc, char** argv)
 
     VisionDetector detector;
 
-    // IBVS P 제어기: PWM 범위 800~2200
-    // X(파노라마, PA0): Ku > 0  → 오른쪽으로 갈수록 PWM 증가
-    // Y(틸트,    PA8): Kv < 0  → 아래로 갈수록 PWM 감소
+    // (옵션) 호스트 측 P 제어기 – 현재는 디버깅용으로만 사용 가능
     IbvsController controller(800, 2200, 1500, 0.02, -0.02);
 
     cv::namedWindow("rtsp_laser_demo");
@@ -95,28 +95,30 @@ int main(int argc, char** argv)
             cv::circle(frame, laser.point, 5, cv::Scalar(0, 0, 255), -1);
         }
 
-        // 박스와 레이저가 모두 유효하면, IBVS 제어기로 PWM(us) 계산
+        // 박스와 레이저가 모두 유효하면, 픽셀 오차(e_u, e_v)를 계산
         if (targetROI.valid && laser.found)
         {
             // 에러: 타겟 - 레이저 (픽셀 단위)
             double e_u = static_cast<double>(targetROI.center().x - laser.point.x);
             double e_v = static_cast<double>(targetROI.center().y - laser.point.y);
 
+            // (옵션) 호스트 측 P 제어 결과는 디버그용으로만 사용
             IbvsOutput out = controller.update(e_u, e_v, dt_sec);
 
-            // 디버그: 바운딩 박스 중심, 레이저 위치, 에러, PWM 출력값을 stderr로 출력
+            // 디버그: 바운딩 박스 중심, 레이저 위치, 에러, 호스트 측 P제어 PWM 값을 stderr로 출력
             std::cerr << "[ctrl] frame " << frame_id
                       << " target=(" << targetROI.center().x << ", " << targetROI.center().y << ")"
                       << " laser=(" << laser.point.x << ", " << laser.point.y << ")"
                       << " e_u=" << e_u << " e_v=" << e_v
                       << " pwm(PA0,PA8)=(" << out.pan_us << ", " << out.tilt_us << ")\n";
-            // Unix 파이프용: stdout에 "PAN_US TILT_US\n" 한 줄만 출력
-            // 신호를 너무 자주 보내지 않도록, N프레임마다 한 번씩만 전송
-            constexpr int SEND_EVERY_N_FRAMES = 5; // 5~10 프레임 사이에서 튜닝 가능
+
+            // Unix 파이프용: stdout에는 이제 픽셀 오차 "e_u e_v\n" 만 전송한다.
+            // 신호를 너무 자주 보내지 않도록, N프레임마다 한 번씩만 전송.
+            constexpr int SEND_EVERY_N_FRAMES = 3; // 3~10 프레임 사이에서 튜닝 가능
             if (frame_id % SEND_EVERY_N_FRAMES == 0)
             {
-                // 예: 1500 1400
-                std::cout << out.pan_us << " " << out.tilt_us << std::endl;
+                // 예: 15.0 -10.0  (픽셀 오차, EX/EY)
+                std::cout << e_u << " " << e_v << std::endl;
             }
         }
 
