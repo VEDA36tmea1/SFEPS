@@ -155,7 +155,7 @@ cd ..
 
 ## 주요 경로
 
-- 영상 저장: `/home/iam/finalProject/SFEPS/videos`
+- 영상 저장: `/home/iam/SFEPS/videos`
 - RFID 소켓: `/tmp/rc522_events.sock`
 
 ## 주요 기능
