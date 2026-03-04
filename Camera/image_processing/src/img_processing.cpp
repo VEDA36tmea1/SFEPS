@@ -167,38 +167,36 @@ void applySharpen(const cv::Mat& src, cv::Mat& dst, float strength) {
     }
 }
 
-double getPersonConfidence(const cv::Mat& frame, cv::dnn::Net& net) {
-    if (net.empty()) return 0.0;
-    
-    // YOLO는 416x416 해상도, RGB 변환(true), 1/255.0 정규화를 사용합니다.
-    cv::Mat blob = cv::dnn::blobFromImage(frame, 1/255.0, cv::Size(416, 416), cv::Scalar(0,0,0), true, false);
-    net.setInput(blob);
-    
-    std::vector<cv::String> outNames = net.getUnconnectedOutLayersNames();
-    std::vector<cv::Mat> outs;
-    net.forward(outs, outNames);
+// 엔트로피 계산 함수
+double calculateEntropy(const cv::Mat& frame) {
+    if (frame.empty()) return 0.0;
 
-    double max_person_conf = 0.0;
-    
-    for (size_t i = 0; i < outs.size(); ++i) {
-        float* data = (float*)outs[i].data;
-        for (int j = 0; j < outs[i].rows; ++j, data += outs[i].cols) {
-            cv::Mat scores = outs[i].row(j).colRange(5, outs[i].cols);
-            cv::Point classIdPoint;
-            double confidence;
-            cv::minMaxLoc(scores, 0, &confidence, 0, &classIdPoint);
-            
-            // COCO 데이터셋 기준, 0번 클래스가 '사람(Person)' 입니다.
-            if (classIdPoint.x == 0 && confidence > max_person_conf) {
-                max_person_conf = confidence;
-            }
+    cv::Mat gray;
+    cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
+
+    // 1. 히스토그램 계산
+    int histSize = 256;
+    float range[] = { 0, 256 };
+    const float* histRange = { range };
+    cv::Mat hist;
+    cv::calcHist(&gray, 1, 0, cv::Mat(), hist, 1, &histSize, &histRange, true, false);
+
+    // 2. 전체 픽셀 수로 나누어 확률 p(i) 계산
+    hist /= (gray.rows * gray.cols);
+
+    // 3. 섀넌 엔트로피 공식 적용: -sum( p * log2(p) )
+    double entropy = 0.0;
+    for (int i = 0; i < histSize; i++) {
+        float p = hist.at<float>(i);
+        if (p > 0.0) {
+            entropy -= p * std::log2(p);
         }
     }
-    return max_person_conf;
+    return entropy;
 }
 
 // 5. 8분할 이미지 생성
-void createTuningView(const cv::Mat& raw_frame_in, cv::Mat& tuning_view, cv::dnn::Net& net) {
+void createTuningView(const cv::Mat& raw_frame_in, cv::Mat& tuning_view) {
     if (raw_frame_in.empty()) return;
 
     // 해상도 정규화
@@ -262,25 +260,28 @@ void createTuningView(const cv::Mat& raw_frame_in, cv::Mat& tuning_view, cv::dnn
         "(G=1.5, A=1.2, C=2.0)", "(G=1.8, A=1.4, C=2.5)", "(G=2.5, A=1.8, C=4.0)", "(AGC->DN->CLAHE->SHRP)"
     };
 
+    // ==========================================================
+    // 터미널 출력 포맷 (엔트로피 기준)
+    // ==========================================================
     std::cout << "\n==========================================" << std::endl;
-    std::cout << "평균 : " << mean_val[0] << ", 표준편차 : " << stddev_val[0] << std::endl;
-    std::cout << "신뢰도" << std::endl;
+    std::cout << "[Entropy 지표]" << std::endl;
+    std::cout << "원본 평균 밝기 : " << mean_val[0] << ", 표준편차(대비) : " << stddev_val[0] << std::endl;
+    std::cout << "------------------------------------------" << std::endl;
 
     int q_idx = 0;
     for (int r = 0; r < 2; r++) { 
         for (int c = 0; c < 4; c++) {
             cv::Mat q_resized;
             cv::resize(results[q_idx].clone(), q_resized, cv::Size(q_cols, q_rows));
-
-            double conf = getPersonConfidence(results[q_idx], net);
+            double entropy = calculateEntropy(results[q_idx]);
+            
             std::string cmd_title = titles[q_idx];
-
-            if (q_idx >= 3) { // 4번부터 8번까지 적용
+            if (q_idx >= 3) { 
                 cmd_title += " " + subtitles[q_idx];
             }
-            std::cout << cmd_title << " : " << conf * 100.0 << "%" << std::endl;
-            
-            std::string conf_text = cv::format("AI Confidence: %.1f%%", conf * 100.0);
+            std::cout << cmd_title << " : " << entropy << std::endl;
+
+            std::string entropy_text = cv::format("Entropy: %.2f", entropy);
 
             cv::putText(q_resized, titles[q_idx], cv::Point(15, 35), 
                         cv::FONT_HERSHEY_SIMPLEX, 0.9, cv::Scalar(0, 0, 0), 2, cv::LINE_AA);
@@ -289,9 +290,9 @@ void createTuningView(const cv::Mat& raw_frame_in, cv::Mat& tuning_view, cv::dnn
                 cv::putText(q_resized, subtitles[q_idx], cv::Point(15, 70), 
                             cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 0, 0), 2, cv::LINE_AA);
             }
-
-            cv::Scalar color = (conf > 0.5) ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
-            cv::putText(q_resized, conf_text, cv::Point(15, 105), 
+.
+            cv::Scalar color = (entropy >= 7.2) ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
+            cv::putText(q_resized, entropy_text, cv::Point(15, 105), 
                         cv::FONT_HERSHEY_SIMPLEX, 0.8, color, 2, cv::LINE_AA);
 
             q_resized.copyTo(tuning_view(cv::Rect(c * q_cols, r * q_rows, q_cols, q_rows)));
