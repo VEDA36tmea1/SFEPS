@@ -3,6 +3,8 @@
 
 #include <QObject>
 #include <QTcpSocket>
+#include <QSslSocket>
+#include <QProcessEnvironment>
 #include <QStringList>
 #include <QTimer>
 #include <QByteArray>
