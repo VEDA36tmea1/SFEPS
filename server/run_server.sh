@@ -6,7 +6,8 @@ set -euo pipefail
 
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
-BIN_PATH="${SCRIPT_DIR}/build/smart_server.bin"
+PRIMARY_BIN_PATH="${SCRIPT_DIR}/build/smart_server.bin"
+LEGACY_BIN_PATH="${SCRIPT_DIR}/build/smart_server"
 DEFAULT_RTSPS_CA_PATH="/etc/sfeps/pki/ca.crt"
 
 log_info() {
@@ -31,6 +32,25 @@ load_env_file() {
   set +a
   log_info "loaded env file: ${env_file}"
   return 0
+}
+
+resolve_bin_path() {
+  if [[ -x "${PRIMARY_BIN_PATH}" ]]; then
+    echo "${PRIMARY_BIN_PATH}"
+    return 0
+  fi
+
+  # Backward compatibility: pre-migration builds produced build/smart_server.
+  if [[ -x "${LEGACY_BIN_PATH}" ]]; then
+    local legacy_real
+    legacy_real="$(readlink -f "${LEGACY_BIN_PATH}" || true)"
+    if [[ -n "${legacy_real}" && "${legacy_real}" != "${SCRIPT_PATH}" ]]; then
+      echo "${LEGACY_BIN_PATH}"
+      return 0
+    fi
+  fi
+
+  return 1
 }
 
 if [[ -n "${SFEPS_ENV_FILE:-}" ]]; then
@@ -123,9 +143,11 @@ if [[ "${SFEPS_APP_TLS_ENABLE}" == "1" ]]; then
   fi
 fi
 
-if [[ ! -x "${BIN_PATH}" ]]; then
-  echo "[run_server] binary not found or not executable: ${BIN_PATH}" >&2
-  echo "[run_server] build first: cmake --build ${SCRIPT_DIR}/build" >&2
+BIN_PATH="$(resolve_bin_path || true)"
+if [[ -z "${BIN_PATH}" ]]; then
+  echo "[run_server] binary not found or not executable: ${PRIMARY_BIN_PATH}" >&2
+  echo "[run_server] fallback checked: ${LEGACY_BIN_PATH}" >&2
+  echo "[run_server] build first: cmake -S ${SCRIPT_DIR} -B ${SCRIPT_DIR}/build && cmake --build ${SCRIPT_DIR}/build" >&2
   exit 1
 fi
 

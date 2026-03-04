@@ -77,7 +77,8 @@ void RfidMonitor::run_loop() {
 
         // 1. 연결 시도
         if (connect(sock_fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
-            perror("rc522 socket connect");
+            // 연결 실패 로그는 운영 중 노이즈가 커서 임시 비활성화
+            // perror("rc522 socket connect");
             close(sock_fd);
             std::this_thread::sleep_for(std::chrono::seconds(1));
             continue; 
