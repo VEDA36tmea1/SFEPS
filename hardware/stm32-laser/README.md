@@ -54,23 +54,31 @@ sudo apt update
 sudo apt install gcc-arm-none-eabi cmake make
 ```
 
-**방법 1: Preset 사용 (소스 경로를 절대 경로로 명시)**
+**방법 1: Preset 사용 (Ubuntu PC에서 가장 간단한 방법)**  
 
-일부 환경에서는 preset 이름 `Debug` 가 소스 경로로 잘못 해석되므로, **소스 디렉터리를 절대 경로로** 넘깁니다.
+`stm32/CMakePresets.json` 에서 이미 `CMAKE_TOOLCHAIN_FILE` 이 설정되어 있으므로,
+**stm32 디렉터리에서 preset만 호출하면** 됩니다.
 
 ```bash
 cd hardware/stm32-laser/stm32
-rm -rf build
-cmake --preset Debug "$(pwd)"
+
+# 최초 설정(또는 CMake 설정을 변경하고 싶을 때 1회):
+cmake --preset Debug
+
+# 빌드:
 cmake --build build/Debug
 ```
 
-또는 Release:
+Release 빌드는:
 
 ```bash
-cmake --preset Release "$(pwd)"
+cd hardware/stm32-laser/stm32
+cmake --preset Release
 cmake --build build/Release
 ```
+
+> 참고: `cmake --build build/Debug` 실행 시 `ninja: no work to do.` 라고 나오면  
+> 이미 최신 상태로 빌드가 끝난 것이므로 오류가 아닙니다.
 
 **방법 2: Preset 없이 직접 빌드 (라즈베리 파이 등 CMake 3.18 환경)**
 

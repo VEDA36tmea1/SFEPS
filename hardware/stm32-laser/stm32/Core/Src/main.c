@@ -50,7 +50,7 @@
 #define AUTO_HOLD_MS  2000   /* UART 입력 후 이 시간(ms) 동안 고정, 이후 스윕 재개 (AUTO 모드에서만 사용) */
 
 /* ESP8266 → 라즈베리 TCP 서버 자동 재접속 설정 */
-#define WIFI_SERVER_IP           "192.168.4.1"
+#define WIFI_SERVER_IP           "10.42.0.1"
 #define WIFI_SERVER_PORT         5555
 #define WIFI_RECONNECT_INTERVAL  5000u   /* ms 단위: 5초마다 상태 체크 */
 #define WIFI_CMD_TIMEOUT         10000u  /* AT 응답 타임아웃 10초 */
@@ -100,7 +100,7 @@ static volatile uint8_t button_auto_pending = 0;
 static uint8_t   control_mode = MODE_MANUAL;
 
 /* 자동 스윕: 1200~1800 us 왕복 (AUTO 모드에서만 사용) */
-static uint32_t  auto_pwm_val   = 1500;
+static uint32_t  auto_pwm_val   = 1250;
 static int32_t   auto_dir       = AUTO_STEP_US;
 static uint32_t  auto_last_tick = 0;
 static uint32_t  last_uart_tick = 0;  /* UART로 값 보낸 시각; 이 후 AUTO_HOLD_MS 동안 스윕 정지 */
@@ -296,6 +296,118 @@ int main(void)
         HAL_UART_Transmit(&huart2, (uint8_t *)wifi_line, len, 50);
         const char crlf[2] = {'\r', '\n'};
         HAL_UART_Transmit(&huart2, (uint8_t*)crlf, 2, 50);
+
+        /* ------------------------------------------------------------------ */
+        /* 1) 좌표/펄스 명령 처리 (+IPD, ... CX=...,CY=... / "1500 1400" 등) */
+        /* ------------------------------------------------------------------ */
+        {
+          char *ipd = strstr(wifi_line, "+IPD");
+          if (ipd != NULL)
+          {
+            char *payload = strchr(ipd, ':');
+            if (payload != NULL)
+            {
+              payload++; /* ':' 뒤부터 실제 데이터 */
+              /* 끝 CR/LF 제거 */
+              char *pend = payload + strlen(payload);
+              while (pend > payload &&
+                     (pend[-1] == '\r' || pend[-1] == '\n'))
+              {
+                *--pend = '\0';
+              }
+
+              /* payload 안에 여러 줄(CX=...,CY=... / "1500 1400" 등)이
+                 한꺼번에 들어올 수 있으므로, 줄 단위로 쪼개서 각각 처리한다. */
+              char *cursor = payload;
+              while (*cursor)
+              {
+                /* 앞쪽 개행/공백 스킵 */
+                while (*cursor == '\r' || *cursor == '\n')
+                  cursor++;
+                if (!*cursor)
+                  break;
+
+                /* 한 줄 끝 찾기 */
+                char *line_end = cursor;
+                while (*line_end && *line_end != '\r' && *line_end != '\n')
+                  line_end++;
+
+                char saved = *line_end;
+                *line_end = '\0';
+
+                /* 형식 1: CX=...,CY=... (ubuntu_tcp_server에서 보낸 형식)
+                 * - CX : X축 (PA0 / TIM2_CH1)
+                 * - CY : Y축 (PA8 / TIM1_CH1)
+                 */
+                float cx_f = 0.0f, cy_f = 0.0f;
+                if (sscanf(cursor, "CX=%f,CY=%f", &cx_f, &cy_f) == 2)
+                {
+                  uint32_t u1 = (uint32_t)cx_f;
+                  uint32_t u2 = (uint32_t)cy_f;
+                  if (u1 < PWM_US_MIN) u1 = PWM_US_MIN;
+                  if (u1 > PWM_US_MAX) u1 = PWM_US_MAX;
+                  if (u2 < PWM_US_MIN) u2 = PWM_US_MIN;
+                  if (u2 > PWM_US_MAX) u2 = PWM_US_MAX;
+                  /* CY -> PA8(TIM1_CH1), CX -> PA0(TIM2_CH1) */
+                  Servo_SetAllUs(u2, u1);
+                  auto_pwm_val   = u2;
+                  last_uart_tick = HAL_GetTick();
+                  /* 디버그: WiFi로 들어온 PWM 값을 USART2로 표시 */
+                  char dbg[80];
+                  int dn = snprintf(dbg, sizeof(dbg),
+                                    "WiFi PWM CX/CY -> PA8(CY)=%lu PA0(CX)=%lu us\r\n",
+                                    (unsigned long)u2, (unsigned long)u1);
+                  if (dn > 0)
+                  {
+                    HAL_UART_Transmit(&huart2, (uint8_t *)dbg, (uint16_t)dn, 50);
+                  }
+                }
+                else
+                {
+                  /* 형식 2: "1500 1400" 또는 "1500"
+                   * - 첫 번째 값: X축(PA0 / TIM2_CH1)
+                   * - 두 번째 값: Y축(PA8 / TIM1_CH1)
+                   */
+                  unsigned long ux = 1500, uy = 1500;
+                  int n_ipd = sscanf(cursor, "%lu %lu", &ux, &uy);
+                  if (n_ipd >= 1)
+                  {
+                    if (ux < PWM_US_MIN) ux = PWM_US_MIN;
+                    if (ux > PWM_US_MAX) ux = PWM_US_MAX;
+                    if (n_ipd >= 2)
+                    {
+                      if (uy < PWM_US_MIN) uy = PWM_US_MIN;
+                      if (uy > PWM_US_MAX) uy = PWM_US_MAX;
+                    }
+                    else
+                    {
+                      uy = ux;
+                    }
+                    /* uy -> PA8(TIM1_CH1), ux -> PA0(TIM2_CH1) */
+                    Servo_SetAllUs((uint32_t)uy, (uint32_t)ux);
+                    auto_pwm_val   = (uint32_t)uy;
+                    last_uart_tick = HAL_GetTick();
+                    /* 디버그: WiFi로 들어온 정수 PWM 값을 USART2로 표시 */
+                    char dbg[80];
+                    int dn = snprintf(dbg, sizeof(dbg),
+                                      "WiFi PWM INT -> PA8(Y)=%lu PA0(X)=%lu us\r\n",
+                                      (unsigned long)uy, (unsigned long)ux);
+                    if (dn > 0)
+                    {
+                      HAL_UART_Transmit(&huart2, (uint8_t *)dbg, (uint16_t)dn, 50);
+                    }
+                  }
+                }
+
+                /* 원래 문자 복원 후 다음 줄로 진행 */
+                *line_end = saved;
+                if (!saved)
+                  break;
+                cursor = line_end + 1;
+              }
+            }
+          }
+        }
 
         /* 애플리케이션 레벨 PING/PONG 처리: Pi → ESP → STM → ESP → Pi 왕복 측정 */
         /* ESP AT 모드에서는 "+IPD,xx:PING,..." 형태로 들어올 수 있으므로,

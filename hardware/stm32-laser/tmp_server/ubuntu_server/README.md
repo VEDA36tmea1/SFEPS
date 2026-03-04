@@ -62,6 +62,46 @@ nmcli dev wifi hotspot ifname wlan0 ssid SFEPS_AP password "12345678"
 - 위 명령을 실행하면 `SFEPS_AP` 라는 이름의 AP가 생성되고, 비밀번호는 `12345678` 입니다.
 - `ip addr show wlan0` 로 IP를 확인하고, 그 주소를 ESP/STM32 통신에 사용합니다.
 
+
+#### Result Example 
+
+```bash
+ros2man@ros2-100:~$ ip link
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+2: enp2s0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP mode DEFAULT group default qlen 1000
+    link/ether 8c:b0:e9:1c:4b:64 brd ff:ff:ff:ff:ff:ff
+3: wlo1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DORMANT group default qlen 1000
+    link/ether 2c:8d:b1:6c:65:7e brd ff:ff:ff:ff:ff:ff
+    altname wlp0s20f3
+ros2man@ros2-100:~$ nmcli dev wifi hotspot ifname wlo1 ssid SFEPS_AP password "chl571010"
+Device 'wlo1' successfully activated with '9b92bf7f-ac54-4b29-92b6-d65e1fcb8d2f'.
+Hint: "nmcli dev wifi show-password" shows the Wi-Fi name and password.
+ros2man@ros2-100:~$ nmcli dev wifi show-password
+SSID: SFEPS_AP
+Security: WPA
+Password: chl571010
+
+  █████████████████████████████████
+  ██ ▄▄▄▄▄ █▀ █▀▀██▄▄█▀█ █ ▄▄▄▄▄ ██
+  ██ █   █ █▀ ▄ ██▄█▄▀  ▀█ █   █ ██
+  ██ █▄▄▄█ █▀█ █▄   ▀ ▀▄██ █▄▄▄█ ██
+  ██▄▄▄▄▄▄▄█▄█▄█ ▀▄█▄█ █▄█▄▄▄▄▄▄▄██
+  ██ ▄ ▄ ▀▄ ▄ ▄█▄█▄█▄▄▀█ ▄▀▄▀▄▀ ███
+  █████▀██▄▄▀ ▀ ▄█▀▄▄▄▄█▄  ▄▀▄█▀▀██
+  ██▀▄  █▄▄█ ▄▀▄▀▀▀█▄ ▀█▀██  ▄ ▀███
+  ██▀▄▄ ▀▄▄▄▄█▄█▀ ▄ ██ ▀ ▄▀▄█▀▄████
+  ██▀▀▀ █▄▄▀▄█▀█▄█▄▄▄ ▀▄ ▀█▄▀ █ ▄██
+  ██ █▄▀  ▄ █▀▀ ▄█▀ ▄█▀▀▄▀▀▄ ███▀██
+  ██▄█▄██▄▄▄ ▄ ▄▀▀▀▄▄▄▄▀ ▄▄▄ ▄ ████
+  ██ ▄▄▄▄▄ █▄ ▀█▀ ▄ ███▀ █▄█ ▀▄█▀██
+  ██ █   █ █ ███▄█▄▄▄▄▄█▄▄▄▄  █ ▀██
+  ██ █▄▄▄█ █  ▄ ▄█▀ ▄▄█▀█▄█▄  ▄ ███
+  ██▄▄▄▄▄▄▄█▄█▄▄███▄▄▄▄▄████▄▄█████
+  █████████████████████████████████
+
+```
+
 ---
 
 ## 3. ESP8266 설정 (AT 명령 예시)
@@ -84,7 +124,7 @@ nmcli dev wifi hotspot ifname wlan0 ssid SFEPS_AP password "12345678"
    AT+CIPSTART="TCP","192.168.4.1",5555
    ```
 
-   - `192.168.4.1` 부분은 실제 노트북 AP 인터페이스 IP로 교체.
+   - 실제 노트북 AP 인터페이스 IP  `10.42.0.1`
    - STM32 코드의 `WIFI_SERVER_IP` 와 일치시키면 관리하기 편합니다.
 
 3. 데이터 송수신 예시는 `../raspi_server/README.md` 의 `raspi_tcp_server` 설명과 동일하게 적용됩니다.
@@ -100,19 +140,19 @@ nmcli dev wifi hotspot ifname wlan0 ssid SFEPS_AP password "12345678"
 1. `tmp_server/raspi_server` 디렉터리로 이동:
 
    ```bash
-   cd hardware/stm32-laser/tmp_server/raspi_server
-   make raspi_tcp_server
+   cd hardware/stm32-laser/tmp_server/ubuntu_server
+   make ubuntu_tcp_server
    ```
 
-2. 빌드가 성공하면 현재 디렉터리에 `raspi_tcp_server` 실행 파일이 생성됩니다.
+2. 빌드가 성공하면 현재 디렉터리에 `ubuntu_tcp_server` 실행 파일이 생성됩니다.
 
 ### 4.2 Ubuntu에서 서버 실행
 
 노트북 AP가 켜져 있고, ESP가 이 AP에 붙을 준비가 되어 있다고 가정합니다.
 
 ```bash
-cd hardware/stm32-laser/tmp_server/raspi_server
-./raspi_tcp_server          # 기본 포트 5555
+cd hardware/stm32-laser/tmp_server/ubuntu_server
+./ubuntu_tcp_server          # 기본 포트 5555
 # 또는 ./raspi_tcp_server 5555
 ```
 
@@ -124,7 +164,7 @@ cd hardware/stm32-laser/tmp_server/raspi_server
 ```text
 [TCP] Raspi TCP 서버 시작
 [TCP] Listening on 0.0.0.0:5555
-[TCP] Client connected from 192.168.4.x:포트
+[TCP] Client connected from :포트
 [TCP] 좌표 입력 예시: "0.5 0.3" (x y)
 ...
 ```
