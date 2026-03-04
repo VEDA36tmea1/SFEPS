@@ -23,7 +23,7 @@
   - `RTSPS_TLS_CA` 미설정/읽기불가 시 즉시 실패
   - `tls_verify=1`
   - `ca_file=<RTSPS_TLS_CA>`
-  - `verifyhost=192.168.0.92`
+  - `verifyhost=192.168.0.89`
 
 ### C. 로그인 락아웃 정책 (서버 측)
 - 적용 코드: `server/src/main.cpp` (`run_login_auth`)

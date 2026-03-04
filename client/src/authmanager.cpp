@@ -13,7 +13,7 @@ constexpr int kDefaultAuthTlsPort = 6555;
 constexpr int kDefaultAuthPlainPort = 5555;
 constexpr bool kDefaultAuthTlsEnable = true;
 constexpr bool kDefaultPlainFallbackEnable = false;
-constexpr const char* kDefaultAuthHost = "192.168.0.92";
+constexpr const char* kDefaultAuthHost = "192.168.0.89";
 constexpr const char* kResourceCaPath = ":/certs/auth_ca.pem";
 
 bool parseEnvBool(const QProcessEnvironment& env, const QString& key, bool defaultValue)
