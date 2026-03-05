@@ -22,7 +22,7 @@ import control as ctrl
 
 LOG_RE = re.compile(
     r"PIDLOG,t:(?P<t>\d+),ex:(?P<ex>-?\d+\.?\d*),ey:(?P<ey>-?\d+\.?\d*),"
-    r"out_x:(?P<out_x>\d+),out_y:(?P<out_y>\d+),"
+    r"out_x:(?P<out_x>-?\d+\.?\d*),out_y:(?P<out_y>-?\d+\.?\d*),"
     r"kpx:(?P<kpx>-?\d+\.?\d*),kix:(?P<kix>-?\d+\.?\d*),kdx:(?P<kdx>-?\d+\.?\d*),"
     r"kpy:(?P<kpy>-?\d+\.?\d*),kiy:(?P<kiy>-?\d+\.?\d*),kdy:(?P<kdy>-?\d+\.?\d*)"
 )
@@ -54,16 +54,22 @@ def parse_log(log_path: Path) -> pd.DataFrame:
 def estimate_first_order(ts: float, e: np.ndarray, u: np.ndarray) -> tuple[float, float]:
     """
     ARX approximation:
-      e[k+1] = a*e[k] + b*u[k]
+      e[k+1] = a*e[k] + b*Δu[k]
     to first-order continuous plant:
       G(s) = K / (tau*s + 1)
+
+    위치형 PID 에서 u 는 절대 PWM (예: 1530) 이므로,
+    평균을 빼서 "제어 변화량(Δu)" 으로 변환한 뒤 피팅한다.
+    그래야 plant gain K 가 현실적인 크기로 추정된다.
     """
     if len(e) < 5:
         raise ValueError("데이터가 너무 적습니다. 최소 5개 이상의 샘플이 필요합니다.")
 
+    u_centered = u - np.mean(u)
+
     y = e[1:]
     x1 = e[:-1]
-    x2 = u[:-1]
+    x2 = u_centered[:-1]
     X = np.column_stack([x1, x2])
     coeff, *_ = np.linalg.lstsq(X, y, rcond=None)
     a, b = coeff[0], coeff[1]
@@ -95,7 +101,7 @@ def pid_cost(params: np.ndarray, plant, ts: float) -> float:
     e = 1.0 - y
 
     overshoot = max(0.0, np.max(y) - 1.0)
-    iae = np.trapz(np.abs(e), t)
+    iae = np.trapezoid(np.abs(e), t)
     final_err = abs(e[-1])
     return 5.0 * overshoot + iae + 2.0 * final_err
 
@@ -142,6 +148,17 @@ def main():
     print(f"  estimated plant: K={rx.k_plant:.6f}, tau={rx.tau:.6f}s")
     print(f"[Y axis / PA8] kp={-ry.kp:.6f}, ki={-ry.ki:.6f}, kd={-ry.kd:.6f}")
     print(f"  estimated plant: K={ry.k_plant:.6f}, tau={ry.tau:.6f}s")
+    print("")
+    print("Raspi pid_pwm_agent.py 적용 예시:")
+    print(
+        f"sudo python3 pid_pwm_agent.py --host 10.42.0.1 --port 5555 \\"
+    )
+    print(
+        f"  --kp-x {rx.kp:.4f} --ki-x {rx.ki:.4f} --kd-x {rx.kd:.4f} \\"
+    )
+    print(
+        f"  --kp-y {-ry.kp:.4f} --ki-y {-ry.ki:.4f} --kd-y {-ry.kd:.4f}"
+    )
     print("")
     print("STM32 적용 예시:")
     print(

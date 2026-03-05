@@ -11,6 +11,12 @@
 #include <memory>
 #include <string>
 #include <chrono>
+#include <algorithm>
+
+// LUT용 그리드 설정 (1920x1080 기준 11x19 ≈ 209 포인트)
+static constexpr int LUT_GRID_ROWS = 11;  // 세로 분할
+static constexpr int LUT_GRID_COLS = 19;  // 가로 분할
+static bool g_lut_mode = true;            // 필요 시 인자로 끌 수 있음
 
 int main(int argc, char** argv)
 {
