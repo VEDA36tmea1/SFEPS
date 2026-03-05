@@ -1,23 +1,19 @@
 #include "rfid_monitor.h"
-#include <iostream>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <unistd.h>
+#include <chrono>
 #include <cstring>
 #include <ctime>
-#include <thread>
-#include <chrono>
-#include <poll.h>
 #include <errno.h>
+#include <iostream>
+#include <poll.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <thread>
+#include <unistd.h>
+
 #include "event_matcher.h"
 
-// 생성자: 멤버 변수 초기화
-RfidMonitor::RfidMonitor(std::atomic<bool>& running_flag,
-                         const std::string& db_host, const std::string& db_user,
-                         const std::string& db_pass, const std::string& db_name)
-    : m_running(running_flag), m_socket_path("/tmp/rc522_events.sock"),
-      m_db_host(db_host), m_db_user(db_user), m_db_pass(db_pass), m_db_name(db_name) {
-}
+RfidMonitor::RfidMonitor(std::atomic<bool>& running_flag)
+    : m_running(running_flag), m_socket_path("/tmp/rc522_events.sock") {}
 
 RfidMonitor::~RfidMonitor() {}
 
@@ -52,12 +48,8 @@ std::string RfidMonitor::extract_json_value(const std::string& json, const std::
     }
 }
 
-// DB 저장 함수 (실제 DB 연결 로직은 여기에 구현)
 void RfidMonitor::save_to_db(const std::string& uid, const std::string& age_group, const std::string& time_str) {
-    // 기존 DB 저장은 유지 가능하나, 여기서는 EventMatcher에 카드 정보를 전파
     std::cout << "[rfid_monitor.cpp] " << "[DB Save Request] UID: " << uid << ", Group: " << age_group << ", Time: " << time_str << std::endl;
-    // Notify matcher about RFID read (card_text is age_group or card info)
-    // Pass uid as card_id
     EventMatcher::instance().on_rfid_read(uid, age_group, uid);
 }
 

@@ -1058,8 +1058,7 @@ int main(int argc, char* argv[]) {
     std::thread t_audio(run_audio_receiver, sec_cfg);
     std::thread t_alert(run_fraud_notifier, sec_cfg);
 
-    RfidMonitor rfid_monitor(g_running, cfg.db_host, cfg.db_user, cfg.db_pass,
-                             cfg.db_name_analytics);
+    RfidMonitor rfid_monitor(g_running);
     std::thread t_rfid(&RfidMonitor::start, &rfid_monitor);
 
     std::thread t_test_ping;
