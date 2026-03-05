@@ -8,12 +8,12 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
-enum LogType { SYSTEM_LOG, LOGIN_LOG, ANALYTICS_LOG, RECORDING_LOG, CLEANUP_DB_LOG };
+enum LogType { LOGIN_LOG, ANALYTICS_LOG, RECORDING_LOG, CLEANUP_DB_LOG };
 
 struct LogItem {
     LogType type;
     
-    // [공통 데이터] (시스템 로그 메시지, 로그인 ID 등)
+    // [공통 데이터] (로그인 ID/IP 등)
     std::string str1; 
     std::string str2; 
     
@@ -38,13 +38,10 @@ public:
     
     bool connect();
     
-    // 1. 일반 시스템 로그
-    void enqueue(const std::string& type, const std::string& message);
-
-    // 2. 로그인 기록
+    // 1. 로그인 기록
     void enqueueLogin(const std::string& username, const std::string& ip, bool success);
 
-    // 3. ★ [수정됨] 분석 데이터 저장 함수 (인자 대폭 변경)
+    // 2. ★ [수정됨] 분석 데이터 저장 함수 (인자 대폭 변경)
     // (기존: time, objType, conf, details) -> (신규: time, objType, x, y, event, age, photoPath)
     void enqueueAnalytics(const std::string& time, 
                           const std::string& objType, 
@@ -53,7 +50,7 @@ public:
                           int age, 
                           const std::string& photoPath);
 
-    // 4. 녹화 파일 기록
+    // 3. 녹화 파일 기록
     void enqueueRecording(const std::string& filename);
 
     // DB 청소
@@ -65,7 +62,6 @@ private:
     void closeStatements();
 
     MYSQL* conn;
-    MYSQL_STMT* systemLogStmt;
     MYSQL_STMT* loginLogStmt;
     MYSQL_STMT* analyticsLogStmt;
     MYSQL_STMT* recordingStmt;
