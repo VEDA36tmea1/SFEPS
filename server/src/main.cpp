@@ -61,6 +61,7 @@ struct SecurityRuntimeOptions {
     std::string app_tls_cert_file;
     std::string app_tls_key_file;
     int app_tls_handshake_timeout_ms = 3000;
+    std::string app_bind_ip = "0.0.0.0";
 };
 
 std::string trim_copy(const std::string& s) {
@@ -200,6 +201,10 @@ SecurityRuntimeOptions load_security_runtime_options() {
     cfg.alert_tls_port = load_env_port("SFEPS_ALERT_TLS_PORT", 6557);
     cfg.app_tls_handshake_timeout_ms =
         load_env_int("SFEPS_APP_TLS_HANDSHAKE_TIMEOUT_MS", 3000, 1);
+    const char* bind_ip = std::getenv("SFEPS_APP_BIND_IP");
+    if (bind_ip != nullptr && bind_ip[0] != '\0') {
+        cfg.app_bind_ip = trim_copy(bind_ip);
+    }
 
     const char* cert_file = std::getenv("SFEPS_APP_TLS_CERT_FILE");
     if (cert_file != nullptr && cert_file[0] != '\0') {
@@ -217,6 +222,12 @@ SecurityRuntimeOptions load_security_runtime_options() {
 bool validate_security_runtime_options(const SecurityRuntimeOptions& cfg, std::string& err) {
     if (!cfg.app_plaintext_enable && !cfg.app_tls_enable) {
         err = "invalid runtime config: both plaintext and TLS are disabled";
+        return false;
+    }
+
+    in_addr bind_addr {};
+    if (inet_pton(AF_INET, cfg.app_bind_ip.c_str(), &bind_addr) != 1) {
+        err = "invalid bind IP in SFEPS_APP_BIND_IP: " + cfg.app_bind_ip;
         return false;
     }
 
@@ -258,13 +269,26 @@ bool validate_security_runtime_options(const SecurityRuntimeOptions& cfg, std::s
         }
     }
 
+    if (cfg.auth_allow_ips.empty()) {
+        err = "missing required allowlist: SFEPS_AUTH_ALLOW_IPS (fail-closed)";
+        return false;
+    }
+    if (cfg.audio_allow_ips.empty()) {
+        err = "missing required allowlist: SFEPS_AUDIO_ALLOW_IPS (fail-closed)";
+        return false;
+    }
+    if (cfg.alert_allow_ips.empty()) {
+        err = "missing required allowlist: SFEPS_ALERT_ALLOW_IPS (fail-closed)";
+        return false;
+    }
+
     return true;
 }
 
 void log_allowlist_mode(const char* env_name, const std::unordered_set<std::string>& allowlist) {
     if (allowlist.empty()) {
         std::cout << "[main.cpp] [Security] " << env_name
-                  << " not set: allow-all mode (compatibility)." << std::endl;
+                  << " is empty: fail-closed (all connections denied)." << std::endl;
         return;
     }
 
@@ -288,10 +312,11 @@ void log_transport_mode(const SecurityRuntimeOptions& cfg) {
                   << ", handshake_timeout_ms=" << cfg.app_tls_handshake_timeout_ms << std::endl;
         std::cout << "[main.cpp] [Security] TLS cert file=" << cfg.app_tls_cert_file << std::endl;
     }
+    std::cout << "[main.cpp] [Security] Bind IP=" << cfg.app_bind_ip << std::endl;
 }
 
 bool is_ip_allowed(const std::unordered_set<std::string>& allowlist, const std::string& client_ip) {
-    if (allowlist.empty()) return true;
+    if (allowlist.empty()) return false;
     return allowlist.find(client_ip) != allowlist.end();
 }
 
@@ -314,7 +339,7 @@ void apply_socket_read_timeout(int fd, int timeout_ms) {
     }
 }
 
-int create_listen_socket(int port, const char* tag) {
+int create_listen_socket(int port, const char* tag, const std::string& bind_ip) {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) {
         std::cerr << "[" << tag << "] socket() failed: " << std::strerror(errno) << std::endl;
@@ -332,7 +357,11 @@ int create_listen_socket(int port, const char* tag) {
     sockaddr_in addr {};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(static_cast<uint16_t>(port));
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (inet_pton(AF_INET, bind_ip.c_str(), &addr.sin_addr) != 1) {
+        std::cerr << "[" << tag << "] invalid bind IP: " << bind_ip << std::endl;
+        close(server_fd);
+        return -1;
+    }
 
     if (bind(server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
         std::cerr << "[" << tag << "] bind() failed: " << std::strerror(errno) << std::endl;
@@ -397,7 +426,7 @@ void run_audio_receiver(const SecurityRuntimeOptions sec_cfg) {
 
     int plain_server_fd = -1;
     if (sec_cfg.app_plaintext_enable) {
-        plain_server_fd = create_listen_socket(AUDIO_PORT, "Audio");
+        plain_server_fd = create_listen_socket(AUDIO_PORT, "Audio", sec_cfg.app_bind_ip);
         if (plain_server_fd < 0) {
             ring.stop();
             playback.stop();
@@ -415,6 +444,7 @@ void run_audio_receiver(const SecurityRuntimeOptions sec_cfg) {
         tls_cfg.cert_file = sec_cfg.app_tls_cert_file;
         tls_cfg.key_file = sec_cfg.app_tls_key_file;
         tls_cfg.handshake_timeout_ms = sec_cfg.app_tls_handshake_timeout_ms;
+        tls_cfg.bind_ip = sec_cfg.app_bind_ip;
         tls_cfg.tag = "AudioTLS";
 
         if (!init_tls_server(tls_server, tls_cfg, tls_err)) {
@@ -462,6 +492,8 @@ void run_audio_receiver(const SecurityRuntimeOptions sec_cfg) {
                 }
 
                 const std::string client_ip = peer_ip_to_string(peer_addr);
+                std::cout << "[main.cpp] [Audio] Plain connection attempt: ip=" << client_ip
+                          << ", fd=" << client_fd << std::endl;
                 if (!is_ip_allowed(sec_cfg.audio_allow_ips, client_ip)) {
                     std::cout << "[main.cpp] [Audio] Plain connection rejected by allowlist: ip="
                               << client_ip << std::endl;
@@ -515,6 +547,8 @@ void run_audio_receiver(const SecurityRuntimeOptions sec_cfg) {
                 }
 
                 const std::string client_ip = peer_ip_to_string(peer_addr);
+                std::cout << "[main.cpp] [Audio] TLS connection attempt: ip=" << client_ip
+                          << ", fd=" << client_fd << std::endl;
                 if (!is_ip_allowed(sec_cfg.audio_allow_ips, client_ip)) {
                     std::cout << "[main.cpp] [Audio] TLS connection rejected by allowlist: ip="
                               << client_ip << std::endl;
@@ -567,7 +601,7 @@ void run_audio_receiver(const SecurityRuntimeOptions sec_cfg) {
 void run_fraud_notifier(const SecurityRuntimeOptions sec_cfg) {
     int plain_server_fd = -1;
     if (sec_cfg.app_plaintext_enable) {
-        plain_server_fd = create_listen_socket(ALERT_PORT, "Alert");
+        plain_server_fd = create_listen_socket(ALERT_PORT, "Alert", sec_cfg.app_bind_ip);
         if (plain_server_fd < 0) {
             g_running = false;
             return;
@@ -583,6 +617,7 @@ void run_fraud_notifier(const SecurityRuntimeOptions sec_cfg) {
         tls_cfg.cert_file = sec_cfg.app_tls_cert_file;
         tls_cfg.key_file = sec_cfg.app_tls_key_file;
         tls_cfg.handshake_timeout_ms = sec_cfg.app_tls_handshake_timeout_ms;
+        tls_cfg.bind_ip = sec_cfg.app_bind_ip;
         tls_cfg.tag = "AlertTLS";
 
         if (!init_tls_server(tls_server, tls_cfg, tls_err)) {
@@ -627,6 +662,8 @@ void run_fraud_notifier(const SecurityRuntimeOptions sec_cfg) {
                 }
 
                 const std::string client_ip = peer_ip_to_string(peer_addr);
+                std::cout << "[main.cpp] [Alert] Plain connection attempt: ip=" << client_ip
+                          << ", fd=" << client_fd << std::endl;
                 if (!is_ip_allowed(sec_cfg.alert_allow_ips, client_ip)) {
                     std::cout << "[main.cpp] [Alert] Plain connection rejected by allowlist: ip="
                               << client_ip << std::endl;
@@ -662,6 +699,8 @@ void run_fraud_notifier(const SecurityRuntimeOptions sec_cfg) {
                 }
 
                 const std::string client_ip = peer_ip_to_string(peer_addr);
+                std::cout << "[main.cpp] [Alert] TLS connection attempt: ip=" << client_ip
+                          << ", fd=" << client_fd << std::endl;
                 if (!is_ip_allowed(sec_cfg.alert_allow_ips, client_ip)) {
                     std::cout << "[main.cpp] [Alert] TLS connection rejected by allowlist: ip="
                               << client_ip << std::endl;
@@ -727,7 +766,7 @@ void run_login_auth(const RuntimeConfig cfg, const SecurityRuntimeOptions sec_cf
 
     int plain_server_fd = -1;
     if (sec_cfg.app_plaintext_enable) {
-        plain_server_fd = create_listen_socket(AUTH_PORT, "Auth");
+        plain_server_fd = create_listen_socket(AUTH_PORT, "Auth", sec_cfg.app_bind_ip);
         if (plain_server_fd < 0) {
             g_running = false;
             return;
@@ -744,6 +783,7 @@ void run_login_auth(const RuntimeConfig cfg, const SecurityRuntimeOptions sec_cf
         tls_cfg.cert_file = sec_cfg.app_tls_cert_file;
         tls_cfg.key_file = sec_cfg.app_tls_key_file;
         tls_cfg.handshake_timeout_ms = sec_cfg.app_tls_handshake_timeout_ms;
+        tls_cfg.bind_ip = sec_cfg.app_bind_ip;
         tls_cfg.tag = "AuthTLS";
 
         if (!init_tls_server(tls_server, tls_cfg, tls_err)) {
@@ -884,6 +924,9 @@ void run_login_auth(const RuntimeConfig cfg, const SecurityRuntimeOptions sec_cf
                 std::string user;
                 bool success = false;
                 evaluate_auth(data, client_ip, oversized, user, success);
+                std::cout << "[main.cpp] [Auth] Plain login attempt result: ip=" << client_ip
+                          << ", user=" << user << ", result=" << (success ? "PASS" : "FAIL")
+                          << std::endl;
 
                 if (oversized) {
                     std::cout
@@ -945,6 +988,9 @@ void run_login_auth(const RuntimeConfig cfg, const SecurityRuntimeOptions sec_cf
                 std::string user;
                 bool success = false;
                 evaluate_auth(data, client_ip, oversized, user, success);
+                std::cout << "[main.cpp] [Auth] TLS login attempt result: ip=" << client_ip
+                          << ", user=" << user << ", result=" << (success ? "PASS" : "FAIL")
+                          << std::endl;
 
                 if (oversized) {
                     std::cout

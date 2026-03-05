@@ -8,7 +8,7 @@ constexpr const char* kAuthQuery = "SELECT 1 FROM users WHERE id = ? AND passwor
 } // namespace
 
 Authenticator::Authenticator(const char* h, const char* u, const char* p, const char* db)
-    : host(h), user(u), pass(p), db_name(db), conn(NULL), authStmt(NULL) {}
+    : conn(NULL), authStmt(NULL), host(h), user(u), pass(p), db_name(db) {}
 
 Authenticator::~Authenticator() {
     if (authStmt != NULL) {

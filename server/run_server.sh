@@ -87,6 +87,7 @@ fi
 : "${SFEPS_AUDIO_TLS_PORT:=6556}"
 : "${SFEPS_ALERT_TLS_PORT:=6557}"
 : "${SFEPS_APP_TLS_HANDSHAKE_TIMEOUT_MS:=3000}"
+: "${SFEPS_APP_BIND_IP:=0.0.0.0}"
 
 required_envs=(
   SFEPS_DB_USER
@@ -97,6 +98,19 @@ required_envs=(
 for var_name in "${required_envs[@]}"; do
   if [[ -z "${!var_name:-}" ]]; then
     echo "[run_server] ${var_name} is not set (fail-closed)." >&2
+    exit 1
+  fi
+done
+
+required_allowlist_envs=(
+  SFEPS_AUTH_ALLOW_IPS
+  SFEPS_AUDIO_ALLOW_IPS
+  SFEPS_ALERT_ALLOW_IPS
+)
+
+for var_name in "${required_allowlist_envs[@]}"; do
+  if [[ -z "${!var_name:-}" ]]; then
+    echo "[run_server] ${var_name} is not set (allowlist fail-closed)." >&2
     exit 1
   fi
 done
@@ -172,6 +186,7 @@ export SFEPS_AUTH_TLS_PORT
 export SFEPS_AUDIO_TLS_PORT
 export SFEPS_ALERT_TLS_PORT
 export SFEPS_APP_TLS_HANDSHAKE_TIMEOUT_MS
+export SFEPS_APP_BIND_IP
 if [[ -n "${SFEPS_APP_TLS_CERT_FILE:-}" ]]; then
   export SFEPS_APP_TLS_CERT_FILE
 fi
@@ -199,6 +214,7 @@ log_info "SFEPS_AUTH_TLS_PORT=${SFEPS_AUTH_TLS_PORT}"
 log_info "SFEPS_AUDIO_TLS_PORT=${SFEPS_AUDIO_TLS_PORT}"
 log_info "SFEPS_ALERT_TLS_PORT=${SFEPS_ALERT_TLS_PORT}"
 log_info "SFEPS_APP_TLS_HANDSHAKE_TIMEOUT_MS=${SFEPS_APP_TLS_HANDSHAKE_TIMEOUT_MS}"
+log_info "SFEPS_APP_BIND_IP=${SFEPS_APP_BIND_IP}"
 if [[ -n "${SFEPS_APP_TLS_CERT_FILE:-}" ]]; then
   log_info "SFEPS_APP_TLS_CERT_FILE=${SFEPS_APP_TLS_CERT_FILE}"
 fi
