@@ -78,12 +78,14 @@ void InteractiveBoxTargetProvider::onMouse(int event, int x, int y, int flags, v
         }
         else
         {
-            // 새 박스 생성 시작
+            // 빈 곳에서 클릭: 새 박스 생성 시작 (또는 기존 박스 클리어)
             self->creating_ = true;
             self->moving_ = false;
             self->anchor_ = p;
             self->rect_ = cv::Rect(p.x, p.y, 0, 0);
-            self->valid_ = true;
+            // 실제 드래그(폭/높이 >= minW_/minH_)가 완료되기 전까지는
+            // ROI 를 유효하지 않게 유지한다. (빈 곳 "클릭"만 하면 곧바로 사라지도록)
+            self->valid_ = false;
         }
         break;
     }
@@ -119,6 +121,11 @@ void InteractiveBoxTargetProvider::onMouse(int event, int x, int y, int flags, v
                 // 너무 작은 드래그는 무시(실수 클릭)
                 self->valid_ = false;
                 self->rect_ = cv::Rect();
+            }
+            else
+            {
+                // 충분히 드래그된 경우에만 새로운 ROI 를 유효로 설정
+                self->valid_ = true;
             }
         }
         if (self->moving_)
