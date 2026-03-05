@@ -5,8 +5,6 @@
 #include <vector>
 
 namespace {
-constexpr const char* kSystemLogInsertQuery =
-    "INSERT INTO logs (event_type, message) VALUES (?, ?)";
 constexpr const char* kLoginLogInsertQuery =
     "INSERT INTO login_logs (username, ip_address, status) VALUES (?, ?, ?)";
 constexpr const char* kAnalyticsLogInsertQuery =
@@ -15,6 +13,8 @@ constexpr const char* kAnalyticsLogInsertQuery =
 constexpr const char* kRecordingInsertQuery = "INSERT INTO recordings (filename) VALUES (?)";
 constexpr const char* kAnalyticsRetentionDeleteQuery =
     "DELETE FROM analytics_logs WHERE created_at < (NOW() - INTERVAL 1 DAY)";
+constexpr const char* kLoginLogRetentionDeleteQuery =
+    "DELETE FROM login_logs WHERE created_at < (NOW() - INTERVAL 1 DAY)";
 constexpr const char* kRecordingRetentionDeleteByCreatedAtQuery =
     "DELETE FROM recordings WHERE created_at < (NOW() - INTERVAL 1 DAY)";
 constexpr const char* kRecordingRetentionDeleteByFilenameQuery =
@@ -44,7 +44,6 @@ bool prepare_stmt(MYSQL* conn, MYSQL_STMT*& stmt, const char* query, const char*
 
 DBLogger::DBLogger(const char* host_, const char* user_, const char* pass_, const char* db)
     : conn(nullptr),
-      systemLogStmt(nullptr),
       loginLogStmt(nullptr),
       analyticsLogStmt(nullptr),
       recordingStmt(nullptr),
@@ -73,7 +72,6 @@ DBLogger::~DBLogger() {
 bool DBLogger::prepareStatements() {
     if (conn == nullptr) return false;
 
-    if (!prepare_stmt(conn, systemLogStmt, kSystemLogInsertQuery, "logs insert")) return false;
     if (!prepare_stmt(conn, loginLogStmt, kLoginLogInsertQuery, "login_logs insert")) return false;
     if (!prepare_stmt(conn, analyticsLogStmt, kAnalyticsLogInsertQuery, "analytics_logs insert")) {
         return false;
@@ -94,10 +92,6 @@ void DBLogger::closeStatements() {
     if (loginLogStmt != nullptr) {
         mysql_stmt_close(loginLogStmt);
         loginLogStmt = nullptr;
-    }
-    if (systemLogStmt != nullptr) {
-        mysql_stmt_close(systemLogStmt);
-        systemLogStmt = nullptr;
     }
 }
 
@@ -125,16 +119,6 @@ bool DBLogger::connect() {
     isRunning = true;
     workerThread = std::thread(&DBLogger::processQueue, this);
     return true;
-}
-
-void DBLogger::enqueue(const std::string& type, const std::string& message) {
-    if (!isRunning.load()) return;
-
-    {
-        std::lock_guard<std::mutex> lock(queueMutex);
-        logQueue.push(LogItem {SYSTEM_LOG, type, message, "", 0.0f, 0.0f, "", 0, "", false});
-    }
-    cv.notify_one();
 }
 
 void DBLogger::enqueueLogin(const std::string& username, const std::string& ip, bool success) {
@@ -209,6 +193,20 @@ void DBLogger::processQueue() {
         return true;
     };
 
+    auto execute_delete = [&](const char* query, const char* label,
+                              my_ulonglong* affected_rows) -> int {
+        if (mysql_query(conn, query) != 0) {
+            const int err = mysql_errno(conn);
+            std::cerr << "[log.cpp] [DB Error] cleanup delete failed (" << label
+                      << "): " << mysql_error(conn) << std::endl;
+            return err;
+        }
+        if (affected_rows != nullptr) {
+            *affected_rows = mysql_affected_rows(conn);
+        }
+        return 0;
+    };
+
     while (true) {
         std::vector<LogItem> batch;
         {
@@ -227,26 +225,9 @@ void DBLogger::processQueue() {
 
         if (conn == nullptr || batch.empty()) continue;
 
+        bool cleanup_requested = false;
         for (auto& item : batch) {
-            if (item.type == SYSTEM_LOG) {
-                MYSQL_BIND params[2];
-                std::memset(params, 0, sizeof(params));
-
-                unsigned long type_len = static_cast<unsigned long>(item.str1.size());
-                unsigned long msg_len = static_cast<unsigned long>(item.str2.size());
-
-                params[0].buffer_type = MYSQL_TYPE_STRING;
-                params[0].buffer = const_cast<char*>(item.str1.c_str());
-                params[0].buffer_length = type_len;
-                params[0].length = &type_len;
-
-                params[1].buffer_type = MYSQL_TYPE_STRING;
-                params[1].buffer = const_cast<char*>(item.str2.c_str());
-                params[1].buffer_length = msg_len;
-                params[1].length = &msg_len;
-
-                execute_stmt(systemLogStmt, params, "logs");
-            } else if (item.type == LOGIN_LOG) {
+            if (item.type == LOGIN_LOG) {
                 MYSQL_BIND params[3];
                 std::memset(params, 0, sizeof(params));
 
@@ -326,52 +307,50 @@ void DBLogger::processQueue() {
 
                 execute_stmt(recordingStmt, params, "recordings");
             } else if (item.type == CLEANUP_DB_LOG) {
-                auto execute_delete = [&](const char* query, const char* label,
-                                          my_ulonglong* affected_rows) -> int {
-                    if (mysql_query(conn, query) != 0) {
-                        const int err = mysql_errno(conn);
-                        std::cerr << "[log.cpp] [DB Error] cleanup delete failed (" << label
-                                  << "): " << mysql_error(conn) << std::endl;
-                        return err;
-                    }
-                    if (affected_rows != nullptr) {
-                        *affected_rows = mysql_affected_rows(conn);
-                    }
-                    return 0;
-                };
-
-                my_ulonglong deleted_analytics = 0;
-                if (execute_delete(kAnalyticsRetentionDeleteQuery, "analytics_logs(created_at)",
-                                   &deleted_analytics) == 0 &&
-                    deleted_analytics > 0) {
-                    std::cout << "[log.cpp] [Cleanup] deleted analytics_logs rows: "
-                              << deleted_analytics << std::endl;
-                }
-
-                my_ulonglong deleted_recordings = 0;
-                int recording_cleanup_err = execute_delete(
-                    kRecordingRetentionDeleteByCreatedAtQuery, "recordings(created_at)",
-                    &deleted_recordings);
-                if (recording_cleanup_err == 0) {
-                    if (deleted_recordings > 0) {
-                        std::cout << "[log.cpp] [Cleanup] deleted recordings rows: "
-                                  << deleted_recordings << std::endl;
-                    }
-                } else if (recording_cleanup_err == 1054) {
-                    deleted_recordings = 0;
-                    if (execute_delete(kRecordingRetentionDeleteByFilenameQuery,
-                                       "recordings(filename timestamp fallback)",
-                                       &deleted_recordings) == 0 &&
-                        deleted_recordings > 0) {
-                        std::cout << "[log.cpp] [Cleanup] deleted recordings rows (filename fallback): "
-                                  << deleted_recordings << std::endl;
-                    }
-                } else {
-                    std::cerr
-                        << "[log.cpp] [DB Error] recordings cleanup skipped due to non-recoverable error."
-                        << std::endl;
-                }
+                cleanup_requested = true;
             }
+        }
+
+        if (!cleanup_requested) continue;
+
+        my_ulonglong deleted_analytics = 0;
+        if (execute_delete(kAnalyticsRetentionDeleteQuery, "analytics_logs(created_at)",
+                           &deleted_analytics) == 0 &&
+            deleted_analytics > 0) {
+            std::cout << "[log.cpp] [Cleanup] deleted analytics_logs rows: "
+                      << deleted_analytics << std::endl;
+        }
+
+        my_ulonglong deleted_login = 0;
+        if (execute_delete(kLoginLogRetentionDeleteQuery, "login_logs(created_at)",
+                           &deleted_login) == 0 &&
+            deleted_login > 0) {
+            std::cout << "[log.cpp] [Cleanup] deleted login_logs rows: "
+                      << deleted_login << std::endl;
+        }
+
+        my_ulonglong deleted_recordings = 0;
+        int recording_cleanup_err = execute_delete(
+            kRecordingRetentionDeleteByCreatedAtQuery, "recordings(created_at)",
+            &deleted_recordings);
+        if (recording_cleanup_err == 0) {
+            if (deleted_recordings > 0) {
+                std::cout << "[log.cpp] [Cleanup] deleted recordings rows: "
+                          << deleted_recordings << std::endl;
+            }
+        } else if (recording_cleanup_err == 1054) {
+            deleted_recordings = 0;
+            if (execute_delete(kRecordingRetentionDeleteByFilenameQuery,
+                               "recordings(filename timestamp fallback)",
+                               &deleted_recordings) == 0 &&
+                deleted_recordings > 0) {
+                std::cout << "[log.cpp] [Cleanup] deleted recordings rows (filename fallback): "
+                          << deleted_recordings << std::endl;
+            }
+        } else {
+            std::cerr
+                << "[log.cpp] [DB Error] recordings cleanup skipped due to non-recoverable error."
+                << std::endl;
         }
     }
 }

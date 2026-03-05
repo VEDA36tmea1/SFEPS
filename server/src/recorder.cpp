@@ -196,8 +196,6 @@ bool RTSPRecorder::connect_and_record() {
         return false;
     }
     
-    // 연결 성공 로그
-    logger.enqueue("SYSTEM", "RTSP Connected via TLS (Secure)");
     std::cout << "[recorder.cpp] " << "[System] Connected! Video Stream Index: " << video_stream_idx << std::endl;
 
     if (!open_output_file(input_ctx->streams[video_stream_idx]->codecpar)) return false;

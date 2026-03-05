@@ -16,6 +16,13 @@ constexpr bool kDefaultPlainFallbackEnable = false;
 constexpr const char* kDefaultAuthHost = "192.168.0.92";
 constexpr const char* kResourceCaPath = ":/certs/auth_ca.pem";
 
+QString maskUserId(const QString& userId)
+{
+    if (userId.isEmpty()) return QStringLiteral("<empty>");
+    if (userId.size() <= 2) return QStringLiteral("**");
+    return userId.left(2) + QStringLiteral("***");
+}
+
 bool parseEnvBool(const QProcessEnvironment& env, const QString& key, bool defaultValue)
 {
     const QString raw = env.value(key).trimmed().toLower();
@@ -59,6 +66,7 @@ AuthManager::AuthManager(QObject *parent) : QObject(parent)
 void AuthManager::login(const QString &id, const QString &pw)
 {
     const QString userId = id.trimmed();
+    const QString trimmedPw = pw.trimmed();
     if (userId.isEmpty() || pw.trimmed().isEmpty()) {
         emit loginFailed("ID와 PW를 모두 입력하세요");
         return;
@@ -75,6 +83,20 @@ void AuthManager::login(const QString &id, const QString &pw)
     const QString authTlsCaPath = env.value("AUTH_TLS_CA_FILE").trimmed();
     const QByteArray payload = QString("%1:%2").arg(userId, pw).toUtf8();
 
+    qInfo().noquote()
+        << QString("[AuthFlow][1] login payload prepared (user=%1, id_len=%2, pw_len=%3, bytes=%4)")
+               .arg(maskUserId(userId))
+               .arg(userId.size())
+               .arg(trimmedPw.size())
+               .arg(payload.size());
+    qInfo().noquote()
+        << QString("[AuthFlow][2] transport policy host=%1 tls=%2 tls_port=%3 plain_port=%4 plain_fallback=%5")
+               .arg(authHost)
+               .arg(authTlsEnable ? "on" : "off")
+               .arg(authTlsPort)
+               .arg(authPlainPort)
+               .arg(allowPlainFallback ? "on" : "off");
+
     LoginAttemptResult result = LoginAttemptResult::TransportError;
     QString transportError;
     bool attemptedTls = false;
@@ -82,6 +104,9 @@ void AuthManager::login(const QString &id, const QString &pw)
 
     if (authTlsEnable) {
         attemptedTls = true;
+        qInfo().noquote() << QString("[AuthFlow][3] attempting TLS auth connect %1:%2")
+                                 .arg(authHost)
+                                 .arg(authTlsPort);
         result = attemptTlsLogin(authHost, authTlsPort, payload, authTlsCaPath, transportError);
 
         if (result == LoginAttemptResult::TransportError) {
@@ -89,6 +114,9 @@ void AuthManager::login(const QString &id, const QString &pw)
             if (allowPlainFallback) {
                 attemptedFallback = true;
                 qWarning() << "[SECURITY] plaintext fallback used for auth";
+                qInfo().noquote() << QString("[AuthFlow][3] fallback plaintext auth connect %1:%2")
+                                         .arg(authHost)
+                                         .arg(authPlainPort);
 
                 QString plainTransportError;
                 result = attemptPlainLogin(authHost, authPlainPort, payload, plainTransportError);
@@ -100,6 +128,9 @@ void AuthManager::login(const QString &id, const QString &pw)
         }
     } else {
         qWarning() << "[SECURITY] AUTH_TLS_ENABLE=0, using plaintext auth transport.";
+        qInfo().noquote() << QString("[AuthFlow][3] attempting plaintext auth connect %1:%2")
+                                 .arg(authHost)
+                                 .arg(authPlainPort);
         result = attemptPlainLogin(authHost, authPlainPort, payload, transportError);
         if (result == LoginAttemptResult::TransportError) {
             qWarning() << "[AuthManager] plaintext auth transport failed:" << transportError;
@@ -202,6 +233,9 @@ AuthManager::LoginAttemptResult AuthManager::attemptTlsLogin(const QString &host
         outTransportError = QString("TLS CA load failed: %1").arg(caError);
         return LoginAttemptResult::TransportError;
     }
+    qInfo().noquote() << QString("[AuthFlow][3] TLS CA loaded from %1 (count=%2)")
+                             .arg(caSource)
+                             .arg(trustedCerts.size());
 
     socket->abort();
     socket->setPeerVerifyMode(QSslSocket::VerifyPeer);

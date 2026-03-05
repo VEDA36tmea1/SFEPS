@@ -720,6 +720,11 @@ void run_login_auth(const RuntimeConfig cfg, const SecurityRuntimeOptions sec_cf
                   << "Login service will continue without auth DB log writes." << std::endl;
     }
 
+    std::cout << "[AuthFlow][4] run_login_auth started. "
+              << "plaintext=" << (sec_cfg.app_plaintext_enable ? "on" : "off")
+              << ", tls=" << (sec_cfg.app_tls_enable ? "on" : "off")
+              << ", auth_tls_port=" << sec_cfg.auth_tls_port << std::endl;
+
     int plain_server_fd = -1;
     if (sec_cfg.app_plaintext_enable) {
         plain_server_fd = create_listen_socket(AUTH_PORT, "Auth");
@@ -728,6 +733,7 @@ void run_login_auth(const RuntimeConfig cfg, const SecurityRuntimeOptions sec_cf
             return;
         }
         std::cout << "[main.cpp] [Auth] listening plaintext on port " << AUTH_PORT << std::endl;
+        std::cout << "[AuthFlow][4] auth plaintext listener ready on " << AUTH_PORT << std::endl;
     }
 
     TlsServer tls_server;
@@ -748,6 +754,8 @@ void run_login_auth(const RuntimeConfig cfg, const SecurityRuntimeOptions sec_cf
         }
 
         std::cout << "[main.cpp] [Auth] listening TLS on port " << sec_cfg.auth_tls_port
+                  << std::endl;
+        std::cout << "[AuthFlow][4] auth TLS listener ready on " << sec_cfg.auth_tls_port
                   << std::endl;
     }
 
@@ -847,6 +855,8 @@ void run_login_auth(const RuntimeConfig cfg, const SecurityRuntimeOptions sec_cf
                 }
 
                 const std::string client_ip = peer_ip_to_string(peer_addr);
+                std::cout << "[AuthFlow][4] plain auth client accepted: ip=" << client_ip
+                          << ", fd=" << client_fd << std::endl;
                 if (!is_ip_allowed(sec_cfg.auth_allow_ips, client_ip)) {
                     std::cout << "[main.cpp] [Auth] Plain connection rejected by allowlist: ip="
                               << client_ip << std::endl;
@@ -906,6 +916,8 @@ void run_login_auth(const RuntimeConfig cfg, const SecurityRuntimeOptions sec_cf
                 }
 
                 const std::string client_ip = peer_ip_to_string(peer_addr);
+                std::cout << "[AuthFlow][4] TLS auth client accepted: ip=" << client_ip
+                          << ", fd=" << client_fd << std::endl;
                 if (!is_ip_allowed(sec_cfg.auth_allow_ips, client_ip)) {
                     std::cout << "[main.cpp] [Auth] TLS connection rejected by allowlist: ip="
                               << client_ip << std::endl;
