@@ -9,6 +9,9 @@
 #include <unistd.h>
 
 namespace {
+constexpr const char* kRtspUrl = "rtsps://192.168.0.89:8332/cam1";
+constexpr int kSegmentDurationSec = 60;
+
 std::size_t load_env_size_t(const char* name, std::size_t default_value, std::size_t min_value) {
     const char* raw = std::getenv(name);
     if (raw == nullptr || raw[0] == '\0') return default_value;
@@ -150,7 +153,7 @@ bool RTSPRecorder::connect_and_record() {
     if (verify_host_env != nullptr && verify_host_env[0] != '\0') {
         verify_host = verify_host_env;
     } else {
-        verify_host = derive_verify_host_from_url(RTSP_URL);
+        verify_host = derive_verify_host_from_url(kRtspUrl);
     }
     if (verify_host.empty()) {
         std::cerr << "[Error] Unable to resolve TLS verify host from RTSP_URL." << std::endl;
@@ -169,9 +172,9 @@ bool RTSPRecorder::connect_and_record() {
     }
     input_ctx->interrupt_callback.callback = ffmpeg_interrupt_cb;
     input_ctx->interrupt_callback.opaque = &running_flag;
-    std::cout << "[recorder.cpp] " << "[System] Connecting to " << RTSP_URL << " (Secure Mode)..." << std::endl;
+    std::cout << "[recorder.cpp] " << "[System] Connecting to " << kRtspUrl << " (Secure Mode)..." << std::endl;
     
-    if (avformat_open_input(&input_ctx, RTSP_URL, nullptr, &opts) != 0) {
+    if (avformat_open_input(&input_ctx, kRtspUrl, nullptr, &opts) != 0) {
         av_dict_free(&opts);
         std::cerr << "[Error] Failed to connect! Check IP, Port(8332), or Cert." << std::endl;
         if (input_ctx) {
@@ -211,7 +214,8 @@ bool RTSPRecorder::connect_and_record() {
 
         if (pkt.stream_index == video_stream_idx) {
             // 파일 분할 (키프레임 기준)
-            if (std::time(nullptr) - start_time >= SEGMENT_DURATION && (pkt.flags & AV_PKT_FLAG_KEY)) {
+            if (std::time(nullptr) - start_time >= kSegmentDurationSec &&
+                (pkt.flags & AV_PKT_FLAG_KEY)) {
                 close_current_file();
                 if (!open_output_file(input_ctx->streams[video_stream_idx]->codecpar)) break;
             }

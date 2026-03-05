@@ -7,7 +7,6 @@ struct RuntimeConfig {
     std::string db_host;
     std::string db_user;
     std::string db_pass;
-    std::string db_name_auth;
     std::string db_name_analytics;
 };
 

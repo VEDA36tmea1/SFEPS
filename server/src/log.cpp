@@ -7,9 +7,6 @@
 namespace {
 constexpr const char* kLoginLogInsertQuery =
     "INSERT INTO login_logs (username, ip_address, status) VALUES (?, ?, ?)";
-constexpr const char* kAnalyticsLogInsertQuery =
-    "INSERT INTO analytics_logs (frame_time, object_type, created_at, estimated_age, photo_path, x, y, event) "
-    "VALUES (?, ?, NOW(), ?, ?, ?, ?, ?)";
 constexpr const char* kRecordingInsertQuery = "INSERT INTO recordings (filename) VALUES (?)";
 constexpr const char* kAnalyticsRetentionDeleteQuery =
     "DELETE FROM analytics_logs WHERE created_at < (NOW() - INTERVAL 1 DAY)";
@@ -45,7 +42,6 @@ bool prepare_stmt(MYSQL* conn, MYSQL_STMT*& stmt, const char* query, const char*
 DBLogger::DBLogger(const char* host_, const char* user_, const char* pass_, const char* db)
     : conn(nullptr),
       loginLogStmt(nullptr),
-      analyticsLogStmt(nullptr),
       recordingStmt(nullptr),
       host(host_ ? host_ : ""),
       user(user_ ? user_ : ""),
@@ -73,9 +69,6 @@ bool DBLogger::prepareStatements() {
     if (conn == nullptr) return false;
 
     if (!prepare_stmt(conn, loginLogStmt, kLoginLogInsertQuery, "login_logs insert")) return false;
-    if (!prepare_stmt(conn, analyticsLogStmt, kAnalyticsLogInsertQuery, "analytics_logs insert")) {
-        return false;
-    }
     if (!prepare_stmt(conn, recordingStmt, kRecordingInsertQuery, "recordings insert")) return false;
     return true;
 }
@@ -84,10 +77,6 @@ void DBLogger::closeStatements() {
     if (recordingStmt != nullptr) {
         mysql_stmt_close(recordingStmt);
         recordingStmt = nullptr;
-    }
-    if (analyticsLogStmt != nullptr) {
-        mysql_stmt_close(analyticsLogStmt);
-        analyticsLogStmt = nullptr;
     }
     if (loginLogStmt != nullptr) {
         mysql_stmt_close(loginLogStmt);
@@ -126,24 +115,7 @@ void DBLogger::enqueueLogin(const std::string& username, const std::string& ip, 
 
     {
         std::lock_guard<std::mutex> lock(queueMutex);
-        logQueue.push(LogItem {LOGIN_LOG, username, ip, "", 0.0f, 0.0f, "", 0, "", success});
-    }
-    cv.notify_one();
-}
-
-void DBLogger::enqueueAnalytics(const std::string& time,
-                                const std::string& objType,
-                                float x,
-                                float y,
-                                const std::string& event,
-                                int age,
-                                const std::string& photoPath) {
-    if (!isRunning.load()) return;
-
-    {
-        std::lock_guard<std::mutex> lock(queueMutex);
-        logQueue.push(
-            LogItem {ANALYTICS_LOG, objType, "", time, x, y, event, age, photoPath, false});
+        logQueue.push(LogItem {LOGIN_LOG, username, ip, success});
     }
     cv.notify_one();
 }
@@ -153,7 +125,7 @@ void DBLogger::enqueueRecording(const std::string& filename) {
 
     {
         std::lock_guard<std::mutex> lock(queueMutex);
-        logQueue.push(LogItem {RECORDING_LOG, filename, "", "", 0.0f, 0.0f, "", 0, "", false});
+        logQueue.push(LogItem {RECORDING_LOG, filename, "", false});
     }
     cv.notify_one();
 }
@@ -163,7 +135,7 @@ void DBLogger::requestDbCleanup() {
 
     {
         std::lock_guard<std::mutex> lock(queueMutex);
-        logQueue.push(LogItem {CLEANUP_DB_LOG, "", "", "", 0.0f, 0.0f, "", 0, "", false});
+        logQueue.push(LogItem {CLEANUP_DB_LOG, "", "", false});
     }
     cv.notify_one();
 }
@@ -252,49 +224,6 @@ void DBLogger::processQueue() {
                 params[2].length = &status_len;
 
                 execute_stmt(loginLogStmt, params, "login_logs");
-            } else if (item.type == ANALYTICS_LOG) {
-                MYSQL_BIND params[7];
-                std::memset(params, 0, sizeof(params));
-
-                int age_param = item.age;
-                double x_param = static_cast<double>(item.x);
-                double y_param = static_cast<double>(item.y);
-
-                unsigned long frame_time_len = static_cast<unsigned long>(item.time_str.size());
-                unsigned long object_type_len = static_cast<unsigned long>(item.str1.size());
-                unsigned long photo_len = static_cast<unsigned long>(item.photo_path.size());
-                unsigned long event_len = static_cast<unsigned long>(item.event.size());
-
-                params[0].buffer_type = MYSQL_TYPE_STRING;
-                params[0].buffer = const_cast<char*>(item.time_str.c_str());
-                params[0].buffer_length = frame_time_len;
-                params[0].length = &frame_time_len;
-
-                params[1].buffer_type = MYSQL_TYPE_STRING;
-                params[1].buffer = const_cast<char*>(item.str1.c_str());
-                params[1].buffer_length = object_type_len;
-                params[1].length = &object_type_len;
-
-                params[2].buffer_type = MYSQL_TYPE_LONG;
-                params[2].buffer = &age_param;
-
-                params[3].buffer_type = MYSQL_TYPE_STRING;
-                params[3].buffer = const_cast<char*>(item.photo_path.c_str());
-                params[3].buffer_length = photo_len;
-                params[3].length = &photo_len;
-
-                params[4].buffer_type = MYSQL_TYPE_DOUBLE;
-                params[4].buffer = &x_param;
-
-                params[5].buffer_type = MYSQL_TYPE_DOUBLE;
-                params[5].buffer = &y_param;
-
-                params[6].buffer_type = MYSQL_TYPE_STRING;
-                params[6].buffer = const_cast<char*>(item.event.c_str());
-                params[6].buffer_length = event_len;
-                params[6].length = &event_len;
-
-                execute_stmt(analyticsLogStmt, params, "analytics_logs");
             } else if (item.type == RECORDING_LOG) {
                 MYSQL_BIND params[1];
                 std::memset(params, 0, sizeof(params));
