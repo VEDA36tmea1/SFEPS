@@ -1,13 +1,27 @@
 #include "voicemanager.h"
 #include <QDebug>
 #include <QProcessEnvironment>
+#include <QSslSocket>
+#include <QSslConfiguration>
+#include <QSslCertificate>
+#include <QFile>
+
+static bool parseEnvBool(const QProcessEnvironment &env, const QString &key, bool defaultValue)
+{
+    const QString raw = env.value(key).trimmed().toLower();
+    if (raw.isEmpty()) return defaultValue;
+    if (raw == "1" || raw == "true" || raw == "yes" || raw == "on") return true;
+    if (raw == "0" || raw == "false" || raw == "no" || raw == "off") return false;
+    return defaultValue;
+}
 
 // 서버 주소/포트 (Audio_Speaker_Unit·서버와 동일 포트)
-static const char * const AUDIO_SERVER_HOST = "192.168.0.92";
+static const char * const AUDIO_SERVER_HOST = "192.168.0.89";
 static const quint16 AUDIO_SERVER_PORT = 5556;
 
 VoiceManager::VoiceManager(QObject *parent) : QObject(parent)
 {
+    // Default socket is plaintext; startRecording will recreate socket for TLS if requested
     m_socket = new QTcpSocket(this);
     m_forwardDevice = new SocketForwardDevice(m_socket, this);
 
@@ -45,9 +59,56 @@ void VoiceManager::startRecording()
         "AUDIO_SERVER_HOST",
         env.value("FRAUD_SERVER_HOST", QString::fromUtf8(AUDIO_SERVER_HOST))
     );
+    const bool tlsEnabled = parseEnvBool(env, "SFEPS_CLIENT_TLS_ENABLE", false);
+
+    // Recreate socket if switching between plaintext and TLS
+    const bool currentIsSsl = (qobject_cast<QSslSocket *>(m_socket) != nullptr);
+    if (tlsEnabled != currentIsSsl) {
+        m_socket->abort();
+        m_socket->deleteLater();
+        if (tlsEnabled) {
+            m_socket = new QSslSocket(this);
+        } else {
+            m_socket = new QTcpSocket(this);
+        }
+        m_forwardDevice->deleteLater();
+        m_forwardDevice = new SocketForwardDevice(m_socket, this);
+        connect(m_socket, &QTcpSocket::connected, this, &VoiceManager::onSocketConnected);
+        connect(m_socket, &QTcpSocket::errorOccurred, this, &VoiceManager::onSocketError);
+    }
 
     m_socket->abort();
-    m_socket->connectToHost(host, AUDIO_SERVER_PORT);
+    if (tlsEnabled) {
+        QSslSocket *ssl = qobject_cast<QSslSocket *>(m_socket);
+        if (ssl) {
+            ssl->setPeerVerifyMode(QSslSocket::VerifyPeer);
+            const QString caPath = env.value("SFEPS_CLIENT_CA_FILE").trimmed();
+            if (!caPath.isEmpty()) {
+                QFile f(caPath);
+                if (f.open(QIODevice::ReadOnly)) {
+                    const QList<QSslCertificate> certs = QSslCertificate::fromData(f.readAll(), QSsl::Pem);
+                    if (!certs.isEmpty()) {
+                        QSslConfiguration cfg = ssl->sslConfiguration();
+                        cfg.setCaCertificates(certs);
+                        ssl->setSslConfiguration(cfg);
+                    } else {
+                        qWarning() << "[VoiceManager] No valid CA certificates in" << caPath;
+                    }
+                } else {
+                    qWarning() << "[VoiceManager] Failed to open CA file" << caPath << f.errorString();
+                }
+            }
+
+            const QString serverName = env.value("SFEPS_CLIENT_TLS_SERVER_NAME").trimmed();
+            if (!serverName.isEmpty()) ssl->setPeerVerifyName(serverName);
+
+            qDebug() << "Connecting to audio server (TLS)" << host << ":" << AUDIO_SERVER_PORT;
+            ssl->connectToHostEncrypted(host, AUDIO_SERVER_PORT);
+        }
+    } else {
+        qDebug() << "Connecting to audio server (Plain)" << host << ":" << AUDIO_SERVER_PORT;
+        m_socket->connectToHost(host, AUDIO_SERVER_PORT);
+    }
     m_active = true;
     emit activeChanged();
     qDebug() << "Connecting to audio server..." << host << ":" << AUDIO_SERVER_PORT << "(RAW streaming)";

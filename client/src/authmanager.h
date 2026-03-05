@@ -41,6 +41,7 @@ private:
                                        int port,
                                        const QByteArray &payload,
                                        const QString &caPathOverride,
+                                       const QString &tlsServerName,
                                        QString &outTransportError);
 
     LoginAttemptResult attemptPlainLogin(const QString &host,

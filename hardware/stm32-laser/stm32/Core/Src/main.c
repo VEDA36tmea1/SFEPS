@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 #include "servo_driver.h"
 #include "led_driver.h"
 /* USER CODE END Includes */
@@ -104,6 +105,43 @@ static uint32_t  auto_pwm_val   = 1250;
 static int32_t   auto_dir       = AUTO_STEP_US;
 static uint32_t  auto_last_tick = 0;
 static uint32_t  last_uart_tick = 0;  /* UART로 값 보낸 시각; 이 후 AUTO_HOLD_MS 동안 스윕 정지 */
+
+/* WiFi 재접속 로그 스팸 방지를 위한 플래그 */
+static uint8_t   wifi_reconnect_msg_shown = 0;
+
+/* IBVS용 픽셀 오차 입력 (PC → STM32) 및 PID 상태 */
+static float     ibvs_err_x      = 0.0f;
+static float     ibvs_err_y      = 0.0f;
+static uint8_t   ibvs_err_valid  = 0;
+static uint32_t  ibvs_last_err_tick = 0;  /* 마지막으로 오차를 받은 시각(ms) */
+/* 위치형 PID 기준 중립 PWM(us) – Servo_Init 이후 CCR에서 가져와 저장 */
+static float     ibvs_neutral_x  = 1430.0f; /* PAN  (PA0 / TIM2_CH1) */
+static float     ibvs_neutral_y  = 1250.0f; /* TILT (PA8 / TIM1_CH1) */
+
+typedef struct
+{
+  float kp;
+  float ki;
+  float kd;
+  float integ;
+  float prev_err;
+  float out_us;
+} IbvsPidAxis;
+
+static IbvsPidAxis pid_x; /* PAN  (PA0 / TIM2_CH1) */
+static IbvsPidAxis pid_y; /* TILT (PA8 / TIM1_CH1) */
+
+static uint32_t    ibvs_last_update_tick = 0;
+#define IBVS_UPDATE_PERIOD_MS  15u   /* IBVS PID 업데이트 주기 ≈ 50Hz */
+#define IBVS_ERR_TIMEOUT_MS  500u    /* 이 시간 동안 새 오차가 없으면 PID 정지 */
+
+/* PID 로그 출력(USART2) 설정: 오프라인 튜닝용
+ * - 1u : PIDLOG 라인 주기적으로 출력
+ * - 0u : 로그 완전 비활성화
+ */
+#define IBVS_PID_LOG_ENABLE      0u
+#define IBVS_PID_LOG_PERIOD_MS  100u
+static uint32_t ibvs_pid_log_last_tick = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -117,10 +155,128 @@ static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 static void Wifi_SendLine(const char *line);
 static void Wifi_MaybeReconnect(void);
+static void IbvsPid_Init(void);
+static void IbvsPid_Update(float dt_sec);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+static float clampf(float v, float vmin, float vmax)
+{
+  if (v < vmin) return vmin;
+  if (v > vmax) return vmax;
+  return v;
+}
+
+/* IBVS PID 축 초기화 (PAN/TILT 공통) */
+static void IbvsPid_AxisInit(IbvsPidAxis *a, float kp, float ki, float kd, float initial_us)
+{
+  if (!a) return;
+  a->kp      = kp;
+  a->ki      = ki;
+  a->kd      = kd;
+  a->integ   = 0.0f;
+  a->prev_err= 0.0f;
+  a->out_us  = initial_us;
+}
+
+static void IbvsPid_Init(void)
+{
+  /* STM32 Servo_Init 이후, 실제 타이머 비교 레지스터(CCR)에서
+     현재 PWM(us) 값을 읽어와서 IBVS PID의 초기 출력값으로 사용한다.
+     - PAN (X축)  : PA0 / TIM2_CH1
+     - TILT (Y축) : PA8 / TIM1_CH1
+     X축: 오른쪽으로 갈수록 PWM 증가 → Kp_x > 0
+     Y축: 아래로 갈수록 PWM 감소   → Kp_y < 0
+   */
+  uint32_t ux_init = __HAL_TIM_GET_COMPARE(&htim2, TIM_CHANNEL_1); /* PA0 */
+  uint32_t uy_init = __HAL_TIM_GET_COMPARE(&htim1, TIM_CHANNEL_1); /* PA8 */
+  /* 예상 범위를 벗어나면 Servo_Init 기본값으로 폴백 */
+  if (ux_init < PWM_US_MIN || ux_init > PWM_US_MAX) ux_init = 1430u;
+  if (uy_init < PWM_US_MIN || uy_init > PWM_US_MAX) uy_init = 1250u;
+
+  ibvs_neutral_x = (float)ux_init;
+  ibvs_neutral_y = (float)uy_init;
+
+  /* 위치형 PID – out_us 초기값을 중립으로 설정 */
+  IbvsPid_AxisInit(&pid_x, 0.20f, 0.0f, 0.0f, ibvs_neutral_x);
+  IbvsPid_AxisInit(&pid_y, -0.20f, 0.0f, 0.0f, ibvs_neutral_y);
+
+  ibvs_err_x = 0.0f;
+  ibvs_err_y = 0.0f;
+  ibvs_err_valid = 0;
+  ibvs_last_err_tick = 0;
+  ibvs_last_update_tick = HAL_GetTick();
+  ibvs_pid_log_last_tick = ibvs_last_update_tick;
+}
+
+/* IBVS PID 업데이트: 픽셀 오차(ibvs_err_x, ibvs_err_y)를 이용해 PWM을 갱신
+   - 증분형이 아니라 "위치형 P" 제어로 구현해서 누적 오버슈트를 줄인다. */
+static void IbvsPid_Update(float dt_sec)
+{
+  (void)dt_sec; /* 현재 위치형 P 제어에서는 dt_sec 미사용 */
+
+  uint32_t now = HAL_GetTick();
+  float ex = ibvs_err_x;
+  float ey = ibvs_err_y;
+
+  /* 타임아웃 또는 유효하지 않은 오차인 경우 → 중립 위치로 복귀 */
+  if (!ibvs_err_valid || (now - ibvs_last_err_tick > IBVS_ERR_TIMEOUT_MS))
+  {
+    pid_x.out_us = ibvs_neutral_x;
+    pid_y.out_us = ibvs_neutral_y;
+  }
+  else
+  {
+    /* 위치형 P 제어: 매번 "중립 + Kp * error" 로 절대 위치 계산 (누적 없음) */
+    pid_x.out_us = ibvs_neutral_x + pid_x.kp * ex; /* X(PAN, PA0) – 오른쪽으로 갈수록 PWM 증가 */
+    pid_y.out_us = ibvs_neutral_y + pid_y.kp * ey; /* Y(TILT, PA8) – 아래로 갈수록 PWM 감소(Kp<0) */
+
+    /* 작은 오차(데드존)는 무시해서 떨림 감소 */
+    if (fabsf(ex) < 5.0f)
+      pid_x.out_us = ibvs_neutral_x;
+    if (fabsf(ey) < 5.0f)
+      pid_y.out_us = ibvs_neutral_y;
+  }
+
+  /* 범위 제한 */
+  pid_x.out_us = clampf(pid_x.out_us, (float)PWM_US_MIN, (float)PWM_US_MAX);
+  pid_y.out_us = clampf(pid_y.out_us, (float)PWM_US_MIN, (float)PWM_US_MAX);
+
+  /* 실제 서보 PWM 업데이트: PA0=X(PAN), PA8=Y(TILT) */
+  uint32_t ux = (uint32_t)pid_x.out_us; /* CH2 */
+  uint32_t uy = (uint32_t)pid_y.out_us; /* CH1 */
+  Servo_SetCh2Us(ux);
+  Servo_SetCh1Us(uy);
+#if IBVS_PID_LOG_ENABLE
+  {
+    uint32_t now_log = HAL_GetTick();
+    if ((now_log - ibvs_pid_log_last_tick) >= IBVS_PID_LOG_PERIOD_MS)
+    {
+      ibvs_pid_log_last_tick = now_log;
+      char log_buf[160];
+      int n = snprintf(log_buf, sizeof(log_buf),
+                       "PIDLOG,t:%lu,ex:%.2f,ey:%.2f,out_x:%lu,out_y:%lu,kpx:%.4f,kix:%.4f,kdx:%.4f,kpy:%.4f,kiy:%.4f,kdy:%.4f\r\n",
+                       (unsigned long)now_log,
+                       (double)ex,
+                       (double)ey,
+                       (unsigned long)ux,
+                       (unsigned long)uy,
+                       (double)pid_x.kp,
+                       (double)pid_x.ki,
+                       (double)pid_x.kd,
+                       (double)pid_y.kp,
+                       (double)pid_y.ki,
+                       (double)pid_y.kd);
+      if (n > 0)
+      {
+        HAL_UART_Transmit(&huart2, (uint8_t *)log_buf, (uint16_t)n, 30);
+      }
+    }
+  }
+#endif
+}
 /* ESP8266으로 AT 명령 한 줄(문자열 + CRLF) 전송 */
 static void Wifi_SendLine(const char *line)
 {
@@ -164,8 +320,13 @@ static void Wifi_MaybeReconnect(void)
     wifi_connecting    = 1;
     wifi_last_cmd_tick = now;
 
-    const char *info = "WiFi: try reconnect TCP\r\n";
-    HAL_UART_Transmit(&huart2, (const uint8_t *)info, (uint16_t)strlen(info), 50);
+    /* 아직 한 번도 안내를 찍지 않았다면, 재접속 시도 안내를 한 줄만 출력 */
+    if (!wifi_reconnect_msg_shown)
+    {
+      const char *info = "WiFi: try reconnect TCP (시도중)\r\n";
+      HAL_UART_Transmit(&huart2, (const uint8_t *)info, (uint16_t)strlen(info), 50);
+      wifi_reconnect_msg_shown = 1;
+    }
   }
 }
 /* USER CODE END 0 */
@@ -227,6 +388,8 @@ int main(void)
   auto_last_tick = HAL_GetTick();
   Led_Init();
   Led_SetAutoMode(control_mode == MODE_AUTO);
+  /* IBVS PID 초기화 (호스트에서 픽셀 오차를 보내는 경우에 사용) */
+  IbvsPid_Init();
   {
     char msg[96];
     int n = snprintf(msg, sizeof(msg),
@@ -291,14 +454,19 @@ int main(void)
         for (uint16_t i = 0; i < len; i++)
           wifi_line[i] = (char)wifi_rx_dma_buffer[i];
         wifi_line[len] = '\0';
-
-        /* ESP → PC: 항상 그대로 에코 */
-        HAL_UART_Transmit(&huart2, (uint8_t *)wifi_line, len, 50);
         const char crlf[2] = {'\r', '\n'};
-        HAL_UART_Transmit(&huart2, (uint8_t*)crlf, 2, 50);
+
+        /* ESP → PC: 연결이 성립된 이후에만 에코.
+           - 자동 재접속(AT+CIPSTART / ERROR / CLOSED) 반복 시 터미널 스팸을 줄이기 위해
+           - wifi_link_ok == 1 인 상태에서만 WiFi 모듈의 원문 라인을 보여준다. */
+        if (wifi_link_ok)
+        {
+          HAL_UART_Transmit(&huart2, (uint8_t *)wifi_line, len, 50);
+          HAL_UART_Transmit(&huart2, (uint8_t*)crlf, 2, 50);
+        }
 
         /* ------------------------------------------------------------------ */
-        /* 1) 좌표/펄스 명령 처리 (+IPD, ... CX=...,CY=... / "1500 1400" 등) */
+        /* 1) 좌표/오차/펄스 명령 처리 (+IPD, ... EX=...,EY=... / CX=...,CY=... / "1500 1400" 등) */
         /* ------------------------------------------------------------------ */
         {
           char *ipd = strstr(wifi_line, "+IPD");
@@ -316,7 +484,7 @@ int main(void)
                 *--pend = '\0';
               }
 
-              /* payload 안에 여러 줄(CX=...,CY=... / "1500 1400" 등)이
+              /* payload 안에 여러 줄(EX=...,EY=... / CX=...,CY=... / "1500 1400" 등)이
                  한꺼번에 들어올 수 있으므로, 줄 단위로 쪼개서 각각 처리한다. */
               char *cursor = payload;
               while (*cursor)
@@ -335,13 +503,37 @@ int main(void)
                 char saved = *line_end;
                 *line_end = '\0';
 
-                /* 형식 1: CX=...,CY=... (ubuntu_tcp_server에서 보낸 형식)
-                 * - CX : X축 (PA0 / TIM2_CH1)
-                 * - CY : Y축 (PA8 / TIM1_CH1)
+                /* 형식 0: EX=...,EY=... (ubuntu_tcp_server에서 보낸 픽셀 오차 등)
+                 * - EX : X축 오차 (픽셀)
+                 * - EY : Y축 오차 (픽셀)
+                 *   이 값들은 STM32 내부 IBVS PID 제어기의 입력으로 사용된다.
                  */
+                float ex_f = 0.0f, ey_f = 0.0f;
                 float cx_f = 0.0f, cy_f = 0.0f;
-                if (sscanf(cursor, "CX=%f,CY=%f", &cx_f, &cy_f) == 2)
+                if (sscanf(cursor, "EX=%f,EY=%f", &ex_f, &ey_f) == 2)
                 {
+                  ibvs_err_x        = ex_f;
+                  ibvs_err_y        = ey_f;
+                  ibvs_err_valid    = 1;
+                  ibvs_last_err_tick = HAL_GetTick();
+                  /* 디버그: WiFi로 들어온 오차 값을 USART2로 표시 (필요시 활성화) */
+                  /*
+                  char dbg[80];
+                  int dn = snprintf(dbg, sizeof(dbg),
+                                    "WiFi ERR EX/EY -> ex=%.2f ey=%.2f\r\n",
+                                    (double)ex_f, (double)ey_f);
+                  if (dn > 0)
+                  {
+                    HAL_UART_Transmit(&huart2, (uint8_t *)dbg, (uint16_t)dn, 50);
+                  }
+                  */
+                }
+                else if (sscanf(cursor, "CX=%f,CY=%f", &cx_f, &cy_f) == 2)
+                {
+                  /* 형식 1: CX=...,CY=... (이전 방식 – 직접 PWM 명령)
+                   * - CX : X축 (PA0 / TIM2_CH1)
+                   * - CY : Y축 (PA8 / TIM1_CH1)
+                   */
                   uint32_t u1 = (uint32_t)cx_f;
                   uint32_t u2 = (uint32_t)cy_f;
                   if (u1 < PWM_US_MIN) u1 = PWM_US_MIN;
@@ -500,6 +692,8 @@ int main(void)
           {
             wifi_link_ok    = 1;
             wifi_connecting = 0;
+            /* 연결이 성립되면 재접속 안내 문구를 다시 찍을 수 있도록 리셋 */
+            wifi_reconnect_msg_shown = 0;
           }
           /* 4) ERROR / FAIL
            *  - 아직 연결 안 된 상태(wifi_link_ok == 0)에서 나오면 "연결 실패"로만 처리
@@ -689,6 +883,26 @@ int main(void)
       }
       rx_idx = 0;
       HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
+    }
+
+    /* IBVS PID 제어: 픽셀 오차(EX/EY)가 주기적으로 들어올 때 동작 */
+    {
+      uint32_t now = HAL_GetTick();
+
+      /* 일정 시간 동안 새 오차가 없으면 PID 정지 (failsafe) */
+      if (ibvs_err_valid && (now - ibvs_last_err_tick) > IBVS_ERR_TIMEOUT_MS)
+      {
+        ibvs_err_valid = 0;
+      }
+
+      /* 주기적으로 PID 업데이트 */
+      uint32_t dt_ms = now - ibvs_last_update_tick;
+      if (dt_ms >= IBVS_UPDATE_PERIOD_MS)
+      {
+        float dt_sec = (float)dt_ms / 1000.0f;
+        ibvs_last_update_tick = now;
+        IbvsPid_Update(dt_sec);
+      }
     }
 
     /* 자동 스윕: MODE_AUTO에서만 동작, 기본은 비활성화(MODE_MANUAL) */

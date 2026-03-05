@@ -3,6 +3,8 @@
 
 #include <QObject>
 #include <QTcpSocket>
+#include <QSslSocket>
+#include <QProcessEnvironment>
 #include <QStringList>
 #include <QTimer>
 #include <QByteArray>
@@ -14,7 +16,7 @@ public:
     explicit FraudManager(QObject *parent = nullptr);
     ~FraudManager();
 
-    Q_INVOKABLE void connectToServer(const QString &host = "192.168.0.92", int port = 5557);
+    Q_INVOKABLE void connectToServer(const QString &host = "192.168.0.89", int port = 5557);
 
 signals:
     void fraudDetected(const QString &cardId, const QString &ageGroup, const QString &gateId, int estAge);
