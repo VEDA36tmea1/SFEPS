@@ -7,20 +7,25 @@
 #include <condition_variable> 
 #include <fcntl.h>            
 #include <unistd.h>        
+#include <csignal>
 #include "../inc/img_processing.h"
 
 #define LIVE_CAMERA_MODE 0
 
-#if LIVE_CAMERA_MODE
+std::atomic<bool> is_running{true}; 
 std::mutex mtx_raw;
 std::queue<cv::Mat> raw_queue;
-std::atomic<bool> is_running{true}; 
-// RFID 신호 전달을 위한 전역 변수
 std::condition_variable cv_rfid;
 std::mutex mtx_rfid;
 bool rfid_detected = false;
 
-// 카메라 캡처 스레드
+void signalHandler(int signum) {
+    std::cout << "\n\n[인터럽트 감지] 시스템을 종료합니다." << std::endl;
+    is_running = false;
+    cv_rfid.notify_all(); // 메인 스레드 호출
+}
+
+#if LIVE_CAMERA_MODE
 void captureThreadFunc(cv::VideoCapture& cap) {
     while (is_running) {
         cv::Mat tmp;
@@ -33,31 +38,25 @@ void captureThreadFunc(cv::VideoCapture& cap) {
     }
 }
 
-// RFID 하드웨어 감지 전담 스레드
 void rfidThreadFunc() {
     int fd = open("/dev/rc522", O_RDONLY);
     if (fd < 0) {
-        std::cerr << "RFID 열기 실패" << std::endl;
+        std::cerr << "❌ RFID 열기 실패 (sudo를 붙여 실행해주세요.)" << std::endl;
         return;
     }
-
     uint8_t uid[4];
     while (is_running) {
         ssize_t bytes_read = read(fd, uid, sizeof(uid));
-        
         if (bytes_read == 4) {
-            std::cout << "\n[RFID] 카드 인식 UID: " 
-                      << std::hex << (int)uid[0] << ":" << (int)uid[1] << ":" 
+            std::cout << "\nRFID 카드가 태그되었습니다."; 
+            std::cout << "\nUID:"  << std::hex
+                      << (int)uid[0] << ":" << (int)uid[1] << ":" 
                       << (int)uid[2] << ":" << (int)uid[3] << std::dec << std::endl;
-
-            // 메인 스레드 깨우기
             {
                 std::lock_guard<std::mutex> lock(mtx_rfid);
                 rfid_detected = true;
             }
             cv_rfid.notify_one(); 
-
-            // 카드를 대고 있을 때 중복 촬영되는 것 방지 (2초 휴식)
             std::this_thread::sleep_for(std::chrono::seconds(2));
         }
     }
@@ -66,6 +65,9 @@ void rfidThreadFunc() {
 #endif
 
 int main() {
+    // 시그널 핸들러 등록
+    signal(SIGINT, signalHandler);
+
 #if LIVE_CAMERA_MODE
     std::string in_pipe = "libcamerasrc ! video/x-raw, width=1920, height=1080, framerate=30/1 ! videoconvert ! video/x-raw, format=BGR ! appsink drop=true max-buffers=1";
     cv::VideoCapture cap(in_pipe, cv::CAP_GSTREAMER);
@@ -76,9 +78,8 @@ int main() {
     }
 
     std::thread cap_thread(captureThreadFunc, std::ref(cap));
-    std::thread rfid_thread(rfidThreadFunc); // RFID 스레드 가동
+    std::thread rfid_thread(rfidThreadFunc); 
 
-    // 첫 프레임 대기
     cv::Mat frame;
     while (is_running) {
         std::lock_guard<std::mutex> lock(mtx_raw);
@@ -88,59 +89,65 @@ int main() {
         }
     }
 
-    std::cout << "\nRFID 카드를 태그해 주세요" << std::endl;
-    {
-        // RFID 인터럽트 대기
-        std::unique_lock<std::mutex> lock(mtx_rfid);
-        // rfid_detected가 true가 될 때까지 여기서 멈춰서 기다림
-        cv_rfid.wait(lock, []{ return rfid_detected || !is_running; });
-        rfid_detected = false; // 다음을 위해 초기화
+    while (is_running) {
+        std::cout << "\n==========================================" << std::endl;
+        std::cout << "태그 대기 중입니다. (종료하려면 Ctrl+C를 눌러주세요.)" << std::endl;
+        std::cout << "==========================================\n" << std::endl;
+
+        {
+            std::unique_lock<std::mutex> lock(mtx_rfid);
+            cv_rfid.wait(lock, []{ return rfid_detected || !is_running; });
+            if (!is_running) break;
+            rfid_detected = false; 
+        }
+
+        int64 capture_start = cv::getTickCount(); 
+        cv::Mat target_frame;
+        {
+            std::lock_guard<std::mutex> lock(mtx_raw);
+            if (!raw_queue.empty()) target_frame = raw_queue.front().clone();
+        }
+
+        if (target_frame.empty()) continue;
+
+        double capture_time = (cv::getTickCount() - capture_start) / cv::getTickFrequency();
+        std::cout << "사진 촬영 완료 (" << capture_time << "초)" << std::endl;
+
+        cv::imwrite("1_raw_image.jpg", target_frame);
+        
+        cv::Mat tuning_view; 
+        cv::Mat best_frame = processISPAndGetBest(target_frame, tuning_view);
+        
+        cv::imwrite("2_tuning_viewer.jpg", tuning_view);
+        cv::imwrite("3_best_shot.jpg", best_frame);
+       
     }
-    // ==========================================================
 
-    int64 start_time = cv::getTickCount(); // 전체 처리시간
-    int64 capture_start = cv::getTickCount(); // 캡처 시간
-
-    cv::Mat target_frame;
-    {
-        std::lock_guard<std::mutex> lock(mtx_raw);
-        if (!raw_queue.empty()) target_frame = raw_queue.front().clone();
-    }
-
-    double capture_time = (cv::getTickCount() - capture_start) / cv::getTickFrequency();
-    std::cout << "소요 시간: " << capture_time << " 초" << std::endl;
-
-    if (target_frame.empty()) {
-        is_running = false;
-        cap_thread.join();
-        rfid_thread.join(); // 추가
-        return -1;
-    }
-
-    cv::imwrite("1_raw_FHD.jpg", target_frame);
-
-    cv::Mat tuning_view; 
-    createTuningView(target_frame, tuning_view);
-    cv::imwrite("2_tuning_viewer.jpg", tuning_view);
-    
-    is_running = false;
+    // 종료 절차
     cap_thread.join();
-    rfid_thread.join(); // 추가
+    rfid_thread.join(); 
     cap.release();
 
 #else
-    cv::Mat target_frame = cv::imread("img/test_image1.jpg", cv::IMREAD_COLOR);
-    if (target_frame.empty()) return -1;
+    // 로컬 이미지 테스트 모드
+    cv::Mat target_frame = cv::imread("img/test_image4.jpg", cv::IMREAD_COLOR);
+    if (target_frame.empty()) {
+        std::cerr << "❌ 이미지 로드 실패" << std::endl;
+        return -1;
+    }
 
     int64 start_time = cv::getTickCount();
+    
     cv::Mat tuning_view; 
-    createTuningView(target_frame, tuning_view);
+    cv::Mat best_frame = processISPAndGetBest(target_frame, tuning_view);
 
-    cv::imwrite("3_saved_tuning_viewer_with_AI.jpg", tuning_view);
-#endif
+    cv::imwrite("4_tuning_viewer_local.jpg", tuning_view);
+    cv::imwrite("5_best_shot_local.jpg", best_frame);
 
     double total_time = (cv::getTickCount() - start_time) / cv::getTickFrequency();
-    std::cout << "Complete! Time: " << total_time << " sec" << std::endl;
+    std::cout << "소요시간 : " << total_time << " 초" << std::endl;
+#endif
 
+    std::cout << "\n시스템이 종료되었습니다." << std::endl;
     return 0;
 }

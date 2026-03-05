@@ -7,18 +7,21 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/dnn.hpp>
 
-// 1. AGC
-void applyShadowBoost(const cv::Mat& src, cv::Mat& dst, double gamma_val, double alpha_val) {
+// 1. Gamma Correnction + Tone Mapping
+void applyShadowBoost(const cv::Mat& src, cv::Mat& dst, double gamma, double alpha) {
     if (src.empty()) return;
+
+    // 색상 공간 변환
     cv::Mat yuv;
     cv::cvtColor(src, yuv, cv::COLOR_BGR2YUV); 
 
+    // 룩업 테이블 생성
     unsigned char lut[256];
     for (int i = 0; i < 256; i++) {
-        double I_in = i / 255.0; 
-        double I_boost = std::pow(I_in, 1.0/gamma_val); 
-        I_boost = alpha_val * (I_boost - 0.5) + 0.5; 
-        double shadow_weight = 1.0 - std::pow(I_in, 2.0); 
+        double I_in = i / 255.0; // 정규화
+        double I_boost = std::pow(I_in, 1.0 / gamma); // 감마 보정 
+        I_boost = alpha * (I_boost - 0.5) + 0.5; // 대비 조절
+        double shadow_weight = 1.0 - std::pow(I_in, 2.0); // 암부 가중치 계산
         double final_I = (I_boost * shadow_weight) + (I_in * (1.0 - shadow_weight));
         lut[i] = cv::saturate_cast<unsigned char>(final_I * 255.0);
     }
@@ -39,10 +42,6 @@ void applyShadowBoost(const cv::Mat& src, cv::Mat& dst, double gamma_val, double
     cv::cvtColor(yuv, dst, cv::COLOR_YUV2BGR);
 }
 
-// 2. denoise
-void applyBilateralDenoise(const cv::Mat& src, cv::Mat& dst, int d, double sc, double ss) {
-    cv::bilateralFilter(src, dst, d, sc, ss);
-}
 
 // 3. CLAHE
 void applyCLAHE(const cv::Mat& src, cv::Mat& dst, double clip_limit, cv::Size grid) {
@@ -139,34 +138,6 @@ void applyCLAHE(const cv::Mat& src, cv::Mat& dst, double clip_limit, cv::Size gr
     cv::cvtColor(lab, dst, cv::COLOR_Lab2BGR);
 }
 
-// 4. Sharpening (3x3 커널)
-void applySharpen(const cv::Mat& src, cv::Mat& dst, float strength) {
-    dst = src.clone(); 
-    int rows = src.rows;
-    int cols = src.cols;
-    int channels = src.channels();
-
-    float center_w = 1.0f + 4.0f * strength; 
-    float edge_w = -strength;             
-
-    for (int r = 1; r < rows - 1; r++) {
-        const uchar* prev_row = src.ptr<uchar>(r - 1);
-        const uchar* curr_row = src.ptr<uchar>(r);
-        const uchar* next_row = src.ptr<uchar>(r + 1);
-        uchar* out_row = dst.ptr<uchar>(r);
-
-        for (int c = channels; c < (cols - 1) * channels; c++) {
-            float sum = center_w * curr_row[c]
-                      + edge_w * prev_row[c]                
-                      + edge_w * next_row[c]                
-                      + edge_w * curr_row[c - channels]     
-                      + edge_w * curr_row[c + channels];    
-                      
-            out_row[c] = cv::saturate_cast<uchar>(sum);
-        }
-    }
-}
-
 // 엔트로피 계산 함수
 double calculateEntropy(const cv::Mat& frame) {
     if (frame.empty()) return 0.0;
@@ -195,107 +166,122 @@ double calculateEntropy(const cv::Mat& frame) {
     return entropy;
 }
 
-// 5. 8분할 이미지 생성
-void createTuningView(const cv::Mat& raw_frame_in, cv::Mat& tuning_view) {
-    if (raw_frame_in.empty()) return;
+// 5. 8분할 이미지 & Bestshot 생성 함수
+cv::Mat processISPAndGetBest(const cv::Mat& raw_frame_in, cv::Mat& tuning_view_out) {
+    if (raw_frame_in.empty()) return raw_frame_in;
 
-    // 해상도 정규화
-    cv::Mat raw_frame;
-    double scale = 1920.0 / raw_frame_in.cols;
-    cv::resize(raw_frame_in, raw_frame, cv::Size(), scale, scale, cv::INTER_AREA);
-    
-    int rows = raw_frame.rows;
-    int cols = raw_frame.cols;
-    int q_rows = rows / 2; 
-    int q_cols = cols / 2; 
+    // 1. FHD 원본 해상도로 8가지 파이프라인 모두 생성
+    std::vector<cv::Mat> candidates(8);
+    candidates[0] = raw_frame_in.clone(); // 원본
 
-    tuning_view = cv::Mat(q_rows * 2, q_cols * 4, CV_8UC3, cv::Scalar(0,0,0));
-    std::vector<cv::Mat> results(8);
+    cv::Mat t_boost;
 
-    // Q1: 원본
-    results[0] = raw_frame.clone();
+    // Lv.1
+    applyShadowBoost(raw_frame_in, t_boost, 1.2, 1.0); 
+    applyCLAHE(t_boost, candidates[1], 1.5, cv::Size(8,8));
 
-    // Q2: ONLY AGC
-    applyShadowBoost(raw_frame, results[1], 2.2, 1.2); 
+    // Lv.2
+    applyShadowBoost(raw_frame_in, t_boost, 1.5, 1.2); 
+    applyCLAHE(t_boost, candidates[2], 2.0, cv::Size(8,8));
 
-    // Q3: ONLY CLAHE
-    applyCLAHE(raw_frame, results[2], 4.0, cv::Size(8,8)); 
+    // Lv.3
+    applyShadowBoost(raw_frame_in, t_boost, 1.8, 1.4); 
+    applyCLAHE(t_boost, candidates[3], 2.5, cv::Size(8,8));
 
-    // Q4 ~ Q7: AGC + CLAHE 차등 적용
-    cv::Mat tmp4, tmp5, tmp6, tmp7;
+    // Lv.4
+    applyShadowBoost(raw_frame_in, t_boost, 2.2, 1.6); 
+    applyCLAHE(t_boost, candidates[4], 3.0, cv::Size(8,8));
 
-    applyShadowBoost(raw_frame, tmp4, 1.2, 1.1); 
-    applyCLAHE(tmp4, results[3], 1.5, cv::Size(8,8));
+    // Lv.5
+    applyShadowBoost(raw_frame_in, t_boost, 2.5, 1.8); 
+    applyCLAHE(t_boost, candidates[5], 3.5, cv::Size(8,8));
 
-    applyShadowBoost(raw_frame, tmp5, 1.5, 1.2); 
-    applyCLAHE(tmp5, results[4], 2.0, cv::Size(8,8));
+    // Lv.6
+    applyShadowBoost(raw_frame_in, t_boost, 2.8, 2.0); 
+    applyCLAHE(t_boost, candidates[6], 4.0, cv::Size(8,8));
 
-    applyShadowBoost(raw_frame, tmp6, 1.8, 1.4); 
-    applyCLAHE(tmp6, results[5], 2.5, cv::Size(8,8));
-
-    applyShadowBoost(raw_frame, tmp7, 2.5, 1.8); 
-    applyCLAHE(tmp7, results[6], 4.0, cv::Size(8,8));
-
-    cv::Mat tmp8_agc, tmp8_dn, tmp8_cl;
-    applyShadowBoost(raw_frame, tmp8_agc, 1.2, 1.1);       
-    applyBilateralDenoise(tmp8_agc, tmp8_dn, 9, 75, 75);   
-    applyCLAHE(tmp8_dn, tmp8_cl, 1.5, cv::Size(8,8));      
-    applySharpen(tmp8_cl, results[7], 1.5);   
+    // Lv.7
+    applyShadowBoost(raw_frame_in, t_boost, 3.0, 2.2); 
+    applyCLAHE(t_boost, candidates[7], 4.5, cv::Size(8,8));   
 
     cv::Mat gray_raw;
-    cv::cvtColor(raw_frame, gray_raw, cv::COLOR_BGR2GRAY);
+    cv::cvtColor(raw_frame_in, gray_raw, cv::COLOR_BGR2GRAY);
     cv::Scalar mean_val, stddev_val;
     cv::meanStdDev(gray_raw, mean_val, stddev_val);
-    
+
     std::string raw_info = cv::format("Mean(B): %.1f, Std(C): %.1f", mean_val[0], stddev_val[0]);
 
+    // 2. 실시간 1등 찾기 및 8분할 뷰어(tuning_view_out) 제작을 위한 해상도 축소
+    double scale = 1920.0 / raw_frame_in.cols;
+    cv::Mat raw_resized;
+    cv::resize(raw_frame_in, raw_resized, cv::Size(), scale, scale, cv::INTER_AREA);
+    
+    int q_rows = raw_resized.rows / 2; 
+    int q_cols = raw_resized.cols / 2; 
+    tuning_view_out = cv::Mat(q_rows * 2, q_cols * 4, CV_8UC3, cv::Scalar(0,0,0));
+
     std::vector<std::string> titles = {
-        "1. RAW", "2. ONLY AGC", "3. ONLY CLAHE", "4. AGC + CLAHE", 
-        "5. AGC + CLAHE", "6. AGC + CLAHE", "7. AGC + CLAHE", "8. Final"
+        "1. RAW", "2. Processing Lv.1", "3. Processing Lv.2", "4. Processing Lv.3", 
+        "5. Processing Lv.4", "6. Processing Lv.5", "7. Processing Lv.6", "8. Processing Lv.7"
     };
 
     std::vector<std::string> subtitles = {
         raw_info, 
-        "(G=2.2, A=1.2)", "(Clip=4.0)", "(G=1.2, A=1.1, C=1.5)", 
-        "(G=1.5, A=1.2, C=2.0)", "(G=1.8, A=1.4, C=2.5)", "(G=2.5, A=1.8, C=4.0)", "(AGC->DN->CLAHE->SHRP)"
+        "(G=1.2, A=1.0, C=1.5)", "(G=1.5, A=1.2, C=2.0)", "(G=1.8, A=1.4, C=2.5)", 
+        "(G=2.2, A=1.6, C=3.0)", "(G=2.5, A=1.8, C=3.5)", "(G=2.8, A=2.0, C=4.0)", "(G=3.0, A=2.2, C=4.5)"
     };
 
-    // 터미널 출력 포맷
+double max_entropy = -1.0;
+    int best_idx = 0;
+    std::vector<double> entropies(8);
+
     std::cout << "\n==========================================" << std::endl;
     std::cout << "[Entropy 지표]" << std::endl;
     std::cout << "원본 평균 밝기 : " << mean_val[0] << ", 표준편차(대비) : " << stddev_val[0] << std::endl;
     std::cout << "------------------------------------------" << std::endl;
 
-    int q_idx = 0;
-    for (int r = 0; r < 2; r++) { 
-        for (int c = 0; c < 4; c++) {
-            cv::Mat q_resized;
-            cv::resize(results[q_idx].clone(), q_resized, cv::Size(q_cols, q_rows));
-            double entropy = calculateEntropy(results[q_idx]);
-            
-            std::string cmd_title = titles[q_idx];
-            if (q_idx >= 3) { 
-                cmd_title += " " + subtitles[q_idx];
-            }
-            std::cout << cmd_title << " : " << entropy << std::endl;
-
-            std::string entropy_text = cv::format("Entropy: %.2f", entropy);
-
-            cv::putText(q_resized, titles[q_idx], cv::Point(15, 35), 
-                        cv::FONT_HERSHEY_SIMPLEX, 0.9, cv::Scalar(0, 0, 0), 2, cv::LINE_AA);
-                        
-            if (!subtitles[q_idx].empty()) {
-                cv::putText(q_resized, subtitles[q_idx], cv::Point(15, 70), 
-                            cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 0, 0), 2, cv::LINE_AA);
-            }
-
-            cv::Scalar color = (entropy >= 7.2) ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
-            cv::putText(q_resized, entropy_text, cv::Point(15, 105), 
-                        cv::FONT_HERSHEY_SIMPLEX, 0.8, color, 2, cv::LINE_AA);
-
-            q_resized.copyTo(tuning_view(cv::Rect(c * q_cols, r * q_rows, q_cols, q_rows)));
-            q_idx++;
+    for (int i = 0; i < 8; i++) {
+        entropies[i] = calculateEntropy(candidates[i]); 
+        
+        std::string cmd_title = titles[i] + " " + subtitles[i];;
+        std::cout << cmd_title << " : " << entropies[i] << std::endl;
+        
+        if (entropies[i] > max_entropy) {
+            max_entropy = entropies[i];
+            best_idx = i;
         }
     }
     std::cout << "==========================================\n" << std::endl;
+    std::cout << titles[best_idx] << "가 BestShot으로 선정되었습니다." << "\n" << std::endl;
+
+    for (int i = 0; i < 8; i++) {
+        // 8분할 이미지 화면 조립을 위해 축소
+        cv::Mat q_resized;
+        cv::resize(candidates[i], q_resized, cv::Size(q_cols, q_rows));
+
+        // 1등은 초록색, 나머지는 빨간색
+        cv::Scalar text_color = (i == best_idx) ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
+
+        // 1. Draw Title (titles[i] 사용, y=35)
+        cv::putText(q_resized, titles[i], cv::Point(15, 35), 
+                    cv::FONT_HERSHEY_SIMPLEX, 0.9, cv::Scalar(0, 0, 0), 2, cv::LINE_AA);
+        
+        // 2. Draw Subtitle (subtitles[i] 사용, y=70, Clip Limit 파라미터 등 표시)
+        if (!subtitles[i].empty()) {
+            cv::putText(q_resized, subtitles[i], cv::Point(15, 70), 
+                        cv::FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2, cv::LINE_AA);
+        }
+
+        // 3. Draw Entropy value (y=105)
+        std::string entropy_text = cv::format("Entropy : %.2f", entropies[i]);
+        cv::putText(q_resized, entropy_text, cv::Point(15, 105), 
+                    cv::FONT_HERSHEY_SIMPLEX, 0.8, text_color, 2, cv::LINE_AA);
+
+        //Place quadrant in view
+        int r = i / 4;
+        int c = i % 4;
+        q_resized.copyTo(tuning_view_out(cv::Rect(c * q_cols, r * q_rows, q_cols, q_rows)));
+    }
+
+    return candidates[best_idx];
 }
