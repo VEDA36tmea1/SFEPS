@@ -1,0 +1,28 @@
+[Unit]
+Description=SFEPS RFID UDS bridge service
+Requires=sfeps-rfid-module.service
+After=sfeps-rfid-module.service
+Before=sfeps-server.service
+StopWhenUnneeded=yes
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=-/etc/default/sfeps-rfid
+Environment="SFEPS_RFID_DAEMON_PATH=/home/iam/SFEPS/hardware/Raspi-driver/RC522_RFID/Server_examples/rc522_uds_daemon"
+Environment="SFEPS_RFID_SOCKET_PATH=/tmp/rc522_events.sock"
+Environment="SFEPS_RFID_SOCKET_MODE=660"
+Environment="SFEPS_RFID_SOCKET_GROUP=iam"
+Environment="SFEPS_RFID_DEV_PATH=/dev/rc522"
+Environment="SFEPS_RFID_DEV_WAIT_SEC=10"
+Environment="SFEPS_RFID_SOCKET_WAIT_SEC=10"
+
+# Fail-closed if RFID device isn't ready
+ExecStartPre=/bin/sh -c 'set -eu; timeout="${SFEPS_RFID_DEV_WAIT_SEC}"; while [ ! -e "${SFEPS_RFID_DEV_PATH}" ] && [ "${timeout}" -gt 0 ]; do sleep 1; timeout=$((timeout-1)); done; [ -e "${SFEPS_RFID_DEV_PATH}" ] || { echo "RFID device not ready: ${SFEPS_RFID_DEV_PATH}" >&2; exit 1; }'
+ExecStartPre=/bin/sh -c 'set -eu; rm -f "${SFEPS_RFID_SOCKET_PATH}"'
+ExecStart=/bin/sh -c 'set -eu; exec "${SFEPS_RFID_DAEMON_PATH}" --no-daemon --socket "${SFEPS_RFID_SOCKET_PATH}" --socket-mode "${SFEPS_RFID_SOCKET_MODE}" --socket-group "${SFEPS_RFID_SOCKET_GROUP}"'
+ExecStartPost=/bin/sh -c 'set -eu; timeout="${SFEPS_RFID_SOCKET_WAIT_SEC}"; while [ ! -S "${SFEPS_RFID_SOCKET_PATH}" ] && [ "${timeout}" -gt 0 ]; do sleep 1; timeout=$((timeout-1)); done; [ -S "${SFEPS_RFID_SOCKET_PATH}" ] || { echo "RFID socket not ready: ${SFEPS_RFID_SOCKET_PATH}" >&2; exit 1; }'
+
+Restart=on-failure
+RestartSec=1s

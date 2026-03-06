@@ -153,6 +153,96 @@ cd ..
 ./run_server.sh --test-ping
 ```
 
+## RFID 부팅 자동화 (systemd)
+
+책임 분리:
+- `hardware`: 부팅 시 `rc522` 모듈 로드 + RFID 데몬 서비스 제공
+- `server`: RFID 소켓이 준비된 뒤에만 서버 시작
+
+리소스 정책:
+- `sfeps-rfid-module.service`만 부팅 자동시작(`enable`)합니다.
+- `sfeps-rfid.service`는 **enable하지 않습니다**.
+- `sfeps-server.service`가 시작될 때 의존성으로 `sfeps-rfid.service`가 같이 올라오고, 서버가 내려가면 함께 정지합니다.
+
+### 1회 수동 적용
+
+```bash
+cd /home/iam/finalProject/SFEPS
+
+# 1) RFID 환경파일 배치(필요 시 값 수정)
+sudo cp hardware/Raspi-driver/RC522_RFID/systemd/sfeps-rfid.env.example /etc/default/sfeps-rfid
+sudo vi /etc/default/sfeps-rfid
+
+# 2) hardware 서비스 유닛 설치
+sudo cp hardware/Raspi-driver/RC522_RFID/systemd/sfeps-rfid-module.service /etc/systemd/system/sfeps-rfid-module.service
+sudo cp hardware/Raspi-driver/RC522_RFID/systemd/sfeps-rfid.service /etc/systemd/system/sfeps-rfid.service
+
+# 3) server 유닛 drop-in 설치 (소켓 준비 보장)
+sudo mkdir -p /etc/systemd/system/sfeps-server.service.d
+sudo cp server/systemd/sfeps-server.service.d/rfid.conf /etc/systemd/system/sfeps-server.service.d/rfid.conf
+
+# 4) 반영
+sudo systemctl daemon-reload
+
+# 5) 모듈 로더만 부팅 자동시작
+sudo systemctl enable --now sfeps-rfid-module.service
+
+# 6) 서버 재시작 (서버가 sfeps-rfid.service를 on-demand로 기동)
+sudo systemctl restart sfeps-server.service
+```
+
+### 확인 명령
+
+```bash
+systemctl is-active sfeps-rfid-module
+systemctl is-active sfeps-server
+systemctl is-active sfeps-rfid
+lsmod | grep rc522
+ls -l /dev/rc522
+ls -l /tmp/rc522_events.sock
+journalctl -u sfeps-rfid-module -u sfeps-rfid -u sfeps-server -b
+```
+
+### 검증 시나리오
+
+1. 부팅 자동 동작
+```bash
+sudo reboot
+# 재접속 후
+systemctl is-active sfeps-rfid-module
+lsmod | grep rc522
+ls -l /dev/rc522
+```
+
+2. 서버 시작 순서/소켓 보장
+```bash
+sudo systemctl restart sfeps-server
+systemctl is-active sfeps-rfid
+ls -l /tmp/rc522_events.sock
+journalctl -u sfeps-rfid -u sfeps-server -b | grep -E "Started|Starting|RFID|socket"
+```
+
+3. 실패 시 fail-closed
+```bash
+sudo sed -i 's#^SFEPS_RFID_KO_PATH=.*#SFEPS_RFID_KO_PATH=/bad/path/rc522.ko#' /etc/default/sfeps-rfid
+sudo systemctl daemon-reload
+sudo systemctl restart sfeps-rfid-module
+systemctl is-failed sfeps-rfid-module
+sudo systemctl restart sfeps-server
+systemctl is-active sfeps-server
+
+# 테스트 후 원복
+sudo vi /etc/default/sfeps-rfid
+sudo systemctl restart sfeps-rfid-module
+sudo systemctl restart sfeps-server
+```
+
+4. 정상 태깅 경로
+```bash
+journalctl -u sfeps-server -f
+# 카드 태깅 후 "RFID Tag" 로그 확인
+```
+
 ## 주요 경로
 
 - 영상 저장: `/home/iam/SFEPS/videos`

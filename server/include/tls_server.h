@@ -13,6 +13,7 @@ struct TlsServerConfig {
     std::string cert_file;
     std::string key_file;
     int handshake_timeout_ms = 3000;
+    std::string bind_ip = "0.0.0.0";
     std::string tag;
 };
 

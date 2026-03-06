@@ -54,6 +54,11 @@ bool init_tls_server(TlsServer& server, const TlsServerConfig& cfg, std::string&
         err = "tls cert/key path is empty";
         return false;
     }
+    in_addr bind_addr {};
+    if (inet_pton(AF_INET, cfg.bind_ip.c_str(), &bind_addr) != 1) {
+        err = "invalid bind IP: " + cfg.bind_ip;
+        return false;
+    }
 
     SSL_load_error_strings();
     OPENSSL_init_ssl(0, nullptr);
@@ -106,7 +111,7 @@ bool init_tls_server(TlsServer& server, const TlsServerConfig& cfg, std::string&
     sockaddr_in addr {};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(static_cast<uint16_t>(cfg.port));
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_addr = bind_addr;
 
     if (bind(listen_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
         err = "bind() failed: " + std::string(std::strerror(errno));

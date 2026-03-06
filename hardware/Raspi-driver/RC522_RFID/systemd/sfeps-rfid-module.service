@@ -1,0 +1,21 @@
+[Unit]
+Description=SFEPS RFID kernel module loader
+After=local-fs.target
+Before=sfeps-rfid.service sfeps-server.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+RemainAfterExit=yes
+EnvironmentFile=-/etc/default/sfeps-rfid
+Environment="SFEPS_RFID_KO_PATH=/home/iam/SFEPS/hardware/Raspi-driver/RC522_RFID/Kernel_Driver_irq/build/rc522.ko"
+Environment="SFEPS_RFID_DEV_PATH=/dev/rc522"
+Environment="SFEPS_RFID_DEV_WAIT_SEC=10"
+
+# Load rc522 at boot: modprobe first, insmod fallback
+ExecStart=/bin/sh -c 'set -eu; if [ -e "${SFEPS_RFID_DEV_PATH}" ]; then exit 0; fi; if ! /sbin/modprobe rc522 2>/dev/null && ! /usr/sbin/modprobe rc522 2>/dev/null && ! modprobe rc522 2>/dev/null; then insmod "${SFEPS_RFID_KO_PATH}"; fi'
+ExecStart=/bin/sh -c 'set -eu; timeout="${SFEPS_RFID_DEV_WAIT_SEC}"; while [ ! -e "${SFEPS_RFID_DEV_PATH}" ] && [ "${timeout}" -gt 0 ]; do sleep 1; timeout=$((timeout-1)); done; [ -e "${SFEPS_RFID_DEV_PATH}" ] || { echo "RFID device not ready: ${SFEPS_RFID_DEV_PATH}" >&2; exit 1; }'
+
+[Install]
+WantedBy=multi-user.target
