@@ -12,11 +12,11 @@ std::string XMLParser::get_current_time_str() {
     return std::string(buf);
 }
 
-void XMLParser::parseAndProcess(std::string& accumulated_xml, unsigned int last_timestamp) {
+std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_xml, unsigned int last_timestamp) {
+    
+    std::vector<DetectedObject> results;
+
     try {
-        // =========================================================
-        // [PART 1] 객체(Object) 좌표 및 타입 파싱
-        // =========================================================
         size_t search_pos = 0;
         while (true) {
             size_t obj_start = accumulated_xml.find("<tt:Object", search_pos);
@@ -41,52 +41,70 @@ void XMLParser::parseAndProcess(std::string& accumulated_xml, unsigned int last_
                 obj_type = accumulated_xml.substr(start, end - start);
             }
 
-            // 좌표 추출 및 정규화
-            float x = -1, y = -1;
+            float x = -1, y = -1, w = -1, h = -1;
             size_t x_pos = accumulated_xml.find("x=\"", obj_start);
             size_t y_pos = accumulated_xml.find("y=\"", obj_start);
+            
             if (x_pos != std::string::npos && y_pos != std::string::npos && (next_obj == std::string::npos || x_pos < next_obj)) {
                 size_t end_x = accumulated_xml.find("\"", x_pos + 3);
                 float raw_x = std::stof(accumulated_xml.substr(x_pos + 3, end_x - (x_pos + 3)));
                 size_t end_y = accumulated_xml.find("\"", y_pos + 3);
                 float raw_y = std::stof(accumulated_xml.substr(y_pos + 3, end_y - (y_pos + 3)));
 
-                if (raw_x > 1.0f) {
-                    x = raw_x / SENSOR_WIDTH;
-                    y = raw_y / SENSOR_HEIGHT;
-                } else {
-                    x = raw_x; y = raw_y;
-                }
+                // 🌟 정규화 제거: 픽셀 원본 값 그대로 대입
+                x = raw_x; 
+                y = raw_y;
             }
 
-            if (x != -1 && y != -1) {
-                if(obj_type == "Human") {                    
-                    // 1. 처음 보는 ID인지 확인
-                    bool is_new_id = (log_timer_map.find(obj_id) == log_timer_map.end());
+            // 🌟 2. 바운딩 박스 크기(width, height) 추출 (ONVIF 표준 left, right, top, bottom 계산)
+            size_t left_pos   = accumulated_xml.find("left=\"", obj_start);
+            size_t right_pos  = accumulated_xml.find("right=\"", obj_start);
+            size_t top_pos    = accumulated_xml.find("top=\"", obj_start);
+            size_t bottom_pos = accumulated_xml.find("bottom=\"", obj_start);
 
-                    // 2. 출력 조건: 처음 보거나, 혹은 마지막 출력 후 일정 시간이 지났거나
-                    if (is_new_id || (last_timestamp - log_timer_map[obj_id] > LOG_THROTTLE)) {
-                        
-                        std::string prefix = is_new_id ? "✨ [NEW]" : "🎯 [OBJ]";
+            if (left_pos != std::string::npos && right_pos != std::string::npos && 
+                top_pos != std::string::npos && bottom_pos != std::string::npos && 
+                (next_obj == std::string::npos || left_pos < next_obj)) 
+            {
+                size_t end_left   = accumulated_xml.find("\"", left_pos + 6);
+                size_t end_right  = accumulated_xml.find("\"", right_pos + 7);
+                size_t end_top    = accumulated_xml.find("\"", top_pos + 5);
+                size_t end_bottom = accumulated_xml.find("\"", bottom_pos + 8);
 
-                        std::cout << prefix << " ID: " << obj_id 
-                                << " | Type: " << obj_type 
-                                << " | Pos: (" << x << ", " << y << ")" 
-                                << " | RTP: " << last_timestamp 
-                                << " | Time: " << get_current_time_str() << std::endl;
+                float left   = std::stof(accumulated_xml.substr(left_pos + 6, end_left - (left_pos + 6)));
+                float right  = std::stof(accumulated_xml.substr(right_pos + 7, end_right - (right_pos + 7)));
+                float top    = std::stof(accumulated_xml.substr(top_pos + 5, end_top - (top_pos + 5)));
+                float bottom = std::stof(accumulated_xml.substr(bottom_pos + 8, end_bottom - (bottom_pos + 8)));
 
-                        // 마지막 출력 시간 업데이트
-                        log_timer_map[obj_id] = last_timestamp;
-                    }
+                // 🌟 가로(폭) = 오른쪽 끝 - 왼쪽 끝 / 세로(높이) = 맨 밑 - 맨 위
+                w = right - left;
+                h = bottom - top;
+                
+            }
+
+            // 🌟 출력 스위치 ON (true로 고정) 및 크기(Size) 로그 추가
+            constexpr bool k_enable_object_log = true;
+            if (k_enable_object_log && x != -1 && y != -1 && obj_type == "Human") {
+                bool is_new_id = (log_timer_map.find(obj_id) == log_timer_map.end());
+                if (is_new_id || (last_timestamp - log_timer_map[obj_id] > LOG_THROTTLE)) {
+                    std::string prefix = is_new_id ? "✨ [NEW]" : "🎯 [OBJ]";
+                    std::cout << prefix << " ID: " << obj_id 
+                              << " | Type: " << obj_type 
+                              << " | Pos: (" << x << ", " << y << ")" 
+                              << " | Bbox_center: (" << w << "x" << h << ")" // 🌟 크기 출력 추가
+                              << " | RTP: " << last_timestamp 
+                              << " | Time: " << get_current_time_str() << std::endl;
+                    log_timer_map[obj_id] = last_timestamp;
                 }
             }
             search_pos = obj_start + 1;
         }
+    
 
         // =========================================================
-        // [PART 2] 이벤트(Event) 파싱 (ObjectId 추가 버전)
+        // [PART 2] 이벤트(Event) 파싱 (활성화됨)
         // =========================================================
-        search_pos = 0;
+        // size_t search_pos = 0;
         while (true) {
             size_t msg_start = accumulated_xml.find("<wsnt:NotificationMessage", search_pos);
             if (msg_start == std::string::npos) break;
@@ -96,7 +114,7 @@ void XMLParser::parseAndProcess(std::string& accumulated_xml, unsigned int last_
 
             std::string message_block = accumulated_xml.substr(msg_start, msg_end - msg_start);
 
-            // 1. RuleName 추출
+            // RuleName 추출
             std::string rule_name = "Unknown";
             size_t name_item_pos = message_block.find("Name=\"RuleName\"");
             if (name_item_pos != std::string::npos) {
@@ -108,7 +126,7 @@ void XMLParser::parseAndProcess(std::string& accumulated_xml, unsigned int last_
                 }
             }
 
-            // 2. State 추출 (true/false)
+            // State 추출
             bool is_active = false;
             size_t state_item_pos = message_block.find("Name=\"State\"");
             if (state_item_pos != std::string::npos) {
@@ -121,7 +139,7 @@ void XMLParser::parseAndProcess(std::string& accumulated_xml, unsigned int last_
                 }
             }
 
-            // 3. ObjectId 추출
+            // ObjectId 추출
             std::string triggered_id = "None";
             size_t id_item_pos = message_block.find("Name=\"ObjectId\"");
             if (id_item_pos != std::string::npos) {
@@ -133,12 +151,13 @@ void XMLParser::parseAndProcess(std::string& accumulated_xml, unsigned int last_
                 }
             }
 
-            // 4. 결과 출력
+            // 결과 출력
             if (rule_name != "Unknown" && is_active) {
                 unsigned int time_diff = last_timestamp - gate_last_pass_time[rule_name];
                 
                 if (time_diff < TAILGATE_LIMIT && gate_last_pass_time[rule_name] != 0) {
                     float diff_sec = (float)time_diff / 90000.0f;
+                    
                     std::cout << "🚨 [TAILGATING] " << rule_name 
                               << " | Trigger ID: " << triggered_id
                               << " | RTP: " << last_timestamp 
@@ -156,4 +175,5 @@ void XMLParser::parseAndProcess(std::string& accumulated_xml, unsigned int last_
         }
     } catch (...) {}
     
+    return results;
 }

@@ -4,17 +4,19 @@
 #include "XMLParser.h"
 
 int main() {
-    // 1. 객체 생성
+    // 1. 객체 생성 (DB 매니저 삭제됨)
     RTSPClient client;
     XMLParser parser;
 
-    // 2. 연결 및 설정
+    // 2. 카메라 연결
     if (!client.connectToCamera()) {
+        std::cerr << "❌ Camera Connection Failed" << std::endl;
         return -1;
     }
     client.sendHandshake();
+    std::cout << "✅ RTSP Connected!" << std::endl;
 
-    // 3. 데이터 수신 루프
+    // 3. 데이터 수신 루프 설정
     unsigned char header[4]; 
     char* big_buffer = new char[65536]; 
     std::string accumulated_xml = "";
@@ -26,7 +28,7 @@ int main() {
         // Keep-Alive (30초마다)
         client.sendHeartbeat();
 
-        // 헤더 읽기
+        // 헤더 읽기 ($ + Channel + Length)
         int read_len = recv(sock, header, 4, MSG_WAITALL);
         if (read_len <= 0) break;
 
@@ -50,13 +52,22 @@ int main() {
                 unsigned int current_timestamp = (rtp_ptr[4] << 24) | (rtp_ptr[5] << 16) | (rtp_ptr[6] << 8) | rtp_ptr[7];
                 char* xml_data = big_buffer + 12;
                 int xml_len = total_read - 12;
-
+                
+                /*
+                // 🌟 [추가] 파싱하기 전에 원본 XML 데이터를 터미널에 시원하게 출력!
+                    std::cout << "\n========== [RAW XML DATA : RTP " << last_timestamp << "] ==========\n" 
+                              << accumulated_xml 
+                              << "\n======================================================\n" << std::endl;
+                */
+               
                 // 프레임이 바뀌었을 때 파싱 수행
                 if (current_timestamp != last_timestamp && last_timestamp != 0) {
-                    // 파싱 호출
+
                     parser.parseAndProcess(accumulated_xml, last_timestamp);
+
                     accumulated_xml = "";
                 }
+                
                 accumulated_xml.append(xml_data, xml_len);
                 last_timestamp = current_timestamp;
             }
@@ -66,4 +77,3 @@ int main() {
     delete[] big_buffer;
     return 0;
 }
-
