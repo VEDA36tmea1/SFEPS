@@ -2,6 +2,7 @@
 
 CXX := g++
 CXXFLAGS := -std=c++17 -Wall -Wextra
+LDFLAGS  := -pthread
 
 SERVER_SRCS := \
     ubuntu_tcp_server.cpp
@@ -11,7 +12,7 @@ TARGETS := ubuntu_tcp_server
 all: $(TARGETS)
 
 ubuntu_tcp_server: $(SERVER_SRCS)
-	$(CXX) $(CXXFLAGS) $(SERVER_SRCS) -o $@
+	$(CXX) $(CXXFLAGS) $(SERVER_SRCS) -o $@ $(LDFLAGS)
 
 clean:
 	rm -f $(TARGETS)
