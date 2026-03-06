@@ -1,8 +1,11 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <cerrno>
 #include <csignal>
 #include <cstdio>
@@ -15,6 +18,76 @@
 #include <algorithm>
 
 static bool g_running = true;
+
+// LUT 캘리브레이션: STM32에서 "ACK" 또는 "SAVED" 가 포함된 라인이 오면
+// /tmp/lut_ack FIFO 에 기록해 rtsp_laser_demo 쪽으로 신호를 전달한다.
+static constexpr const char* LUT_ACK_FIFO = "/tmp/lut_ack";
+
+// TCP 클라이언트(ESP8266/STM32)로부터 수신한 데이터를 처리하는 스레드.
+// ACK/SAVED 라인을 FIFO 에 쓰고, 나머지는 콘솔에 출력한다.
+static void recv_thread_fn(int client_fd, std::atomic<bool>& stop_flag)
+{
+    // FIFO 생성 (이미 있으면 무시)
+    ::mkfifo(LUT_ACK_FIFO, 0666);
+
+    // O_WRONLY | O_NONBLOCK: 읽는 쪽(rtsp_laser_demo)이 아직 열지 않았어도 블록되지 않음
+    int fifo_fd = ::open(LUT_ACK_FIFO, O_WRONLY | O_NONBLOCK);
+    if (fifo_fd < 0)
+    {
+        std::cerr << "[TCP-recv] /tmp/lut_ack FIFO 열기 실패 (rtsp_laser_demo 가 먼저 열어야 함): "
+                  << std::strerror(errno) << "\n";
+    }
+
+    std::string line;
+    char ch = 0;
+
+    while (!stop_flag.load())
+    {
+        int r = ::recv(client_fd, &ch, 1, MSG_DONTWAIT);
+        if (r > 0)
+        {
+            if (ch == '\n')
+            {
+                // 콘솔 출력
+                std::cout << "[TCP←STM32] " << line << std::endl;
+
+                // ACK/SAVED 라인이면 FIFO에 기록
+                bool is_ack = (line.find("ACK")   != std::string::npos ||
+                               line.find("SAVED") != std::string::npos);
+                if (is_ack && fifo_fd >= 0)
+                {
+                    // FIFO 가 닫혀 있으면 재시도
+                    if (fifo_fd < 0)
+                        fifo_fd = ::open(LUT_ACK_FIFO, O_WRONLY | O_NONBLOCK);
+
+                    if (fifo_fd >= 0)
+                    {
+                        line.push_back('\n');
+                        ::write(fifo_fd, line.c_str(), line.size());
+                    }
+                }
+                line.clear();
+            }
+            else if (ch != '\r')
+            {
+                line.push_back(ch);
+            }
+        }
+        else if (r == 0)
+        {
+            break; // 클라이언트 연결 끊김
+        }
+        else
+        {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            else
+                break;
+        }
+    }
+
+    if (fifo_fd >= 0) ::close(fifo_fd);
+}
 
 void handle_signal(int) {
     g_running = false;
@@ -184,70 +257,98 @@ int main(int argc, char** argv) {
         std::cout << "[TCP] Client connected from " << client_ip
                   << ":" << ntohs(client_addr.sin_port) << std::endl;
 
+        // STM32→ESP8266→PC 방향 수신 스레드 시작 (ACK 신호 수신)
+        std::atomic<bool> stop_recv{false};
+        std::thread recv_th(recv_thread_fn, client_fd, std::ref(stop_recv));
+
         if (rtt_mode) {
-            // 자동 RTT 측정 모드: PING/PONG 왕복 시간만 측정하고 한 번 끝냄
             run_rtt_test(client_fd);
         } else {
-            // 기존 수동 입력 모드
-            std::cout << "[TCP] 좌표/오차 입력 예시: \"0.5 0.3\" (x y)" << std::endl;
-            std::cout << "[TCP] 일반 문자열도 전송 가능, \"quit\" 입력 시 연결 종료" << std::endl;
+            std::cout << "[TCP] 파이프 수신 대기 중 (rtsp_laser_demo | ubuntu_tcp_server)" << std::endl;
 
             std::string line;
-            while (g_running && std::cout << "> " && std::getline(std::cin, line)) {
-                if (line == "quit" || line == "exit") {
-                    std::cout << "[TCP] 클라이언트 연결 종료." << std::endl;
-                    break;
-                }
+            while (g_running && std::getline(std::cin, line)) {
+                if (line == "quit" || line == "exit") break;
 
-                char send_buf[128];
-
-                // 파이프라인(rtsp_laser_demo)에서 들어오는 라인은 "1500 1400" 처럼 숫자 두 개만 오는 것이 이상적.
-                // 숫자로 시작하지 않는 라인은 (예: 디버그 로그) 무시한다.
                 std::string trimmed = line;
                 while (!trimmed.empty() && (trimmed.back() == '\r' || trimmed.back() == '\n' || trimmed.back() == ' '))
                     trimmed.pop_back();
                 while (!trimmed.empty() && (trimmed.front() == ' ' || trimmed.front() == '\t'))
                     trimmed.erase(trimmed.begin());
 
-                // 숫자로 시작하지 않으면 ESP로 보내지 않고 스킵
                 if (!trimmed.empty() && !(std::isdigit(trimmed.front()) || trimmed.front() == '-' || trimmed.front() == '+'))
-                {
-                    std::cout << "[TCP] Ignored non-numeric line: " << line << std::endl;
+                    continue;
+
+                float e_x = 0.0f, e_y = 0.0f;
+                float t_u = 0.0f, t_v = 0.0f;
+                int   g_r = -1,   g_c = -1;
+
+                int n = std::sscanf(trimmed.c_str(), "%f %f %f %f %d %d",
+                                    &e_x, &e_y, &t_u, &t_v, &g_r, &g_c);
+
+                char send_buf[128];
+                int len = 0;
+
+                if (n >= 6) {
+                    len = std::snprintf(send_buf, sizeof(send_buf),
+                        "EX=%.6f,EY=%.6f,TU=%.3f,TV=%.3f,GR=%d,GC=%d\n",
+                        e_x, e_y, t_u, t_v, g_r, g_c);
+                } else if (n >= 4) {
+                    len = std::snprintf(send_buf, sizeof(send_buf),
+                        "EX=%.6f,EY=%.6f,TU=%.3f,TV=%.3f\n",
+                        e_x, e_y, t_u, t_v);
+                } else if (n >= 2) {
+                    len = std::snprintf(send_buf, sizeof(send_buf),
+                        "EX=%.6f,EY=%.6f\n", e_x, e_y);
+                } else {
                     continue;
                 }
 
-                // "x y" 형식이면 (여기서는 일반적인 실수 두 개)로 해석해서
-                // EX/EY 포맷(픽셀 오차 등)으로 전송한다.
-                float x = 0.0f, y = 0.0f;
-                if (std::sscanf(trimmed.c_str(), "%f %f", &x, &y) == 2) {
-                    int len = std::snprintf(send_buf, sizeof(send_buf),
-                                            "EX=%.6f,EY=%.6f\n", x, y);
-                    if (len <= 0 || len >= static_cast<int>(sizeof(send_buf))) {
-                        std::cerr << "[TCP] 좌표 포맷 실패" << std::endl;
-                        continue;
+                if (len <= 0 || len >= static_cast<int>(sizeof(send_buf)))
+                    continue;
+
+                // send 실패 → 연결 끊김, 재접속 대기
+                if (::send(client_fd, send_buf, len, MSG_NOSIGNAL) <= 0) {
+                    std::cerr << "[TCP] 클라이언트 연결 끊김, 재접속 대기...\n";
+
+                    stop_recv.store(true);
+                    if (recv_th.joinable()) recv_th.join();
+                    ::close(client_fd);
+
+                    // 새 클라이언트 접속까지 대기
+                    client_fd = -1;
+                    while (g_running && client_fd < 0) {
+                        client_fd = ::accept(server_fd,
+                            reinterpret_cast<sockaddr*>(&client_addr), &client_len);
+                        if (client_fd < 0) {
+                            if (!g_running) break;
+                            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                        }
                     }
-                    if (::send(client_fd, send_buf, len, 0) <= 0) {
-                        std::perror("send");
-                        break;
-                    }
-                    std::cout << "[TCP] Sent: " << send_buf;
-                } else {
-                    // 그 외에는 입력 문자열 그대로 전송
-                    line.push_back('\n');
-                    if (::send(client_fd, line.data(), static_cast<int>(line.size()), 0) <= 0) {
-                        std::perror("send");
-                        break;
-                    }
-                    std::cout << "[TCP] Sent raw: " << line;
+                    if (client_fd < 0) break;
+
+                    ::inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, sizeof(client_ip));
+                    std::cout << "[TCP] 재접속: " << client_ip
+                              << ":" << ntohs(client_addr.sin_port) << std::endl;
+
+                    // 수신 스레드 재시작
+                    stop_recv.store(false);
+                    recv_th = std::thread(recv_thread_fn, client_fd, std::ref(stop_recv));
+
+                    // 방금 실패한 메시지 재전송
+                    if (::send(client_fd, send_buf, len, MSG_NOSIGNAL) > 0)
+                        std::cout << "[TCP] Sent (재전송): " << send_buf;
+                    continue;
                 }
+                std::cout << "[TCP] Sent: " << send_buf;
             }
 
-            // 파이프라인에서 stdin 이 EOF 가 되면 서버도 종료할 수 있도록 플래그 설정
             if (!std::cin.good())
-            {
                 g_running = false;
-            }
         }
+
+        stop_recv.store(true);
+        if (recv_th.joinable()) recv_th.join();
 
         ::close(client_fd);
         if (!g_running || rtt_mode) break; // RTT 모드는 1회 측정 후 종료
