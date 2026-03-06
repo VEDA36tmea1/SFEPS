@@ -40,6 +40,9 @@ EXEY_RE = re.compile(
     r"(?:,TU=([-\d.]+),TV=([-\d.]+)(?:,GR=(\d+),GC=(\d+))?)?"
 )
 
+# 서버 LUT: 호스트가 PWM 값 요청
+REQUEST_PWM_RE = re.compile(r"REQUEST_PWM,GR=(\d+),GC=(\d+)")
+
 # Linux sysfs PWM (pwmchip0 = bcm2835)
 SYSFS_PWM_CHIP = "/sys/class/pwm/pwmchip0"
 SYSFS_PWM0 = f"{SYSFS_PWM_CHIP}/pwm0"
@@ -319,6 +322,8 @@ class SharedState:
     grid_r: int = -1
     grid_c: int = -1
     updated: bool = False
+    last_ux_us: float = INIT_X_US
+    last_uy_us: float = INIT_Y_US
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -335,6 +340,19 @@ def recv_loop(sock: socket.socket, shared: SharedState) -> None:
                 line, _, buf = buf.partition(b"\n")
                 line = line.strip().decode("utf-8", errors="ignore").strip()
                 if not line:
+                    continue
+                # REQUEST_PWM: 현재 PWM 값 응답 (서버 LUT 저장용)
+                m_req = REQUEST_PWM_RE.search(line)
+                if m_req:
+                    with shared.lock:
+                        ux = shared.last_ux_us
+                        uy = shared.last_uy_us
+                    resp = f"PAN={ux:.0f},TILT={uy:.0f}\n"
+                    try:
+                        sock.sendall(resp.encode("utf-8"))
+                        sys.stderr.write(f"[pid_pwm_agent] REQUEST_PWM → {resp.strip()}\n")
+                    except OSError as e:
+                        sys.stderr.write(f"[pid_pwm_agent] PWM 응답 전송 실패: {e}\n")
                     continue
                 m = EXEY_RE.search(line)
                 if m:
@@ -492,6 +510,11 @@ def main() -> None:
                 if not args.no_pwm:
                     write_pwm_duty(0, us_to_ns(ux_us))
                     write_pwm_duty(1, us_to_ns(uy_us))
+
+                # 서버 LUT: REQUEST_PWM 응답용 현재 PWM 갱신
+                with shared.lock:
+                    shared.last_ux_us = ux_us
+                    shared.last_uy_us = uy_us
 
                 if args.lut_mode and collector.enabled:
                     saved = collector.update(

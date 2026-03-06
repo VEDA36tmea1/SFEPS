@@ -19,24 +19,20 @@
 
 static bool g_running = true;
 
-// LUT 캘리브레이션: STM32에서 "ACK" 또는 "SAVED" 가 포함된 라인이 오면
-// /tmp/lut_ack FIFO 에 기록해 rtsp_laser_demo 쪽으로 신호를 전달한다.
-static constexpr const char* LUT_ACK_FIFO = "/tmp/lut_ack";
+// rtsp_laser_demo에 "클라이언트 연결됨" 신호 전달 (레이저 탐지/LUT 시작 조건)
+static constexpr const char* LUT_CLIENT_CONNECTED_FIFO = "/tmp/lut_client_connected";
+
+// 서버 측 LUT: 라즈베리에서 "PAN=...,TILT=..." 수신 시 rtsp_laser_demo로 전달
+static constexpr const char* LUT_PWM_RESPONSE_FIFO = "/tmp/lut_pwm_response";
 
 // TCP 클라이언트(ESP8266/STM32)로부터 수신한 데이터를 처리하는 스레드.
-// ACK/SAVED 라인을 FIFO 에 쓰고, 나머지는 콘솔에 출력한다.
+// PAN=...,TILT=... 라인을 FIFO 에 쓰고, 나머지는 콘솔에 출력한다.
 static void recv_thread_fn(int client_fd, std::atomic<bool>& stop_flag)
 {
-    // FIFO 생성 (이미 있으면 무시)
-    ::mkfifo(LUT_ACK_FIFO, 0666);
-
-    // O_WRONLY | O_NONBLOCK: 읽는 쪽(rtsp_laser_demo)이 아직 열지 않았어도 블록되지 않음
-    int fifo_fd = ::open(LUT_ACK_FIFO, O_WRONLY | O_NONBLOCK);
-    if (fifo_fd < 0)
-    {
-        std::cerr << "[TCP-recv] /tmp/lut_ack FIFO 열기 실패 (rtsp_laser_demo 가 먼저 열어야 함): "
-                  << std::strerror(errno) << "\n";
-    }
+    ::mkfifo(LUT_PWM_RESPONSE_FIFO, 0666);
+    int pwm_fifo_fd = ::open(LUT_PWM_RESPONSE_FIFO, O_WRONLY | O_NONBLOCK);
+    if (pwm_fifo_fd < 0)
+        std::cerr << "[TCP-recv] PWM FIFO 열기 실패: " << std::strerror(errno) << "\n";
 
     std::string line;
     char ch = 0;
@@ -46,24 +42,20 @@ static void recv_thread_fn(int client_fd, std::atomic<bool>& stop_flag)
         int r = ::recv(client_fd, &ch, 1, MSG_DONTWAIT);
         if (r > 0)
         {
-            if (ch == '\n')
+            if (ch == '\n' || ch == '\r')
             {
                 // 콘솔 출력
-                std::cout << "[TCP←STM32] " << line << std::endl;
-
-                // ACK/SAVED 라인이면 FIFO에 기록
-                bool is_ack = (line.find("ACK")   != std::string::npos ||
-                               line.find("SAVED") != std::string::npos);
-                if (is_ack && fifo_fd >= 0)
+                if (!line.empty())
                 {
-                    // FIFO 가 닫혀 있으면 재시도
-                    if (fifo_fd < 0)
-                        fifo_fd = ::open(LUT_ACK_FIFO, O_WRONLY | O_NONBLOCK);
+                    std::cout << "[TCP←Raspi] " << line << std::endl;
 
-                    if (fifo_fd >= 0)
+                    // PAN=...,TILT=... 라인이면 PWM FIFO에 기록 (서버 LUT 저장용)
+                    bool is_pwm = (line.find("PAN=") != std::string::npos &&
+                                   line.find("TILT=") != std::string::npos);
+                    if (is_pwm && pwm_fifo_fd >= 0)
                     {
                         line.push_back('\n');
-                        ::write(fifo_fd, line.c_str(), line.size());
+                        ::write(pwm_fifo_fd, line.c_str(), line.size());
                     }
                 }
                 line.clear();
@@ -86,7 +78,7 @@ static void recv_thread_fn(int client_fd, std::atomic<bool>& stop_flag)
         }
     }
 
-    if (fifo_fd >= 0) ::close(fifo_fd);
+    if (pwm_fifo_fd >= 0) ::close(pwm_fifo_fd);
 }
 
 void handle_signal(int) {
@@ -257,7 +249,16 @@ int main(int argc, char** argv) {
         std::cout << "[TCP] Client connected from " << client_ip
                   << ":" << ntohs(client_addr.sin_port) << std::endl;
 
-        // STM32→ESP8266→PC 방향 수신 스레드 시작 (ACK 신호 수신)
+        // rtsp_laser_demo에 "연결됨" 신호 전달 → 레이저 탐지/LUT 시작
+        ::mkfifo(LUT_CLIENT_CONNECTED_FIFO, 0666);
+        int conn_fd = ::open(LUT_CLIENT_CONNECTED_FIFO, O_WRONLY);
+        if (conn_fd >= 0) {
+            const char* msg = "CONNECTED\n";
+            ::write(conn_fd, msg, std::strlen(msg));
+            ::close(conn_fd);
+        }
+
+        // TCP 수신 스레드 시작 (PAN/TILT 라인 수신)
         std::atomic<bool> stop_recv{false};
         std::thread recv_th(recv_thread_fn, client_fd, std::ref(stop_recv));
 
@@ -276,8 +277,50 @@ int main(int argc, char** argv) {
                 while (!trimmed.empty() && (trimmed.front() == ' ' || trimmed.front() == '\t'))
                     trimmed.erase(trimmed.begin());
 
-                if (!trimmed.empty() && !(std::isdigit(trimmed.front()) || trimmed.front() == '-' || trimmed.front() == '+'))
+                if (trimmed.empty())
                     continue;
+
+                // raw forward: REQUEST_PWM / NEXT_GRID / RESET_HOME
+                if (trimmed.find("REQUEST_PWM,") == 0 ||
+                    trimmed.find("NEXT_GRID,") == 0 ||
+                    trimmed == "RESET_HOME" || trimmed.find("RESET_HOME,") == 0)
+                {
+                    std::string msg = trimmed + "\n";
+                    if (::send(client_fd, msg.c_str(), static_cast<int>(msg.size()), MSG_NOSIGNAL) <= 0) {
+                        std::cerr << "[TCP] 클라이언트 연결 끊김, 재접속 대기...\n";
+
+                        stop_recv.store(true);
+                        if (recv_th.joinable()) recv_th.join();
+                        ::close(client_fd);
+
+                        // 새 클라이언트 접속까지 대기
+                        client_fd = -1;
+                        while (g_running && client_fd < 0) {
+                            client_fd = ::accept(server_fd,
+                                reinterpret_cast<sockaddr*>(&client_addr), &client_len);
+                            if (client_fd < 0) {
+                                if (!g_running) break;
+                                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                            }
+                        }
+                        if (client_fd < 0) break;
+
+                        ::inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, sizeof(client_ip));
+                        std::cout << "[TCP] 재접속: " << client_ip
+                                  << ":" << ntohs(client_addr.sin_port) << std::endl;
+
+                        // 수신 스레드 재시작
+                        stop_recv.store(false);
+                        recv_th = std::thread(recv_thread_fn, client_fd, std::ref(stop_recv));
+
+                        // 재전송
+                        if (::send(client_fd, msg.c_str(), static_cast<int>(msg.size()), MSG_NOSIGNAL) > 0)
+                            std::cout << "[TCP] Sent (재전송): " << msg;
+                        continue;
+                    }
+                    std::cout << "[TCP] Sent: " << msg;
+                    continue;
+                }
 
                 float e_x = 0.0f, e_y = 0.0f;
                 float t_u = 0.0f, t_v = 0.0f;
