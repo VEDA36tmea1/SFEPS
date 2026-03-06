@@ -216,12 +216,37 @@ int main(int argc, char** argv) {
                     continue;
                 }
 
-                // "x y" 형식이면 (여기서는 일반적인 실수 두 개)로 해석해서
-                // EX/EY 포맷(픽셀 오차 등)으로 전송한다.
-                float x = 0.0f, y = 0.0f;
-                if (std::sscanf(trimmed.c_str(), "%f %f", &x, &y) == 2) {
-                    int len = std::snprintf(send_buf, sizeof(send_buf),
-                                            "EX=%.6f,EY=%.6f\n", x, y);
+                // "e_u e_v [target_u target_v [grid_r grid_c]]" 형식이면
+                // EX/EY (+ 선택적으로 TU/TV/GR/GC) 포맷으로 전송한다.
+                float e_x = 0.0f, e_y = 0.0f;
+                float t_u = 0.0f, t_v = 0.0f;
+                int   g_r = -1,   g_c = -1;
+
+                int n = std::sscanf(trimmed.c_str(), "%f %f %f %f %d %d",
+                                    &e_x, &e_y, &t_u, &t_v, &g_r, &g_c);
+
+                if (n >= 2) {
+                    int len = 0;
+                    if (n >= 6) {
+                        len = std::snprintf(
+                            send_buf, sizeof(send_buf),
+                            "EX=%.6f,EY=%.6f,TU=%.3f,TV=%.3f,GR=%d,GC=%d\n",
+                            e_x, e_y, t_u, t_v, g_r, g_c
+                        );
+                    } else if (n >= 4) {
+                        len = std::snprintf(
+                            send_buf, sizeof(send_buf),
+                            "EX=%.6f,EY=%.6f,TU=%.3f,TV=%.3f\n",
+                            e_x, e_y, t_u, t_v
+                        );
+                    } else {
+                        len = std::snprintf(
+                            send_buf, sizeof(send_buf),
+                            "EX=%.6f,EY=%.6f\n",
+                            e_x, e_y
+                        );
+                    }
+
                     if (len <= 0 || len >= static_cast<int>(sizeof(send_buf))) {
                         std::cerr << "[TCP] 좌표 포맷 실패" << std::endl;
                         continue;
