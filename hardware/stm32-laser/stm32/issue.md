@@ -303,7 +303,7 @@ else if (strstr(wifi_line, "ERROR") != NULL ||
 
 #### 3. 수정 내용
 
-- TIM1/TIM2 PWM 채널의 극성을 서보 일반 규격에 맞게 정방향으로 조정:
+- TIM1/TIM2 PWM 채널의 극성을 서1보 일반 규격에 맞게 정방향으로 조정:
 
   ```c
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;

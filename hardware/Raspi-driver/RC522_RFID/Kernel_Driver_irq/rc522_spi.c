@@ -73,7 +73,7 @@ static irqreturn_t rc522_spi_irq_thread(int irq, void *dev_id)
 	struct rc522_spi *rspi = dev_id;
 
 	atomic_set(&rspi->chip.irq_event, 1);
-	wake_up_interruptible(&rspi->chip.waitq);
+	wake_up_interruptible(&rspi->chip.wagititq);
 	dev_info(&rspi->spi->dev, "rc522_irq: interrupt received (irq=%d)\n", irq);
 	return IRQ_HANDLED;
 }
