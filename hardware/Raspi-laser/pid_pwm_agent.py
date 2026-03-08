@@ -15,6 +15,8 @@ Raspi-laser PID + PWM 에이전트 (50Hz 제어 주기).
 from __future__ import annotations
 
 import argparse
+import json
+import math
 import re
 import socket
 import sys
@@ -31,7 +33,7 @@ PWM_MIN_US = 800
 PWM_MAX_US = 2200
 INIT_X_US = 1530  # pwm0 (GPIO12) 초기값
 INIT_Y_US = 1300  # pwm1 (GPIO13) 초기값
-CONTROL_PERIOD_S = 0.02      # 50Hz = 20ms
+CONTROL_PERIOD_S = 0.02     # 50Hz = 20ms
 
 # Ubuntu 서버가 보내는 형식
 # EX=...,EY=...[,TU=...,TV=...[,GR=...,GC=...]]
@@ -254,8 +256,6 @@ class LutCollector:
         return True
 
     def _save(self) -> None:
-        import json
-
         payload = {
             "rows": self.total_rows,
             "cols": self.total_cols,
@@ -270,6 +270,184 @@ class LutCollector:
         }
         with open(self.out_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
+
+
+@dataclass
+class LutTable:
+    """LUT 기반 2D 보간용 테이블.
+
+    - rows, cols: 그리드 크기 (예: 11x19)
+    - pan[r][c], tilt[r][c]: 각 셀의 PWM(us)
+    - valid[r][c]: 해당 셀에 데이터가 있는지 여부
+    """
+
+    rows: int
+    cols: int
+    pan: List[List[float]]
+    tilt: List[List[float]]
+    valid: List[List[bool]]
+
+    @classmethod
+    def from_json(cls, path: str) -> "LutTable":
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        rows = int(data.get("rows", 0))
+        cols = int(data.get("cols", 0))
+        if rows <= 0 or cols <= 0:
+            raise ValueError(f"invalid rows/cols in LUT file: rows={rows}, cols={cols}")
+
+        pan = [[0.0 for _ in range(cols)] for _ in range(rows)]
+        tilt = [[0.0 for _ in range(cols)] for _ in range(rows)]
+        valid = [[False for _ in range(cols)] for _ in range(rows)]
+
+        points = data.get("points", [])
+        for p in points:
+            try:
+                gr = int(p.get("grid_r"))
+                gc = int(p.get("grid_c"))
+                pu = float(p.get("pan_us"))
+                tu = float(p.get("tilt_us"))
+            except (TypeError, ValueError):
+                continue
+            if 0 <= gr < rows and 0 <= gc < cols:
+                pan[gr][gc] = pu
+                tilt[gr][gc] = tu
+                valid[gr][gc] = True
+
+        return cls(rows=rows, cols=cols, pan=pan, tilt=tilt, valid=valid)
+
+    def interpolate(
+        self,
+        u_px: float,
+        v_px: float,
+        frame_w: int,
+        frame_h: int,
+    ) -> Tuple[float, float, bool]:
+        """TU,TV(픽셀) → 2D B-spline(3차) 보간된 (pan_us, tilt_us).
+
+        - frame_w, frame_h: 카메라 해상도 (host와 동일하게 맞춰야 함)
+        - 주변 4x4 control point 가 하나라도 비어 있으면 (pan,tilt,False) 반환
+        """
+        if frame_w <= 1 or frame_h <= 1:
+            return 0.0, 0.0, False
+
+        # 픽셀 → 연속 grid 좌표 (0 ~ cols-1 / 0 ~ rows-1)
+        cf = (u_px / float(frame_w)) * (self.cols - 1)
+        rf = (v_px / float(frame_h)) * (self.rows - 1)
+
+        # 범위 클램프
+        cf = max(0.0, min(self.cols - 1.0, cf))
+        rf = max(0.0, min(self.rows - 1.0, rf))
+
+        # B-spline 기본 인덱스/파라미터 (0<=t<1)
+        c0 = int(math.floor(cf))
+        r0 = int(math.floor(rf))
+        tc = cf - c0
+        tr = rf - r0
+
+        # 4-탭 cubic B-spline basis
+        def b0(t: float) -> float:
+            return ((1.0 - t) ** 3) / 6.0
+
+        def b1(t: float) -> float:
+            return (3.0 * t**3 - 6.0 * t**2 + 4.0) / 6.0
+
+        def b2(t: float) -> float:
+            return (-3.0 * t**3 + 3.0 * t**2 + 3.0 * t + 1.0) / 6.0
+
+        def b3(t: float) -> float:
+            return (t**3) / 6.0
+
+        wc = [b0(tc), b1(tc), b2(tc), b3(tc)]
+        wr = [b0(tr), b1(tr), b2(tr), b3(tr)]
+
+        # 주변 4x4 control point 인덱스 (경계는 clamp)
+        c_idx = [
+            max(0, min(self.cols - 1, c0 - 1)),
+            max(0, min(self.cols - 1, c0)),
+            max(0, min(self.cols - 1, c0 + 1)),
+            max(0, min(self.cols - 1, c0 + 2)),
+        ]
+        r_idx = [
+            max(0, min(self.rows - 1, r0 - 1)),
+            max(0, min(self.rows - 1, r0)),
+            max(0, min(self.rows - 1, r0 + 1)),
+            max(0, min(self.rows - 1, r0 + 2)),
+        ]
+
+        # 4x4 영역 중 하나라도 비어 있으면 현재는 보간 실패로 처리
+        for rr in r_idx:
+            for cc in c_idx:
+                if not self.valid[rr][cc]:
+                    return 0.0, 0.0, False
+
+        pan_us = 0.0
+        tilt_us = 0.0
+        for ir, rr in enumerate(r_idx):
+            for ic, cc in enumerate(c_idx):
+                w = wr[ir] * wc[ic]
+                pan_us += w * self.pan[rr][cc]
+                tilt_us += w * self.tilt[rr][cc]
+
+        return pan_us, tilt_us, True
+
+
+@dataclass
+class Kalman2D:
+    """2D 상수 속도 모델용 칼만 필터(α-β 필터 형태 근사).
+
+    state: [x, y, vx, vy]
+    - alpha: 위치 보정 비율 (0~1, 클수록 측정값에 민감)
+    - beta : 속도 보정 비율 (0~1, 클수록 속도도 빨리 따라감)
+    """
+
+    alpha: float = 0.8
+    beta: float = 0.42
+    horizon: float = 2.0  # 몇 프레임 앞까지 예측할지 (1=한 스텝, 2=두 스텝)
+    x: float = 0.0
+    y: float = 0.0
+    vx: float = 0.0
+    vy: float = 0.0
+    initialized: bool = False
+
+    def update(self, zx: float, zy: float, dt: float) -> Tuple[float, float, float, float]:
+        """측정 (zx, zy)와 dt 로 상태 갱신 후,
+        (현재 추정 위치, 다음 스텝 예측 위치)를 반환.
+        반환: (x_est, y_est, x_pred_next, y_pred_next)
+        """
+        if dt <= 0:
+            dt = CONTROL_PERIOD_S
+
+        if not self.initialized:
+            self.x = zx
+            self.y = zy
+            self.vx = 0.0
+            self.vy = 0.0
+            self.initialized = True
+            return self.x, self.y, self.x, self.y
+
+        # 예측 단계 (constant velocity)
+        x_pred = self.x + self.vx * dt
+        y_pred = self.y + self.vy * dt
+
+        # 잔차
+        rx = zx - x_pred
+        ry = zy - y_pred
+
+        # 위치 업데이트
+        self.x = x_pred + self.alpha * rx
+        self.y = y_pred + self.alpha * ry
+
+        # 속도 업데이트
+        self.vx = self.vx + (self.beta * rx) / dt
+        self.vy = self.vy + (self.beta * ry) / dt
+
+        # horizon 배 만큼 앞 예측 (컨트롤용)
+        h = self.horizon if self.horizon > 0.0 else 1.0
+        x_next = self.x + self.vx * dt * h
+        y_next = self.y + self.vy * dt * h
+        return self.x, self.y, x_next, y_next
 
 
 def us_to_ns(us: float) -> int:
@@ -418,6 +596,11 @@ def main() -> None:
         action="store_true",
         help="11x19 화면 그리드 LUT 수집 모드 활성화",
     )
+    parser.add_argument(
+        "--lut-track",
+        action="store_true",
+        help="LUT 기반 2D 보간 추종 모드 (EX/EY 대신 TU/TV → PWM)",
+    )
     parser.add_argument("--lut-rows", type=int, default=11)
     parser.add_argument("--lut-cols", type=int, default=19)
     parser.add_argument("--lut-th-ex", type=float, default=7.0, help="LUT 저장 조건 |ex| <= th")
@@ -427,6 +610,11 @@ def main() -> None:
     parser.add_argument("--lut-seq", action="store_true", help="그리드 순서 강제 (기본: 어떤 셀이든 저장)")
     parser.add_argument("--frame-w", type=int, default=1920, help="카메라 해상도 가로 (그리드 중앙 계산용)")
     parser.add_argument("--frame-h", type=int, default=1080, help="카메라 해상도 세로 (그리드 중앙 계산용)")
+    parser.add_argument(
+        "--kf-track",
+        action="store_true",
+        help="LUT-track 모드에서 2D 칼만 필터(α-β)로 다음 위치 예측 후 그 위치로 보간",
+    )
     args = parser.parse_args()
 
     shared = SharedState()
@@ -444,6 +632,24 @@ def main() -> None:
     if args.lut_mode:
         collector.start()
         sys.stderr.write("[pid_pwm_agent] [LUT] 수집 모드 ON\n")
+
+    lut_table: Optional[LutTable] = None
+    kf2d: Optional[Kalman2D] = None
+    if args.lut_track:
+        try:
+            lut_table = LutTable.from_json(args.lut_out)
+            sys.stderr.write(
+                f"[pid_pwm_agent] LUT-track 모드: {args.lut_out} 로드 완료 "
+                f"(rows={lut_table.rows}, cols={lut_table.cols})\n"
+            )
+            if args.kf_track:
+                kf2d = Kalman2D()
+                sys.stderr.write(
+                    f"[pid_pwm_agent] Kalman 2D 예측 활성화 (alpha={kf2d.alpha}, beta={kf2d.beta})\n"
+                )
+        except Exception as e:
+            sys.stderr.write(f"[pid_pwm_agent] LUT-track: LUT 파일 로드 실패: {e}\n")
+            sys.exit(1)
 
     log_f: Optional[TextIO] = None
     if args.log_file:
@@ -504,103 +710,147 @@ def main() -> None:
                     had_update = shared.updated
                     shared.updated = False
 
-                ux_us = pid_x.update(ex, dt)
-                uy_us = pid_y.update(ey, dt)
+                if args.lut_track and lut_table is not None:
+                    # LUT 기반 2D 보간 추종: TU/TV → (pan_us, tilt_us)
+                    if had_update:
+                        # 칼만 필터로 다음 위치 예측 (옵션)
+                        if args.kf_track and kf2d is not None:
+                            _, _, tu_pred, tv_pred = kf2d.update(tu, tv, CONTROL_PERIOD_S)
+                            use_u, use_v = tu_pred, tv_pred
+                        else:
+                            use_u, use_v = tu, tv
 
-                if not args.no_pwm:
-                    write_pwm_duty(0, us_to_ns(ux_us))
-                    write_pwm_duty(1, us_to_ns(uy_us))
+                        pan_us, tilt_us, ok = lut_table.interpolate(
+                            use_u, use_v, args.frame_w, args.frame_h
+                        )
+                        if ok:
+                            ux_us = float(pan_us)
+                            uy_us = float(tilt_us)
+                            if not args.no_pwm:
+                                write_pwm_duty(0, us_to_ns(ux_us))
+                                write_pwm_duty(1, us_to_ns(uy_us))
+                            with shared.lock:
+                                shared.last_ux_us = ux_us
+                                shared.last_uy_us = uy_us
+                            if log_f is not None:
+                                t_ms = int((time.monotonic() - t0) * 1000.0)
+                                log_f.write(
+                                    "LUTTRACK,"
+                                    f"t:{t_ms},"
+                                    f"tu:{tu:.1f},tv:{tv:.1f},"
+                                    f"pan:{ux_us:.0f},tilt:{uy_us:.0f}\n"
+                                )
+                        else:
+                            # 보간 실패 시 이전 PWM 유지 (로그만 출력)
+                            if log_count % 50 == 0:
+                                sys.stderr.write(
+                                    f"[pid_pwm_agent] LUT-track: interpolation failed for TU={tu:.1f},TV={tv:.1f}\n"
+                                )
+                    # LUT-track 모드에서는 PID/LUT 수집/auto-tune 비활성화
+                else:
+                    # 기존 PID 제어 경로
+                    ux_us = pid_x.update(ex, dt)
+                    uy_us = pid_y.update(ey, dt)
 
-                # 서버 LUT: REQUEST_PWM 응답용 현재 PWM 갱신
-                with shared.lock:
-                    shared.last_ux_us = ux_us
-                    shared.last_uy_us = uy_us
+                    if not args.no_pwm:
+                        write_pwm_duty(0, us_to_ns(ux_us))
+                        write_pwm_duty(1, us_to_ns(uy_us))
 
-                if args.lut_mode and collector.enabled:
-                    saved = collector.update(
-                        grid_r=gr,
-                        grid_c=gc,
-                        target_u=tu,
-                        target_v=tv,
-                        ex=ex,
-                        ey=ey,
-                        pan_us=ux_us,
-                        tilt_us=uy_us,
-                    )
-                    if saved:
-                        ack_msg = f"SAVED,GR={gr},GC={gc}\n"
-                        try:
-                            sock.sendall(ack_msg.encode("utf-8"))
-                            sys.stderr.write(f"[pid_pwm_agent] ACK sent: {ack_msg.strip()}\n")
-                        except OSError as _e:
-                            sys.stderr.write(f"[pid_pwm_agent] ACK send failed: {_e}\n")
+                    # 서버 LUT: REQUEST_PWM 응답용 현재 PWM 갱신
+                    with shared.lock:
+                        shared.last_ux_us = ux_us
+                        shared.last_uy_us = uy_us
 
-                # 샘플 버퍼에 누적 (온라인 튜닝용, 새 데이터 들어온 틱만)
-                if had_update and args.auto_tune_samples > 0 and not auto_tuned:
-                    t_ms = int((time.monotonic() - t0) * 1000.0)
-                    samples_x.append((t_ms, ex, ux_us))
-                    samples_y.append((t_ms, ey, uy_us))
+                    if args.lut_mode and collector.enabled:
+                        saved = collector.update(
+                            grid_r=gr,
+                            grid_c=gc,
+                            target_u=tu,
+                            target_v=tv,
+                            ex=ex,
+                            ey=ey,
+                            pan_us=ux_us,
+                            tilt_us=uy_us,
+                        )
+                        if saved:
+                            ack_msg = f"SAVED,GR={gr},GC={gc}\n"
+                            try:
+                                sock.sendall(ack_msg.encode("utf-8"))
+                                sys.stderr.write(f"[pid_pwm_agent] ACK sent: {ack_msg.strip()}\n")
+                            except OSError as _e:
+                                sys.stderr.write(f"[pid_pwm_agent] ACK send failed: {_e}\n")
 
-                    if (
-                        HAVE_AUTOTUNE
-                        and len(samples_x) >= args.auto_tune_samples
-                        and len(samples_y) >= args.auto_tune_samples
-                    ):
-                        try:
-                            import numpy as _np
+                    # 샘플 버퍼에 누적 (온라인 튜닝용, 새 데이터 들어온 틱만)
+                    if had_update and args.auto_tune_samples > 0 and not auto_tuned:
+                        t_ms = int((time.monotonic() - t0) * 1000.0)
+                        samples_x.append((t_ms, ex, ux_us))
+                        samples_y.append((t_ms, ey, uy_us))
 
-                            t_arr = _np.array([s[0] for s in samples_x], dtype=float)
-                            if len(t_arr) > 1:
-                                ts = float(_np.median(_np.diff(t_arr)) / 1000.0)
-                            else:
-                                ts = CONTROL_PERIOD_S
+                        if (
+                            HAVE_AUTOTUNE
+                            and len(samples_x) >= args.auto_tune_samples
+                            and len(samples_y) >= args.auto_tune_samples
+                        ):
+                            try:
+                                import numpy as _np
 
-                            ex_arr = _np.array([s[1] for s in samples_x], dtype=float)
-                            ux_arr = _np.array([s[2] for s in samples_x], dtype=float)
-                            ey_arr = _np.array([s[1] for s in samples_y], dtype=float)
-                            uy_arr = _np.array([s[2] for s in samples_y], dtype=float)
+                                t_arr = _np.array([s[0] for s in samples_x], dtype=float)
+                                if len(t_arr) > 1:
+                                    ts = float(_np.median(_np.diff(t_arr)) / 1000.0)
+                                else:
+                                    ts = CONTROL_PERIOD_S
 
-                            init_kpx = abs(pid_x.kp) if pid_x.kp != 0.0 else 0.01
-                            init_kpy = abs(pid_y.kp) if pid_y.kp != 0.0 else 0.01
+                                ex_arr = _np.array([s[1] for s in samples_x], dtype=float)
+                                ux_arr = _np.array([s[2] for s in samples_x], dtype=float)
+                                ey_arr = _np.array([s[1] for s in samples_y], dtype=float)
+                                uy_arr = _np.array([s[2] for s in samples_y], dtype=float)
 
-                            rx = _at.tune_axis(ts, ex_arr, ux_arr, init_kpx)
-                            ry = _at.tune_axis(ts, ey_arr, uy_arr, init_kpy)
+                                init_kpx = abs(pid_x.kp) if pid_x.kp != 0.0 else 0.01
+                                init_kpy = abs(pid_y.kp) if pid_y.kp != 0.0 else 0.01
 
-                            pid_x.kp, pid_x.ki, pid_x.kd = rx.kp, rx.ki, rx.kd
-                            pid_y.kp, pid_y.ki, pid_y.kd = -ry.kp, -ry.ki, -ry.kd
-                            auto_tuned = True
+                                rx = _at.tune_axis(ts, ex_arr, ux_arr, init_kpx)
+                                ry = _at.tune_axis(ts, ey_arr, uy_arr, init_kpy)
 
-                            sys.stderr.write(
-                                "[pid_pwm_agent] Auto-tune complete.\n"
-                                f"  X: kp={pid_x.kp:.4f}, ki={pid_x.ki:.4f}, kd={pid_x.kd:.4f}\n"
-                                f"  Y: kp={pid_y.kp:.4f}, ki={pid_y.ki:.4f}, kd={pid_y.kd:.4f}\n"
-                            )
-                        except Exception as e:
-                            sys.stderr.write(f"[pid_pwm_agent] Auto-tune failed: {e}\n")
-                            auto_tuned = True
+                                pid_x.kp, pid_x.ki, pid_x.kd = rx.kp, rx.ki, rx.kd
+                                pid_y.kp, pid_y.ki, pid_y.kd = -ry.kp, -ry.ki, -ry.kd
+                                auto_tuned = True
 
-                # PIDLOG 로그 (새 데이터 들어온 틱만 기록)
-                if had_update and log_f is not None:
-                    t_ms = int((time.monotonic() - t0) * 1000.0)
-                    log_f.write(
-                        "PIDLOG,"
-                        f"t:{t_ms},"
-                        f"ex:{ex:.4f},ey:{ey:.4f},"
-                        f"out_x:{ux_us:.0f},out_y:{uy_us:.0f},"
-                        f"kpx:{pid_x.kp:.4f},kix:{pid_x.ki:.4f},kdx:{pid_x.kd:.4f},"
-                        f"kpy:{pid_y.kp:.4f},kiy:{pid_y.ki:.4f},kdy:{pid_y.kd:.4f}\n"
-                    )
+                                sys.stderr.write(
+                                    "[pid_pwm_agent] Auto-tune complete.\n"
+                                    f"  X: kp={pid_x.kp:.4f}, ki={pid_x.ki:.4f}, kd={pid_x.kd:.4f}\n"
+                                    f"  Y: kp={pid_y.kp:.4f}, ki={pid_y.ki:.4f}, kd={pid_y.kd:.4f}\n"
+                                )
+                            except Exception as e:
+                                sys.stderr.write(f"[pid_pwm_agent] Auto-tune failed: {e}\n")
+                                auto_tuned = True
+
+                    # PIDLOG 로그 (새 데이터 들어온 틱만 기록)
+                    if had_update and log_f is not None:
+                        t_ms = int((time.monotonic() - t0) * 1000.0)
+                        log_f.write(
+                            "PIDLOG,"
+                            f"t:{t_ms},"
+                            f"ex:{ex:.4f},ey:{ey:.4f},"
+                            f"out_x:{ux_us:.0f},out_y:{uy_us:.0f},"
+                            f"kpx:{pid_x.kp:.4f},kix:{pid_x.ki:.4f},kdx:{pid_x.kd:.4f},"
+                            f"kpy:{pid_y.kp:.4f},kiy:{pid_y.ki:.4f},kdy:{pid_y.kd:.4f}\n"
+                        )
 
                 log_count += 1
                 if log_count % 50 == 0:
-                    if had_update:
+                    if args.lut_track and lut_table is not None:
                         sys.stderr.write(
-                            f"[pid_pwm_agent] ex={ex:.2f} ey={ey:.2f} -> ux={ux_us:.0f} us uy={uy_us:.0f} us\n"
+                            f"[pid_pwm_agent] (LUT-track) tu={tu:.1f} tv={tv:.1f} -> pan={ux_us:.0f} us tilt={uy_us:.0f} us\n"
                         )
                     else:
-                        sys.stderr.write(
-                            f"[pid_pwm_agent] (no new EX/EY) hold ux={ux_us:.0f} us uy={uy_us:.0f} us\n"
-                        )
+                        if had_update:
+                            sys.stderr.write(
+                                f"[pid_pwm_agent] ex={ex:.2f} ey={ey:.2f} -> ux={ux_us:.0f} us uy={uy_us:.0f} us\n"
+                            )
+                        else:
+                            sys.stderr.write(
+                                f"[pid_pwm_agent] (no new EX/EY) hold ux={ux_us:.0f} us uy={uy_us:.0f} us\n"
+                            )
 
             time.sleep(0.005)
     except KeyboardInterrupt:
