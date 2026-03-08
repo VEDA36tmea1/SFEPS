@@ -33,7 +33,7 @@ PWM_MIN_US = 800
 PWM_MAX_US = 2200
 INIT_X_US = 1530  # pwm0 (GPIO12) 초기값
 INIT_Y_US = 1300  # pwm1 (GPIO13) 초기값
-CONTROL_PERIOD_S = 0.02      # 50Hz = 20ms
+CONTROL_PERIOD_S = 0.02     # 50Hz = 20ms
 
 # Ubuntu 서버가 보내는 형식
 # EX=...,EY=...[,TU=...,TV=...[,GR=...,GC=...]]
@@ -553,6 +553,11 @@ def main() -> None:
     parser.add_argument("--lut-seq", action="store_true", help="그리드 순서 강제 (기본: 어떤 셀이든 저장)")
     parser.add_argument("--frame-w", type=int, default=1920, help="카메라 해상도 가로 (그리드 중앙 계산용)")
     parser.add_argument("--frame-h", type=int, default=1080, help="카메라 해상도 세로 (그리드 중앙 계산용)")
+    parser.add_argument(
+        "--kf-track",
+        action="store_true",
+        help="LUT-track 모드에서 2D 칼만 필터(α-β)로 다음 위치 예측 후 그 위치로 보간",
+    )
     args = parser.parse_args()
 
     shared = SharedState()
