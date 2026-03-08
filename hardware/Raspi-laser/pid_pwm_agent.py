@@ -393,63 +393,6 @@ class LutTable:
         return pan_us, tilt_us, True
 
 
-@dataclass
-class Kalman2D:
-    """2D 상수 속도 모델용 칼만 필터(α-β 필터 형태 근사).
-
-    state: [x, y, vx, vy]
-    - alpha: 위치 보정 비율 (0~1, 클수록 측정값에 민감)
-    - beta : 속도 보정 비율 (0~1, 클수록 속도도 빨리 따라감)
-    """
-
-    alpha: float = 0.8
-    beta: float = 0.42
-    horizon: float = 2.0  # 몇 프레임 앞까지 예측할지 (1=한 스텝, 2=두 스텝)
-    x: float = 0.0
-    y: float = 0.0
-    vx: float = 0.0
-    vy: float = 0.0
-    initialized: bool = False
-
-    def update(self, zx: float, zy: float, dt: float) -> Tuple[float, float, float, float]:
-        """측정 (zx, zy)와 dt 로 상태 갱신 후,
-        (현재 추정 위치, 다음 스텝 예측 위치)를 반환.
-        반환: (x_est, y_est, x_pred_next, y_pred_next)
-        """
-        if dt <= 0:
-            dt = CONTROL_PERIOD_S
-
-        if not self.initialized:
-            self.x = zx
-            self.y = zy
-            self.vx = 0.0
-            self.vy = 0.0
-            self.initialized = True
-            return self.x, self.y, self.x, self.y
-
-        # 예측 단계 (constant velocity)
-        x_pred = self.x + self.vx * dt
-        y_pred = self.y + self.vy * dt
-
-        # 잔차
-        rx = zx - x_pred
-        ry = zy - y_pred
-
-        # 위치 업데이트
-        self.x = x_pred + self.alpha * rx
-        self.y = y_pred + self.alpha * ry
-
-        # 속도 업데이트
-        self.vx = self.vx + (self.beta * rx) / dt
-        self.vy = self.vy + (self.beta * ry) / dt
-
-        # horizon 배 만큼 앞 예측 (컨트롤용)
-        h = self.horizon if self.horizon > 0.0 else 1.0
-        x_next = self.x + self.vx * dt * h
-        y_next = self.y + self.vy * dt * h
-        return self.x, self.y, x_next, y_next
-
-
 def us_to_ns(us: float) -> int:
     return int(round(us * 1000.0))
 
@@ -634,7 +577,6 @@ def main() -> None:
         sys.stderr.write("[pid_pwm_agent] [LUT] 수집 모드 ON\n")
 
     lut_table: Optional[LutTable] = None
-    kf2d: Optional[Kalman2D] = None
     if args.lut_track:
         try:
             lut_table = LutTable.from_json(args.lut_out)
@@ -642,11 +584,6 @@ def main() -> None:
                 f"[pid_pwm_agent] LUT-track 모드: {args.lut_out} 로드 완료 "
                 f"(rows={lut_table.rows}, cols={lut_table.cols})\n"
             )
-            if args.kf_track:
-                kf2d = Kalman2D()
-                sys.stderr.write(
-                    f"[pid_pwm_agent] Kalman 2D 예측 활성화 (alpha={kf2d.alpha}, beta={kf2d.beta})\n"
-                )
         except Exception as e:
             sys.stderr.write(f"[pid_pwm_agent] LUT-track: LUT 파일 로드 실패: {e}\n")
             sys.exit(1)
@@ -713,15 +650,8 @@ def main() -> None:
                 if args.lut_track and lut_table is not None:
                     # LUT 기반 2D 보간 추종: TU/TV → (pan_us, tilt_us)
                     if had_update:
-                        # 칼만 필터로 다음 위치 예측 (옵션)
-                        if args.kf_track and kf2d is not None:
-                            _, _, tu_pred, tv_pred = kf2d.update(tu, tv, CONTROL_PERIOD_S)
-                            use_u, use_v = tu_pred, tv_pred
-                        else:
-                            use_u, use_v = tu, tv
-
                         pan_us, tilt_us, ok = lut_table.interpolate(
-                            use_u, use_v, args.frame_w, args.frame_h
+                            tu, tv, args.frame_w, args.frame_h
                         )
                         if ok:
                             ux_us = float(pan_us)

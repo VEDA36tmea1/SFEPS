@@ -30,12 +30,13 @@ static constexpr const char* LUT_CLIENT_CONNECTED_FIFO = "/tmp/lut_client_connec
 static constexpr const char* LUT_PWM_RESPONSE_FIFO     = "/tmp/lut_pwm_response";
 
 static constexpr int   BOX_HALF     = 25;   // 타겟 박스 반지름(px)
-static constexpr int   SEND_EVERY_N = 3;    // 파이프 전송 주기(프레임)
+static constexpr int   SEND_EVERY_N = 1;    // 파이프 전송 주기(프레임)
 static constexpr float SETTLE_THRESH_PX = 6.0f; // 수렴 판정 픽셀 오차
 static constexpr float SETTLE_TIME_SEC  = 3.0f; // 수렴 유지 시간(초)
 
 static bool g_lut_mode  = true;
 static bool g_auto_lut  = false;  // --lut-auto
+static bool g_lut_track = false;  // --lut-track : LUT 기반 추종 모드
 
 // AutoLUT 중 레이저 미검출/오검출 시 수동으로 레이저 위치를 찍어서 저장하기 위한 클릭 포인트
 static bool g_manual_laser_pending = false;
@@ -267,14 +268,16 @@ int main(int argc, char** argv)
     for (int i = 1; i < argc; ++i)
     {
         std::string arg = argv[i];
-        if      (arg == "--nolut")    g_lut_mode = false;
-        else if (arg == "--lut-auto") g_auto_lut = true;
-        else                          uri = arg;
+        if      (arg == "--nolut")     g_lut_mode  = false;
+        else if (arg == "--lut-auto")  g_auto_lut  = true;
+        else if (arg == "--lut-track") g_lut_track = true;
+        else                           uri = arg;
     }
 
     std::cerr << "[rtsp_laser_demo] open: " << uri << "\n";
     std::cerr << "[rtsp_laser_demo] LUT=" << (g_lut_mode ? "ON" : "OFF")
-              << "  자동순회=" << (g_auto_lut ? "ON" : "OFF") << "\n";
+              << "  자동순회=" << (g_auto_lut ? "ON" : "OFF")
+              << "  LUT-추종=" << (g_lut_track ? "ON" : "OFF") << "\n";
 
     cv::VideoCapture cap(uri);
     if (!cap.isOpened())
@@ -311,6 +314,8 @@ int main(int argc, char** argv)
         std::cerr << "[rtsp_laser_demo] 빈 곳 드래그: 박스 생성, 박스 안 드래그: 박스 이동\n";
     if (g_auto_lut)
         std::cerr << "[rtsp_laser_demo] AutoLUT: 레이저 미검출 시 좌클릭으로 레이저 위치 지정 → PWM 요청/저장/다음 셀\n";
+    if (g_lut_track)
+        std::cerr << "[rtsp_laser_demo] LUT-기반 추종 모드: 박스 중심(TU,TV)을 라즈베리로 전송 (레이저 탐지/오차 계산 없음)\n";
 
     // 라즈베리(클라이언트) 연결 시에만 LUT 요청/전송 시작 (FIFO로 신호 수신)
     bool client_connected = false;
@@ -372,6 +377,54 @@ int main(int argc, char** argv)
         else
         {
             targetROI = targetProvider->getTarget(frame);
+        }
+
+        // LUT 기반 추종 모드: 레이저 검출/오차 계산 없이, 박스 중심 픽셀 좌표만 전송
+        if (g_lut_track)
+        {
+            if (targetROI.valid)
+            {
+                // ROI/그리드 오버레이
+                cv::rectangle(frame, targetROI.rect, cv::Scalar(0, 255, 0), 2);
+                cv::circle(frame, targetROI.center(), 3, cv::Scalar(0, 255, 0), -1);
+
+                if (g_lut_mode)
+                {
+                    for (int c = 1; c < LUT_GRID_COLS; ++c)
+                    {
+                        int x = c * W / LUT_GRID_COLS;
+                        cv::line(frame, cv::Point(x, 0), cv::Point(x, H),
+                                 cv::Scalar(60, 60, 60), 1);
+                    }
+                    for (int r = 1; r < LUT_GRID_ROWS; ++r)
+                    {
+                        int y = r * H / LUT_GRID_ROWS;
+                        cv::line(frame, cv::Point(0, y), cv::Point(W, y),
+                                 cv::Scalar(60, 60, 60), 1);
+                    }
+                }
+
+                double target_u = static_cast<double>(targetROI.center().x);
+                double target_v = static_cast<double>(targetROI.center().y);
+                int send_gc = std::clamp(static_cast<int>(target_u * LUT_GRID_COLS / W), 0, LUT_GRID_COLS - 1);
+                int send_gr = std::clamp(static_cast<int>(target_v * LUT_GRID_ROWS / H), 0, LUT_GRID_ROWS - 1);
+
+                if (client_connected && (frame_id % SEND_EVERY_N == 0))
+                {
+                    // EX/EY는 LUT 모드에서 무시하고 TU/TV/GR/GC만 사용
+                    std::cout << 0.0              << " "
+                              << 0.0              << " "
+                              << target_u         << " "
+                              << target_v         << " "
+                              << send_gr          << " "
+                              << send_gc          << std::endl;
+                }
+            }
+
+            cv::imshow("rtsp_laser_demo", frame);
+            int key = cv::waitKey(1);
+            if (key == 27 || key == 'q') break;
+            continue;
         }
 
         // ── 3. 레이저 검출 (오버레이 그리기 전 원본 프레임에서 수행)
