@@ -9,7 +9,7 @@
 #include <unistd.h>
 
 namespace {
-constexpr const char* kRtspUrl = "rtsps://192.168.0.92:8332/cam1";
+constexpr const char* kRtspUrl = "rtsps://192.168.0.97:8332/cam1";
 constexpr int kSegmentDurationSec = 60;
 
 std::size_t load_env_size_t(const char* name, std::size_t default_value, std::size_t min_value) {
