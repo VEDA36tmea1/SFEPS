@@ -122,7 +122,7 @@ static void drawLutOverlay(cv::Mat& frame, const AutoLutCalibrator& lut)
 // ══════════════════════════════════════════════════════════════════════════
 int main(int argc, char** argv)
 {
-    std::string uri = "rtsp://admin:CCgbdCCgbd@192.168.0.22/profile2/media.smp";
+    std::string uri = "rtsp://admin:CCgbdCCgbd@192.168.0.84/profile2/media.smp";
 
     for (int i = 1; i < argc; ++i)
     {

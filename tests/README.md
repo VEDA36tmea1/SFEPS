@@ -55,7 +55,7 @@ python -m pytest -q tests/test_tc_func_login.py
 python -m pytest -q tests/test_tc_func_stream.py -r a
 ```
 
-스트림 테스트는 `tests/test_tc_func_stream.py` 내의 기본값(`rtsp://192.168.0.22:8554/cam1`)을 사용합니다. 필요하면 파일을 편집하거나 환경변수로 대체하도록 테스트를 수정하세요.
+스트림 테스트는 `tests/test_tc_func_stream.py` 내의 기본값(`rtsp://192.168.0.84:8554/cam1`)을 사용합니다. 필요하면 파일을 편집하거나 환경변수로 대체하도록 테스트를 수정하세요.
 
 3) GUI 자동화 및 로그 확인
 
