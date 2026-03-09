@@ -93,6 +93,24 @@ CREATE TABLE IF NOT EXISTS login_logs (
   created_at timestamp NOT NULL DEFAULT current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+CREATE TABLE IF NOT EXISTS recordings (
+  id int(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  filename varchar(255) NOT NULL,
+  created_at timestamp NOT NULL DEFAULT current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE IF NOT EXISTS analytics_logs (
+  id bigint(20) NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  frame_time varchar(32) DEFAULT NULL,
+  object_type varchar(64) DEFAULT NULL,
+  created_at timestamp NOT NULL DEFAULT current_timestamp(),
+  estimated_age int(11) DEFAULT 0,
+  photo_path varchar(255) DEFAULT '',
+  x double DEFAULT 0,
+  y double DEFAULT 0,
+  event varchar(128) DEFAULT ''
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
 INSERT INTO users (id, password, name)
 VALUES ('admin', '1111', 'Admin')
 ON DUPLICATE KEY UPDATE
