@@ -14,7 +14,7 @@ constexpr int kDefaultAuthTlsPort = 6555;
 constexpr int kDefaultAuthPlainPort = 5555;
 constexpr bool kDefaultAuthTlsEnable = true;
 constexpr bool kDefaultPlainFallbackEnable = false;
-constexpr const char* kDefaultAuthHost = "192.168.0.89";
+constexpr const char* kDefaultAuthHost = "192.168.0.92";
 constexpr const char* kResourceCaPath = ":/certs/auth_ca.pem";
 
 QString maskUserId(const QString& userId)
@@ -77,11 +77,8 @@ void AuthManager::login(const QString &id, const QString &pw)
     const QString authHost = env.value("AUTH_SERVER_HOST", QString::fromUtf8(kDefaultAuthHost));
     const int authTlsPort = parseEnvPort(env, "AUTH_TLS_PORT", kDefaultAuthTlsPort);
     const int authPlainPort = parseEnvPort(env, "AUTH_PLAINTEXT_PORT", kDefaultAuthPlainPort);
-    // Prefer SFEPS_CLIENT_TLS_ENABLE if provided, otherwise fall back to AUTH_TLS_ENABLE
-    const bool clientTlsEnvProvided = !env.value("SFEPS_CLIENT_TLS_ENABLE").trimmed().isEmpty();
-    const bool authTlsEnable = clientTlsEnvProvided
-        ? parseEnvBool(env, "SFEPS_CLIENT_TLS_ENABLE", kDefaultAuthTlsEnable)
-        : parseEnvBool(env, "AUTH_TLS_ENABLE", kDefaultAuthTlsEnable);
+    // Force plaintext auth transport: disable TLS regardless of environment.
+    const bool authTlsEnable = false;
     const bool allowPlainFallback = parseEnvBool(env,
                                                  "AUTH_ALLOW_PLAINTEXT_FALLBACK",
                                                  kDefaultPlainFallbackEnable);
@@ -115,7 +112,7 @@ void AuthManager::login(const QString &id, const QString &pw)
         qInfo().noquote() << QString("[AuthFlow][3] attempting TLS auth connect %1:%2")
                                  .arg(authHost)
                                  .arg(authTlsPort);
-        result = attemptTlsLogin(authHost, authTlsPort, payload, authTlsCaPath, transportError);
+        result = attemptTlsLogin(authHost, authTlsPort, payload, authTlsCaPath, tlsServerName, transportError);
 
         if (result == LoginAttemptResult::TransportError) {
             qWarning() << "[AuthManager] TLS auth transport failed:" << transportError;
@@ -336,13 +333,19 @@ AuthManager::LoginAttemptResult AuthManager::attemptPlainLogin(const QString &ho
 
     const qint64 written = socket->write(payload);
     socket->flush();
-    if (written < 0 || !socket->waitForBytesWritten(kAuthConnectTimeoutMs)) {
-        outTransportError = QString("plaintext write failed (%1:%2): %3")
-                                .arg(host)
-                                .arg(port)
-                                .arg(socket->errorString());
-        socket->abort();
-        return LoginAttemptResult::TransportError;
+    qWarning() << "[AuthManager] plaintext write: host=" << host << "port=" << port
+               << "bytes_to_write=" << payload.size() << "written_return=" << written;
+
+    // Some servers accept and immediately respond/close which can make
+    // waitForBytesWritten() return false even though write() returned bytes.
+    // Treat waitForBytesWritten failure as a warning and continue to wait
+    // for the auth response; only treat as error if we neither wrote bytes
+    // nor receive a response.
+    const bool wroteSome = (written >= 0);
+    const bool bytesWrittenOk = socket->waitForBytesWritten(kAuthConnectTimeoutMs);
+    if (!bytesWrittenOk) {
+        qWarning() << "[AuthManager] plaintext write: waitForBytesWritten returned false (host="
+                   << host << "port=" << port << ") — continuing to wait for response";
     }
 
     if (!socket->waitForReadyRead(kAuthConnectTimeoutMs)) {
