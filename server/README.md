@@ -56,6 +56,8 @@ Database: CCgbd
 ```bash
 export SFEPS_META_MAX_PACKET_BYTES=65536
 export SFEPS_META_BAD_STREAK_LIMIT=20
+export SFEPS_META_XML_BUFFER_MAX=1048576
+export SFEPS_META_XML_DOC_MAX_BYTES=262144
 export SFEPS_META_MAX_LINES_PER_BATCH=128
 export SFEPS_ANALYTICS_QUEUE_MAX=200
 export SFEPS_DROP_LOG_INTERVAL=100
@@ -78,6 +80,8 @@ export SFEPS_APP_TLS_HANDSHAKE_TIMEOUT_MS=3000
 ```
 
 - `SFEPS_RTSPS_VERIFYHOST` 미설정 시 `RTSP_URL` 호스트를 자동 사용합니다.
+- 메타데이터 XML은 packet 단위가 아닌 document 단위로 재조립 후 파싱합니다.
+- `SFEPS_META_XML_DOC_MAX_BYTES`는 `SFEPS_META_XML_BUFFER_MAX` 이하로 설정하세요.
 
 포트 allowlist는 선택형입니다.
 - 미설정: 호환성 모드(전체 허용, 시작 시 경고 로그 출력)
@@ -258,7 +262,7 @@ journalctl -u sfeps-server -f
 - 오디오 연결당 수신 바이트 상한 (`SFEPS_AUDIO_MAX_BYTES`)
 - 알림 포트 동시 접속 수 상한 (`SFEPS_ALERT_MAX_CLIENTS`)
 - 포트별 allowlist 기반 접속 제어 (`SFEPS_*_ALLOW_IPS`)
-- 메타데이터 패킷/큐 상한 및 샘플링 드롭 로그 (`SFEPS_META_*`, `SFEPS_ANALYTICS_QUEUE_MAX`)
+- 메타데이터 패킷/큐 상한 및 XML 재조립 제한 + 샘플링 드롭 로그 (`SFEPS_META_*`, `SFEPS_ANALYTICS_QUEUE_MAX`)
 - XML 메타데이터 엄격 파싱(tinyxml2) + 필수 필드 검증(`RuleName`, `State`) + 필드 길이 제한
 - 음성 RAW PCM 수신 후 `AudioRingBuffer + AudioPlayback(ALSA)` 경로로 재생
 - 부정승차/테스트 메시지 알림 브로드캐스트

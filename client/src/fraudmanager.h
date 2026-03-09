@@ -26,13 +26,19 @@ private slots:
     void onConnected();
     void onDisconnected();
     void retryConnection();
+    void onSocketError(QAbstractSocket::SocketError socketError);
+    void onSslErrors(const QList<QSslError> &errors);
 
 private:
+    void attachSocketSignals();
+    bool resolveAlertTlsEnabled() const;
+
     QTcpSocket *socket;
     QTimer *retryTimer;
     QString lastHost;
     int lastPort;
     QByteArray recvBuffer; // 누적 수신 버퍼 (부분 수신 처리용)
+    bool m_alertTlsEnabled = false;
 };
 
 #endif // FRAUDMANAGER_H
