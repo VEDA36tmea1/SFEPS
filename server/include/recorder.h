@@ -1,6 +1,8 @@
 #ifndef RECORDER_H
 #define RECORDER_H
 
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <atomic>
 #include "log.h"
@@ -33,11 +35,23 @@ private:
     // [타임스탬프 리셋용 변수]
     int64_t start_dts_offset = AV_NOPTS_VALUE; 
     bool is_first_packet = true;
+    std::string meta_xml_buffer;
+    std::size_t meta_xml_read_pos = 0;
+    std::uint64_t meta_xml_extracted_docs = 0;
+    std::uint64_t meta_xml_dropped_docs = 0;
+    std::uint64_t meta_xml_dropped_bytes = 0;
 
     bool connect_and_record();
     void cleanup();
     bool open_output_file(AVCodecParameters* video_par);
     void close_current_file();
+    void reset_meta_xml_reassembly();
+    void compact_meta_xml_buffer();
+    void process_meta_xml_chunk(const std::uint8_t* data,
+                                std::size_t len,
+                                std::size_t meta_xml_buffer_max,
+                                std::size_t meta_xml_doc_max_bytes,
+                                std::size_t drop_log_interval);
 };
 
 #endif
