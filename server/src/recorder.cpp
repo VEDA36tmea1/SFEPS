@@ -11,7 +11,7 @@
 #include <unistd.h>
 
 namespace {
-constexpr const char* kRtspUrl = "rtsps://192.168.0.92:8332/cam1";
+constexpr const char* kRtspUrl = "rtsps://192.168.0.97:8332/cam1";
 constexpr int kSegmentDurationSec = 60;
 constexpr const char* kXmlDeclStart = "<?xml";
 constexpr const char* kMetadataStreamStartTag = "<tt:MetadataStream";

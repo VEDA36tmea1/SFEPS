@@ -27,11 +27,11 @@ export SFEPS_DB_NAME_ANALYTICS=CCgbd
 ### 1) 터널 실행
 
 ```bash
-cd /home/iam/finalProject/SFEPS/server
+cd /home/iam/SFEPS/server
 ./tunnel_vscode_db.sh [pi-ip]
 ```
 
-`[pi-ip]`가 생략되면 기본 `192.168.0.89`로 실행됩니다.
+`[pi-ip]`가 생략되면 기본 `192.168.0.97`로 실행됩니다.
 
 ### 2) VSCode 연결 정보
 
@@ -66,7 +66,7 @@ export SFEPS_AUTH_MAX_BYTES=256
 export SFEPS_AUDIO_MAX_BYTES=4194304
 export SFEPS_ALERT_MAX_CLIENTS=64
 export SFEPS_SOCKET_READ_TIMEOUT_MS=5000
-export SFEPS_RTSPS_VERIFYHOST=192.168.0.89
+export SFEPS_RTSPS_VERIFYHOST=192.168.0.97
 
 export SFEPS_APP_TLS_ENABLE=0
 export SFEPS_APP_PLAINTEXT_ENABLE=1
@@ -144,7 +144,7 @@ export SFEPS_APP_PLAINTEXT_ENABLE=0
 ## 빠른 실행
 
 ```bash
-cd /home/iam/finalProject/SFEPS/server
+cd /home/iam/SFEPS/server
 mkdir -p build && cd build
 cmake ..
 make -j4
@@ -171,7 +171,7 @@ cd ..
 ### 1회 수동 적용
 
 ```bash
-cd /home/iam/finalProject/SFEPS
+cd /home/iam/SFEPS
 
 # 1) RFID 환경파일 배치(필요 시 값 수정)
 sudo cp hardware/Raspi-driver/RC522_RFID/systemd/sfeps-rfid.env.example /etc/default/sfeps-rfid
