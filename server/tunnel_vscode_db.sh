@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Usage:
 #   ./tunnel_vscode_db.sh
-#   ./tunnel_vscode_db.sh 192.168.0.89
+#   ./tunnel_vscode_db.sh 192.168.0.92
 #
 # Create SSH tunnel for local VSCode DB extension access to Raspberry Pi MariaDB.
 
 set -euo pipefail
 
-PI_HOST="${1:-192.168.0.89}"
+PI_HOST="${1:-192.168.0.92}"
 PI_USER="${SFEPS_PI_USER:-pi}"
 LOCAL_PORT="${SFEPS_DB_TUNNEL_LOCAL_PORT:-33060}"
 PI_DB_HOST="${SFEPS_DB_TUNNEL_REMOTE_HOST:-127.0.0.1}"

@@ -59,7 +59,7 @@ int main(int argc, char *argv[]) {
 
   // 알림 서버 호스트: 환경변수 FRAUD_SERVER_HOST가 설정되어 있으면 그 값을 사용하고,
   // 설정되어 있지 않으면 기존 하드코드된 주소를 기본값으로 사용합니다.
-  QString alertHost = QProcessEnvironment::systemEnvironment().value("FRAUD_SERVER_HOST", "192.168.0.89");
+  QString alertHost = QProcessEnvironment::systemEnvironment().value("FRAUD_SERVER_HOST", "192.168.0.92");
   const int alertPort = 5557;
   qDebug() << "[Main] Fraud alert server:" << alertHost << ":" << alertPort;
   fraudManager.connectToServer(alertHost, alertPort);
