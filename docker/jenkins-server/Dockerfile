@@ -32,6 +32,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
  && ln -snf "/usr/share/zoneinfo/${TZ}" /etc/localtime \
  && echo "${TZ}" > /etc/timezone \
+ && mkdir -p /home/iam/SFEPS/videos \
+ && chown -R jenkins:jenkins /home/iam/SFEPS \
  && rm -rf /var/lib/apt/lists/*
 
 USER jenkins
