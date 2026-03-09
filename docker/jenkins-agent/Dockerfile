@@ -8,8 +8,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     git \
     python3 \
+    python3-venv \
+    python3-pip \
     python3-pytest \
     libmariadb-dev \
+    libmariadb-dev-compat \
+    default-libmysqlclient-dev \
     libtinyxml2-dev \
     libavcodec-dev \
     libavformat-dev \
