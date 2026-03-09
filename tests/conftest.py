@@ -1,131 +1,150 @@
-import socket
-import threading
-import time
-import socketserver
-import sys
-import subprocess
 import os
+import socket
+import subprocess
+import time
 from pathlib import Path
 
 import pytest
 
-# Ensure tests/ is on sys.path so we can import mock_auth_server when running pytest
-tests_dir = Path(__file__).resolve().parent
-if str(tests_dir) not in sys.path:
-    sys.path.insert(0, str(tests_dir))
 
-from mock_auth_server import AuthHandler, HOST, PORT
-
-
-class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
-    allow_reuse_address = True
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SERVER_DIR = REPO_ROOT / "server"
+AUTH_HOST = "127.0.0.1"
+AUTH_PORT = 5555
+SERVER_START_TIMEOUT_SEC = 12.0
+SERVER_LOG_PATH = Path(__file__).resolve().parent / "real_server.log"
 
 
 def _find_server_binary():
-    repo_root = Path(__file__).resolve().parents[1]
     candidates = [
-        repo_root / 'server' / 'build' / 'smart_server.bin',
-        repo_root / 'server' / 'build' / 'smart_server',
-        repo_root / 'server' / 'build' / 'smart_server.exe',
+        SERVER_DIR / "build" / "smart_server.bin",
+        SERVER_DIR / "build" / "smart_server",
+        SERVER_DIR / "build" / "smart_server.exe",
     ]
-    for p in candidates:
-        if p.exists() and p.is_file():
-            return str(p)
+    for path in candidates:
+        if path.is_file():
+            return path
     return None
 
 
+def _is_listening(host: str, port: int, timeout: float = 0.2) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _load_env_file(path: Path) -> dict[str, str]:
+    env_map: dict[str, str] = {}
+    if not path.is_file():
+        return env_map
+
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            env_map[key] = value
+    return env_map
+
+
+def _prepare_real_server_env() -> tuple[dict[str, str], list[str]]:
+    env = os.environ.copy()
+
+    # Prefer explicit process env; use file values only for missing keys.
+    for env_file in (SERVER_DIR / ".env", SERVER_DIR / ".env.local"):
+        for key, value in _load_env_file(env_file).items():
+            env.setdefault(key, value)
+
+    # Test-safe defaults.
+    env.setdefault("SFEPS_DB_HOST", "localhost")
+    env.setdefault("SFEPS_AUTH_ALLOW_IPS", "127.0.0.1")
+    env.setdefault("SFEPS_AUDIO_ALLOW_IPS", "127.0.0.1")
+    env.setdefault("SFEPS_ALERT_ALLOW_IPS", "127.0.0.1")
+
+    # Force plaintext auth for local login tests.
+    env["SFEPS_APP_TLS_ENABLE"] = "0"
+    env["SFEPS_APP_PLAINTEXT_ENABLE"] = "1"
+    env["SFEPS_APP_BIND_IP"] = "127.0.0.1"
+
+    required = [
+        "SFEPS_DB_USER",
+        "SFEPS_DB_PASS",
+        "SFEPS_DB_NAME_ANALYTICS",
+    ]
+    missing = [key for key in required if not env.get(key)]
+    return env, missing
+
+
+def _read_log_tail(path: Path, max_lines: int = 20) -> str:
+    if not path.exists():
+        return ""
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    return "\n".join(lines[-max_lines:])
+
+
 @pytest.fixture(scope="session", autouse=True)
-def mock_auth_server():
-    """Start an auth server for the test session.
-
-    Preference order:
-    1. If a built `server` binary exists and required environment variables
-       for DB/connectivity are already provided, launch the real server.
-    2. Otherwise, fall back to the lightweight `tests/mock_auth_server.py`.
-
-    The fixture yields when the auth port is accepting connections and
-    ensures the started process/server is cleaned up at session end.
-    """
-    host, port = HOST, PORT
-
-    # Try to locate a built server binary and required env vars.
-    bin_path = _find_server_binary()
-    server_proc = None
-
-    can_run_real = False
-    if bin_path:
-        required_envs = [
-            'SFEPS_DB_USER', 'SFEPS_DB_PASS', 'SFEPS_DB_NAME_ANALYTICS',
-            'SFEPS_AUTH_ALLOW_IPS', 'SFEPS_AUDIO_ALLOW_IPS', 'SFEPS_ALERT_ALLOW_IPS',
-        ]
-        missing = [v for v in required_envs if not os.environ.get(v)]
-        if not missing:
-            can_run_real = True
-        else:
-            # If any allowlist is missing, try to set them to localhost-only
-            # so the server's fail-closed checks pass when a DB is present.
-            # Only set if DB envs are present too.
-            db_envs = ['SFEPS_DB_USER', 'SFEPS_DB_PASS', 'SFEPS_DB_NAME_ANALYTICS']
-            if all(os.environ.get(v) for v in db_envs):
-                os.environ.setdefault('SFEPS_AUTH_ALLOW_IPS', '127.0.0.1')
-                os.environ.setdefault('SFEPS_AUDIO_ALLOW_IPS', '127.0.0.1')
-                os.environ.setdefault('SFEPS_ALERT_ALLOW_IPS', '127.0.0.1')
-                can_run_real = True
-
-    if bin_path and can_run_real:
-        try:
-            env = os.environ.copy()
-            # Ensure plaintext app mode for test compatibility
-            env.setdefault('SFEPS_APP_TLS_ENABLE', '0')
-            env.setdefault('SFEPS_APP_PLAINTEXT_ENABLE', '1')
-
-            server_proc = subprocess.Popen([bin_path], env=env)
-
-            # wait for server to accept connections
-            for _ in range(80):
-                try:
-                    with socket.create_connection((host, port), timeout=0.2):
-                        break
-                except Exception:
-                    time.sleep(0.05)
-            else:
-                # server didn't come up; kill and fall back
-                server_proc.terminate()
-                server_proc.wait(timeout=1)
-                server_proc = None
-        except Exception:
-            server_proc = None
-
-    if server_proc is None:
-        # Fall back to lightweight mock server used previously.
-        server = ThreadedTCPServer((host, port), AuthHandler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-
-        # wait for mock server to become available
-        for _ in range(40):
-            try:
-                with socket.create_connection((host, port), timeout=0.2):
-                    break
-            except Exception:
-                time.sleep(0.05)
-
+def real_auth_server():
+    """Ensure tests use the real SFEPS server auth listener on 127.0.0.1:5555."""
+    if _is_listening(AUTH_HOST, AUTH_PORT):
         yield
-
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=1)
         return
 
-    # If we started the real server process, yield and ensure cleanup.
+    server_bin = _find_server_binary()
+    if server_bin is None:
+        pytest.skip(
+            "Real SFEPS server binary not found. Build server first "
+            "(e.g. cmake -S server -B server/build && cmake --build server/build)."
+        )
+
+    env, missing = _prepare_real_server_env()
+    if missing:
+        pytest.skip(
+            "Real SFEPS server env is incomplete: missing "
+            + ", ".join(missing)
+            + ". Set them in shell or server/.env.local."
+        )
+
+    log_fp = SERVER_LOG_PATH.open("w", encoding="utf-8")
+    proc = subprocess.Popen(
+        [str(server_bin)],
+        cwd=str(SERVER_DIR),
+        env=env,
+        stdout=log_fp,
+        stderr=subprocess.STDOUT,
+    )
+
     try:
+        deadline = time.monotonic() + SERVER_START_TIMEOUT_SEC
+        while time.monotonic() < deadline:
+            if _is_listening(AUTH_HOST, AUTH_PORT):
+                break
+            if proc.poll() is not None:
+                break
+            time.sleep(0.1)
+
+        if not _is_listening(AUTH_HOST, AUTH_PORT):
+            exit_code = proc.poll()
+            tail = _read_log_tail(SERVER_LOG_PATH)
+            pytest.skip(
+                "Failed to start real SFEPS auth server on 127.0.0.1:5555 "
+                f"(exit_code={exit_code}). Check tests/real_server.log.\n{tail}"
+            )
+
         yield
     finally:
-        try:
-            server_proc.terminate()
-            server_proc.wait(timeout=5)
-        except Exception:
+        if proc.poll() is None:
+            proc.terminate()
             try:
-                server_proc.kill()
-            except Exception:
-                pass
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        log_fp.close()

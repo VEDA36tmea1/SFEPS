@@ -67,7 +67,7 @@ def test_tc_func_login_04_client_blocks_empty_input_before_server_call():
 
     guard_snippet = "if (userId.isEmpty() || pw.trimmed().isEmpty())"
     message_snippet = 'emit loginFailed("ID와 PW를 모두 입력하세요")'
-    connect_snippet = "socket->connectToHost(authHost, authPort);"
+    connect_snippet = "socket->connectToHost(host, static_cast<quint16>(port));"
 
     assert guard_snippet in source
     assert message_snippet in source
