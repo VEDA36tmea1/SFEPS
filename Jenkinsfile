@@ -4,6 +4,7 @@ pipeline {
     options {
         timestamps()
         disableConcurrentBuilds()
+        skipDefaultCheckout(true)
     }
 
     environment {
@@ -30,12 +31,11 @@ pipeline {
             }
         }
 
-        stage('Install Python deps') {
+        stage('Check Test Tooling') {
             steps {
                 sh '''
                     set -eu
-                    python3 -m pip install --user --upgrade pip
-                    python3 -m pip install --user pytest
+                    python3 -m pytest --version
                 '''
             }
         }
