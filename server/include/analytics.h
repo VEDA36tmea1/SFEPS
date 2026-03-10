@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <queue>
 #include <string>
@@ -17,6 +18,18 @@
 
 class AnalyticsProcessor {
 public:
+    struct FraudBBoxPayload {
+        std::string object_id;
+        std::string card_age_text;
+        std::string age_group;
+        float left = -1.0f;
+        float top = -1.0f;
+        float right = -1.0f;
+        float bottom = -1.0f;
+    };
+
+    using FraudBBoxCallback = std::function<void(const FraudBBoxPayload&)>;
+
     AnalyticsProcessor(const char* host,
                        const char* user,
                        const char* pass,
@@ -33,6 +46,7 @@ public:
 
     // Called by RFID monitor thread with RFID text value.
     void onRfidRead(const std::string& card_age_text);
+    void setFraudBBoxCallback(FraudBBoxCallback callback);
 
 private:
     struct PendingObject {
@@ -40,6 +54,10 @@ private:
         std::string card_age_text;
         std::string age_group;
         bool is_fraud = false;
+        float bbox_left = -1.0f;
+        float bbox_top = -1.0f;
+        float bbox_right = -1.0f;
+        float bbox_bottom = -1.0f;
         std::chrono::steady_clock::time_point created_at;
     };
 
@@ -87,6 +105,7 @@ private:
     std::atomic<std::uint64_t> dropped_pending_expired_count;
     std::atomic<std::uint64_t> dropped_pending_overflow_count;
     std::atomic<std::uint64_t> parsed_xml_ok_count;
+    FraudBBoxCallback fraud_bbox_callback;
 };
 
 #endif
