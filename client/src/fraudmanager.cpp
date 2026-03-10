@@ -32,7 +32,11 @@ static QList<QSslCertificate> loadCaCertificates(const QString &path, QString &o
 }
 
 namespace {
-bool parseFraudMessage(const QString &msg, QString &cardId, QString &ageGroup, QString &gateId, int &estAge)
+bool parseFraudMessage(const QString &msg,
+                       QString &objectId,
+                       QString &cardAgeText,
+                       QString &ageGroup,
+                       bool &isFraud)
 {
     if (!msg.startsWith("FRAUD|")) {
         return false;
@@ -44,13 +48,21 @@ bool parseFraudMessage(const QString &msg, QString &cardId, QString &ageGroup, Q
         return false;
     }
 
-    cardId = parts[1].trimmed();
-    ageGroup = parts[2].trimmed();
-    gateId = parts[3].trimmed();
+    objectId = parts[1].trimmed();
+    cardAgeText = parts[2].trimmed();
+    ageGroup = parts[3].trimmed();
 
-    bool ok = false;
-    estAge = parts[4].trimmed().toInt(&ok);
-    if (!ok || cardId.isEmpty() || ageGroup.isEmpty() || gateId.isEmpty()) {
+    const QString fraudRaw = parts[4].trimmed().toLower();
+    if (fraudRaw == "1" || fraudRaw == "true" || fraudRaw == "y" || fraudRaw == "yes") {
+        isFraud = true;
+    } else if (fraudRaw == "0" || fraudRaw == "false" || fraudRaw == "n" || fraudRaw == "no") {
+        isFraud = false;
+    } else {
+        qWarning() << "[FraudManager] Ignore malformed message (invalid fraud flag):" << msg;
+        return false;
+    }
+
+    if (objectId.isEmpty() || cardAgeText.isEmpty() || ageGroup.isEmpty()) {
         qWarning() << "[FraudManager] Ignore malformed message (invalid value):" << msg;
         return false;
     }
@@ -67,12 +79,10 @@ FraudManager::FraudManager(QObject *parent) : QObject(parent)
     // Default to plaintext socket; may switch to QSslSocket when connectToServer is called
     socket = new QTcpSocket(this);
     retryTimer = new QTimer(this);
-    retryTimer->setInterval(5000); // 5초 간격 재시도
+    retryTimer->setInterval(1000); // 1초 간격 재시도
     retryTimer->setSingleShot(true);
 
-    connect(socket, &QTcpSocket::readyRead, this, &FraudManager::onReadyRead);
-    connect(socket, &QTcpSocket::connected, this, &FraudManager::onConnected);
-    connect(socket, &QTcpSocket::disconnected, this, &FraudManager::onDisconnected);
+    attachSocketSignals();
     connect(retryTimer, &QTimer::timeout, this, &FraudManager::retryConnection);
 }
 
@@ -85,24 +95,23 @@ void FraudManager::connectToServer(const QString &host, int port)
 {
     lastHost = host;
     lastPort = port;
-    // Determine TLS mode from environment (SFEPS_CLIENT_TLS_ENABLE)
+    m_alertTlsEnabled = resolveAlertTlsEnabled();
     const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    const bool tlsEnabled = parseEnvBool(env, "SFEPS_CLIENT_TLS_ENABLE", false);
 
     // Recreate socket if type mismatches desired mode
-    bool needSsl = tlsEnabled;
+    const bool needSsl = m_alertTlsEnabled;
     bool currentIsSsl = (qobject_cast<QSslSocket*>(socket) != nullptr);
     if (needSsl != currentIsSsl) {
-        socket->disconnectFromHost();
+        if (socket->state() != QAbstractSocket::UnconnectedState) {
+            socket->disconnectFromHost();
+        }
         socket->deleteLater();
         if (needSsl) {
             socket = new QSslSocket(this);
         } else {
             socket = new QTcpSocket(this);
         }
-        connect(socket, &QTcpSocket::readyRead, this, &FraudManager::onReadyRead);
-        connect(socket, &QTcpSocket::connected, this, &FraudManager::onConnected);
-        connect(socket, &QTcpSocket::disconnected, this, &FraudManager::onDisconnected);
+        attachSocketSignals();
     }
 
     if (socket->state() == QAbstractSocket::ConnectedState) return;
@@ -127,11 +136,6 @@ void FraudManager::connectToServer(const QString &host, int port)
             const QString serverName = env.value("SFEPS_CLIENT_TLS_SERVER_NAME").trimmed();
             if (!serverName.isEmpty()) ssl->setPeerVerifyName(serverName);
 
-            // Capture SSL errors for logging but do not ignore them
-            connect(ssl, &QSslSocket::sslErrors, this, [](const QList<QSslError> &errors){
-                for (const QSslError &e : errors) qWarning() << "[FraudManager] sslError:" << e.errorString();
-            });
-
             ssl->connectToHostEncrypted(host, static_cast<quint16>(port));
             return;
         }
@@ -143,11 +147,12 @@ void FraudManager::connectToServer(const QString &host, int port)
 void FraudManager::onConnected()
 {
     qDebug() << "[FraudManager] Connected to fraud alert server.";
+    socket->setSocketOption(QAbstractSocket::KeepAliveOption, 1);
     retryTimer->stop();
 }
 void FraudManager::onDisconnected()
 {
-    qDebug() << "[FraudManager] Disconnected from fraud alert server. Retrying in 5s...";
+    qDebug() << "[FraudManager] Disconnected from fraud alert server. Retrying in 1s...";
     retryTimer->start();
 }
 
@@ -155,8 +160,48 @@ void FraudManager::retryConnection()
 {
     if (socket->state() == QAbstractSocket::UnconnectedState) {
         qDebug() << "[FraudManager] Retrying connection to" << lastHost << ":" << lastPort;
-        socket->connectToHost(lastHost, lastPort);
+        connectToServer(lastHost, lastPort);
     }
+}
+
+void FraudManager::onSocketError(QAbstractSocket::SocketError socketError)
+{
+    Q_UNUSED(socketError);
+    qWarning() << "[FraudManager] socket error:" << socket->errorString();
+}
+
+void FraudManager::onSslErrors(const QList<QSslError> &errors)
+{
+    for (const QSslError &err : errors) {
+        qWarning() << "[FraudManager] sslError:" << err.errorString();
+    }
+}
+
+void FraudManager::attachSocketSignals()
+{
+    connect(socket, &QTcpSocket::readyRead, this, &FraudManager::onReadyRead);
+    connect(socket, &QTcpSocket::connected, this, &FraudManager::onConnected);
+    connect(socket, &QTcpSocket::disconnected, this, &FraudManager::onDisconnected);
+#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
+    connect(socket, &QAbstractSocket::errorOccurred, this, &FraudManager::onSocketError);
+#else
+    connect(socket, QOverload<QAbstractSocket::SocketError>::of(&QAbstractSocket::error),
+            this, &FraudManager::onSocketError);
+#endif
+
+    if (QSslSocket *ssl = qobject_cast<QSslSocket*>(socket)) {
+        connect(ssl, &QSslSocket::sslErrors, this, &FraudManager::onSslErrors);
+    }
+}
+
+bool FraudManager::resolveAlertTlsEnabled() const
+{
+    const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    const bool alertTlsProvided = !env.value("SFEPS_ALERT_TLS_ENABLE").trimmed().isEmpty();
+    if (alertTlsProvided) {
+        return parseEnvBool(env, "SFEPS_ALERT_TLS_ENABLE", false);
+    }
+    return parseEnvBool(env, "SFEPS_CLIENT_TLS_ENABLE", false);
 }
 
 void FraudManager::onReadyRead()
@@ -176,25 +221,25 @@ void FraudManager::onReadyRead()
         QString msg = QString::fromUtf8(line);
         qDebug() << "[FraudManager] Received:" << msg;
 
-        QString cardId;
+        QString objectId;
+        QString cardAgeText;
         QString ageGroup;
-        QString gateId;
-        int estAge = 0;
-        if (parseFraudMessage(msg, cardId, ageGroup, gateId, estAge)) {
-            emit fraudDetected(cardId, ageGroup, gateId, estAge);
+        bool isFraud = false;
+        if (parseFraudMessage(msg, objectId, cardAgeText, ageGroup, isFraud)) {
+            emit fraudDetected(objectId, cardAgeText, ageGroup, isFraud);
         }
     }
 
     // 폴백: 개행이 없더라도 버퍼 내용이 완전한 메시지 형식이면 처리
     if (!recvBuffer.isEmpty()) {
         QString s = QString::fromUtf8(recvBuffer).trimmed();
-        QString cardId;
+        QString objectId;
+        QString cardAgeText;
         QString ageGroup;
-        QString gateId;
-        int estAge = 0;
-        if (!s.isEmpty() && parseFraudMessage(s, cardId, ageGroup, gateId, estAge)) {
+        bool isFraud = false;
+        if (!s.isEmpty() && parseFraudMessage(s, objectId, cardAgeText, ageGroup, isFraud)) {
             qDebug() << "[FraudManager] Received (no-nl fallback):" << s;
-            emit fraudDetected(cardId, ageGroup, gateId, estAge);
+            emit fraudDetected(objectId, cardAgeText, ageGroup, isFraud);
             recvBuffer.clear();
         }
 

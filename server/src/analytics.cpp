@@ -1,28 +1,23 @@
 #include "analytics.h"
-#include "event_matcher.h"
 
 #include <algorithm>
-#include <cerrno>
 #include <cctype>
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
-#include <ctime>
-#include <iomanip>
 #include <iostream>
 #include <limits>
-#include <random>
-#include <sstream>
-#include <unordered_map>
+#include <string_view>
 #include <vector>
 
 #include <tinyxml2.h>
 
-#include "../../Camera/get_metadata/inc/Config.h"
+#include "alert.h"
 
 namespace {
 constexpr const char* kAnalyticsInsertQuery =
-    "INSERT INTO analytics_logs (frame_time, object_type, created_at, estimated_age, photo_path, x, y, event) "
-    "VALUES (?, ?, NOW(), ?, ?, ?, ?, ?)";
+    "INSERT INTO analytics_logs (object_id, card_age_text, age_group, is_fraud, created_at) "
+    "VALUES (?, ?, ?, ?, NOW())";
 
 std::size_t load_env_size_t(const char* name, std::size_t default_value, std::size_t min_value) {
     const char* raw = std::getenv(name);
@@ -47,29 +42,11 @@ bool should_sample(std::uint64_t counter, std::size_t interval) {
     return (counter % interval) == 0;
 }
 
-unsigned int parse_time_to_epoch_seconds(const std::string& s) {
-    if (s.empty()) {
-        return static_cast<unsigned int>(std::time(nullptr));
-    }
-
-    std::tm tm {};
-    std::istringstream ss(s);
-    ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
-    if (ss.fail()) {
-        return static_cast<unsigned int>(std::time(nullptr));
-    }
-
-    tm.tm_isdst = -1;
-    const std::time_t t = std::mktime(&tm);
-    if (t < 0) return static_cast<unsigned int>(std::time(nullptr));
-    return static_cast<unsigned int>(t);
-}
-
 std::string trim(const std::string& s) {
-    size_t a = 0;
-    while (a < s.size() && std::isspace(static_cast<unsigned char>(s[a]))) ++a;
-    size_t b = s.size();
-    while (b > a && std::isspace(static_cast<unsigned char>(s[b - 1]))) --b;
+    std::size_t a = 0;
+    while (a < s.size() && std::isspace(static_cast<unsigned char>(s[a])) != 0) ++a;
+    std::size_t b = s.size();
+    while (b > a && std::isspace(static_cast<unsigned char>(s[b - 1])) != 0) --b;
     return s.substr(a, b - a);
 }
 
@@ -80,12 +57,6 @@ std::string to_lower_copy(std::string s) {
     return s;
 }
 
-bool is_first_or_second_event(const std::string& event_str) {
-    if (event_str.empty()) return false;
-    const std::string lower = to_lower_copy(event_str);
-    return lower.find("first") != std::string::npos || lower.find("second") != std::string::npos;
-}
-
 bool has_local_name(const char* xml_name, const char* local_name) {
     if (xml_name == nullptr || local_name == nullptr) return false;
     const char* colon = std::strchr(xml_name, ':');
@@ -93,35 +64,129 @@ bool has_local_name(const char* xml_name, const char* local_name) {
     return std::strcmp(normalized, local_name) == 0;
 }
 
-void collect_notification_messages(tinyxml2::XMLNode* node,
-                                   std::vector<tinyxml2::XMLElement*>& out) {
-    for (tinyxml2::XMLNode* cur = node; cur != nullptr; cur = cur->NextSibling()) {
-        tinyxml2::XMLElement* element = cur->ToElement();
-        if (element != nullptr && has_local_name(element->Name(), "NotificationMessage")) {
-            out.push_back(element);
-        }
-        collect_notification_messages(cur->FirstChild(), out);
-    }
+bool is_human_type_text(const char* text) {
+    if (text == nullptr) return false;
+    return to_lower_copy(trim(text)) == "human";
 }
 
-bool find_simple_item_value(tinyxml2::XMLNode* node, const char* key, std::string& out) {
+bool subtree_has_human_type(tinyxml2::XMLNode* node) {
     for (tinyxml2::XMLNode* cur = node; cur != nullptr; cur = cur->NextSibling()) {
         tinyxml2::XMLElement* element = cur->ToElement();
-        if (element != nullptr && has_local_name(element->Name(), "SimpleItem")) {
-            const char* name_attr = element->Attribute("Name");
-            if (name_attr != nullptr && std::strcmp(name_attr, key) == 0) {
-                const char* value_attr = element->Attribute("Value");
-                if (value_attr != nullptr) {
-                    out = value_attr;
-                    return true;
-                }
+        if (element != nullptr && has_local_name(element->Name(), "Type")) {
+            if (is_human_type_text(element->GetText())) {
+                return true;
             }
         }
-        if (find_simple_item_value(cur->FirstChild(), key, out)) {
+        if (subtree_has_human_type(cur->FirstChild())) {
             return true;
         }
     }
     return false;
+}
+
+struct CardAgeDecision {
+    const char* canonical_text;
+    bool is_fraud;
+};
+
+struct NormalizedBBox {
+    float left = -1.0f;
+    float top = -1.0f;
+    float right = -1.0f;
+    float bottom = -1.0f;
+
+    bool valid() const {
+        return left >= 0.0f && top >= 0.0f && right >= left && bottom >= top;
+    }
+};
+
+struct HumanObjectInfo {
+    std::string object_id;
+    NormalizedBBox bbox;
+};
+
+float to_pixel_axis(float raw, int full_scale);
+
+bool read_bbox_from_element(tinyxml2::XMLElement* element, int cam_w, int cam_h, NormalizedBBox& bbox) {
+    if (element == nullptr) return false;
+
+    const char* left_attr = element->Attribute("left");
+    const char* top_attr = element->Attribute("top");
+    const char* right_attr = element->Attribute("right");
+    const char* bottom_attr = element->Attribute("bottom");
+    if (left_attr == nullptr || top_attr == nullptr || right_attr == nullptr || bottom_attr == nullptr) {
+        return false;
+    }
+
+    bbox.left = to_pixel_axis(element->FloatAttribute("left"), cam_w);
+    bbox.top = to_pixel_axis(element->FloatAttribute("top"), cam_h);
+    bbox.right = to_pixel_axis(element->FloatAttribute("right"), cam_w);
+    bbox.bottom = to_pixel_axis(element->FloatAttribute("bottom"), cam_h);
+    return bbox.valid();
+}
+
+float to_pixel_axis(float raw, int full_scale) {
+    if (raw < 0.0f) return raw;
+    if (raw <= 1.0f && full_scale > 0) {
+        return raw * static_cast<float>(full_scale);
+    }
+    return raw;
+}
+
+bool find_explicit_bbox(tinyxml2::XMLNode* node, int cam_w, int cam_h, NormalizedBBox& bbox) {
+    for (tinyxml2::XMLNode* cur = node; cur != nullptr; cur = cur->NextSibling()) {
+        tinyxml2::XMLElement* element = cur->ToElement();
+        if (read_bbox_from_element(element, cam_w, cam_h, bbox)) {
+            return true;
+        }
+        if (find_explicit_bbox(cur->FirstChild(), cam_w, cam_h, bbox)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+NormalizedBBox extract_object_bbox(tinyxml2::XMLElement* object_element, int cam_w, int cam_h) {
+    NormalizedBBox bbox;
+    if (object_element != nullptr && find_explicit_bbox(object_element->FirstChild(), cam_w, cam_h, bbox)) {
+        return bbox;
+    }
+    return bbox;
+}
+
+void collect_human_object_infos(tinyxml2::XMLNode* node, int cam_w, int cam_h,
+                                std::vector<HumanObjectInfo>& out) {
+    for (tinyxml2::XMLNode* cur = node; cur != nullptr; cur = cur->NextSibling()) {
+        tinyxml2::XMLElement* element = cur->ToElement();
+        if (element != nullptr && has_local_name(element->Name(), "Object")) {
+            const char* object_id = element->Attribute("ObjectId");
+            if (object_id != nullptr && object_id[0] != '\0' &&
+                subtree_has_human_type(element->FirstChild())) {
+                HumanObjectInfo info;
+                info.object_id = object_id;
+                info.bbox = extract_object_bbox(element, cam_w, cam_h);
+                out.push_back(std::move(info));
+            }
+        }
+        collect_human_object_infos(cur->FirstChild(), cam_w, cam_h, out);
+    }
+}
+
+CardAgeDecision evaluate_card_age(std::string_view raw) {
+    std::size_t begin = 0;
+    while (begin < raw.size() && std::isspace(static_cast<unsigned char>(raw[begin])) != 0) ++begin;
+    std::size_t end = raw.size();
+    while (end > begin && std::isspace(static_cast<unsigned char>(raw[end - 1])) != 0) --end;
+    raw = raw.substr(begin, end - begin);
+
+    if (raw == "Adult") return {"Adult", false};
+    if (raw == "Senior") return {"Senior", true};
+    if (raw == "Youth") return {"Youth", true};
+    return {"0", true};
+}
+
+std::string fraud_flag(bool is_fraud) {
+    return is_fraud ? "Y" : "N";
 }
 }  // namespace
 
@@ -142,10 +207,15 @@ AnalyticsProcessor::AnalyticsProcessor(const char* h,
       running(false),
       max_lines_per_batch(load_env_size_t("SFEPS_META_MAX_LINES_PER_BATCH", 128, 1)),
       max_queue_size(load_env_size_t("SFEPS_ANALYTICS_QUEUE_MAX", 200, 1)),
+      max_pending_size(load_env_size_t("SFEPS_META_PENDING_MAX", 2048, 1)),
+      pending_ttl_seconds(load_env_size_t("SFEPS_META_PENDING_TTL_SEC", 30, 1)),
       drop_log_interval(load_env_size_t("SFEPS_DROP_LOG_INTERVAL", 100, 1)),
       dropped_line_limit_count(0),
       dropped_queue_count(0),
-      dropped_invalid_xml_count(0) {}
+      dropped_invalid_xml_count(0),
+      dropped_pending_expired_count(0),
+      dropped_pending_overflow_count(0),
+      parsed_xml_ok_count(0) {}
 
 AnalyticsProcessor::~AnalyticsProcessor() {
     stop();
@@ -222,6 +292,13 @@ void AnalyticsProcessor::stop() {
         return;
     }
 
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        pending_queue.clear();
+        pending_object_ids.clear();
+        while (!q.empty()) q.pop();
+    }
+
     closeStatements();
     if (conn != nullptr) {
         mysql_close(conn);
@@ -229,11 +306,36 @@ void AnalyticsProcessor::stop() {
     }
 }
 
+void AnalyticsProcessor::setFraudBBoxCallback(FraudBBoxCallback callback) {
+    fraud_bbox_callback = std::move(callback);
+}
+
+void AnalyticsProcessor::pruneExpiredPendingLocked(std::chrono::steady_clock::time_point now) {
+    const auto ttl = std::chrono::seconds(static_cast<long long>(pending_ttl_seconds));
+    std::uint64_t expired = 0;
+
+    while (!pending_queue.empty()) {
+        const auto& front = pending_queue.front();
+        if ((now - front.created_at) <= ttl) break;
+        pending_object_ids.erase(front.object_id);
+        pending_queue.pop_front();
+        ++expired;
+    }
+
+    if (expired == 0) return;
+
+    const std::uint64_t total_expired = dropped_pending_expired_count.fetch_add(expired) + expired;
+    if (should_sample(total_expired, drop_log_interval)) {
+        std::cout << "[analytics.cpp] [Drop] expired pending object ids: expired=" << expired
+                  << ", total_expired=" << total_expired
+                  << ", pending_remaining=" << pending_queue.size() << std::endl;
+    }
+}
+
 void AnalyticsProcessor::publishRaw(const std::string& raw) {
     if (!running.load()) return;
     if (raw.empty()) return;
 
-    constexpr std::size_t kMaxRuleNameBytes = 128;
     constexpr std::size_t kMaxObjectIdBytes = 128;
 
     tinyxml2::XMLDocument doc;
@@ -247,93 +349,141 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
         return;
     }
 
-    std::size_t line_count = 0;
+    std::vector<HumanObjectInfo> human_objects;
+    collect_human_object_infos(doc.FirstChild(), cam_w, cam_h, human_objects);
+
+    const std::uint64_t parsed_ok = ++parsed_xml_ok_count;
+    if (should_sample(parsed_ok, std::max<std::size_t>(1000, drop_log_interval))) {
+        std::cout << "[analytics.cpp] [MetaXML] parsed_ok=" << parsed_ok
+                  << ", human_object_candidates=" << human_objects.size() << std::endl;
+    }
+
+    if (human_objects.empty()) return;
+
+    std::size_t accepted_count = 0;
     bool line_limit_hit = false;
-    bool has_event = false;
-    std::string extracted_lines;
+    const auto now = std::chrono::steady_clock::now();
 
-    std::vector<tinyxml2::XMLElement*> notifications;
-    collect_notification_messages(doc.FirstChild(), notifications);
-    if (notifications.empty()) {
-        return;
-    }
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        pruneExpiredPendingLocked(now);
 
-    const std::time_t now = std::time(nullptr);
-    std::tm* tm = std::localtime(&now);
-    char tbuf[80] = {0};
-    if (tm != nullptr) {
-        std::strftime(tbuf, sizeof(tbuf), "%Y-%m-%d %H:%M:%S", tm);
-    }
-    const std::string now_str = (tm != nullptr) ? std::string(tbuf) : std::string();
-    for (tinyxml2::XMLElement* notification : notifications) {
-        if (line_count >= max_lines_per_batch) {
-            line_limit_hit = true;
-            break;
-        }
-        std::string rule_name;
-        std::string state;
-        std::string obj_id;
-        if (!find_simple_item_value(notification->FirstChild(), "RuleName", rule_name)) {
-            continue;
-        }
-        rule_name = trim(rule_name);
-        if (rule_name.empty() || rule_name.size() > kMaxRuleNameBytes) {
-            const std::uint64_t dropped = ++dropped_invalid_xml_count;
-            if (should_sample(dropped, drop_log_interval)) {
-                std::cout << "[analytics.cpp] [Drop] invalid RuleName in XML metadata: dropped_count="
-                          << dropped << std::endl;
+        for (const auto& human_object : human_objects) {
+            if (accepted_count >= max_lines_per_batch) {
+                line_limit_hit = true;
+                break;
             }
-            continue;
-        }
 
-        if (!find_simple_item_value(notification->FirstChild(), "State", state)) {
-            continue;
-        }
-        state = to_lower_copy(trim(state));
-        if (!(state == "true" || state == "1")) {
-            continue;
-        }
+            std::string object_id = trim(human_object.object_id);
+            if (object_id.empty()) continue;
+            if (object_id.size() > kMaxObjectIdBytes) {
+                object_id.resize(kMaxObjectIdBytes);
+            }
 
-        const std::string lower_rule = to_lower_copy(rule_name);
-        if (lower_rule.find("first") == std::string::npos &&
-            lower_rule.find("second") == std::string::npos) {
-            continue;
-        }
+            if (pending_object_ids.find(object_id) != pending_object_ids.end()) {
+                continue;
+            }
 
-        if (!find_simple_item_value(notification->FirstChild(), "ObjectId", obj_id)) {
-            obj_id = "None";
-        }
-        obj_id = trim(obj_id);
-        if (obj_id.size() > kMaxObjectIdBytes) {
-            obj_id.resize(kMaxObjectIdBytes);
-        }
+            if (pending_queue.size() >= max_pending_size) {
+                const std::string dropped_id = pending_queue.front().object_id;
+                pending_queue.pop_front();
+                pending_object_ids.erase(dropped_id);
 
-        if (has_event) {
-            extracted_lines.push_back('\n');
-        }
-        extracted_lines += "[EVENT] ";
-        extracted_lines += rule_name;
-        extracted_lines += " Active | ID: ";
-        extracted_lines += obj_id;
-        extracted_lines += " | Time: ";
-        extracted_lines += now_str;
+                const std::uint64_t dropped = ++dropped_pending_overflow_count;
+                if (should_sample(dropped, drop_log_interval)) {
+                    std::cout << "[analytics.cpp] [Drop] pending object queue overflow: max="
+                              << max_pending_size << ", dropped_count=" << dropped << std::endl;
+                }
+            }
 
-        has_event = true;
-        ++line_count;
+            PendingObject pending;
+            pending.object_id = object_id;
+            pending.card_age_text = "0";
+            pending.age_group = "20th";
+            pending.is_fraud = false;
+            pending.bbox_left = human_object.bbox.left;
+            pending.bbox_top = human_object.bbox.top;
+            pending.bbox_right = human_object.bbox.right;
+            pending.bbox_bottom = human_object.bbox.bottom;
+            pending.created_at = now;
+
+            pending_queue.push_back(std::move(pending));
+            pending_object_ids.insert(object_id);
+            ++accepted_count;
+        }
     }
 
     if (line_limit_hit) {
         const std::uint64_t dropped = ++dropped_line_limit_count;
         if (should_sample(dropped, drop_log_interval)) {
-            std::cout << "[analytics.cpp] [Drop] metadata lines exceeded limit: max="
+            std::cout << "[analytics.cpp] [Drop] human object ids exceeded limit: max="
                       << max_lines_per_batch << ", dropped_count=" << dropped << std::endl;
         }
     }
+}
 
-    if (!has_event) return;
+void AnalyticsProcessor::onRfidRead(const std::string& card_age_text_raw) {
+    if (!running.load()) return;
+
+    const CardAgeDecision card_age = evaluate_card_age(card_age_text_raw);
+    const auto now = std::chrono::steady_clock::now();
+
+    FraudRecord fraud_record;
+    FraudBBoxPayload fraud_bbox_payload;
+    bool should_insert = false;
+    bool should_notify_esp = false;
 
     {
         std::lock_guard<std::mutex> lock(mtx);
+        pruneExpiredPendingLocked(now);
+
+        if (pending_queue.empty()) {
+            static std::uint64_t no_pending_count = 0;
+            ++no_pending_count;
+            if (should_sample(no_pending_count, drop_log_interval)) {
+                std::cout << "[analytics.cpp] [Matcher] RFID read ignored: no pending object"
+                          << std::endl;
+            }
+            return;
+        }
+
+        PendingObject pending = std::move(pending_queue.front());
+        pending_queue.pop_front();
+        pending_object_ids.erase(pending.object_id);
+
+        pending.card_age_text = card_age.canonical_text;
+        pending.is_fraud = card_age.is_fraud;
+
+        if (!pending.is_fraud) {
+            static std::uint64_t pass_count = 0;
+            ++pass_count;
+            if (should_sample(pass_count, std::max<std::size_t>(1000, drop_log_interval))) {
+                std::cout << "[analytics.cpp] [Matcher] PASS object_id=" << pending.object_id
+                          << ", card_age_text=" << pending.card_age_text
+                          << ", age_group=" << pending.age_group << std::endl;
+            }
+            return;
+        }
+
+        fraud_record.object_id = pending.object_id;
+        fraud_record.card_age_text = pending.card_age_text;
+        fraud_record.age_group = pending.age_group;
+        fraud_record.is_fraud = true;
+        if (pending.bbox_left >= 0.0f && pending.bbox_top >= 0.0f &&
+            pending.bbox_right >= pending.bbox_left && pending.bbox_bottom >= pending.bbox_top) {
+            fraud_bbox_payload.object_id = pending.object_id;
+            fraud_bbox_payload.card_age_text = pending.card_age_text;
+            fraud_bbox_payload.age_group = pending.age_group;
+            fraud_bbox_payload.left = pending.bbox_left;
+            fraud_bbox_payload.top = pending.bbox_top;
+            fraud_bbox_payload.right = pending.bbox_right;
+            fraud_bbox_payload.bottom = pending.bbox_bottom;
+            should_notify_esp = true;
+        } else {
+            std::cout << "[analytics.cpp] [ESP] bbox missing for object_id=" << pending.object_id
+                      << ", skip ESP fraud bbox send" << std::endl;
+        }
+
         if (q.size() >= max_queue_size) {
             q.pop();
             const std::uint64_t dropped = ++dropped_queue_count;
@@ -342,18 +492,25 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
                           << max_queue_size << ", dropped_count=" << dropped << std::endl;
             }
         }
-        q.push(std::move(extracted_lines));
+
+        q.push(fraud_record);
+        should_insert = true;
+    }
+
+    if (!should_insert) return;
+
+    const std::string out_message = "FRAUD|" + fraud_record.object_id + "|" +
+                                    fraud_record.card_age_text + "|" +
+                                    fraud_record.age_group + "|" +
+                                    fraud_flag(fraud_record.is_fraud);
+    send_alert_to_clients(out_message + "\n");
+    if (should_notify_esp && fraud_bbox_callback) {
+        fraud_bbox_callback(fraud_bbox_payload);
     }
     cv.notify_one();
 }
 
-bool AnalyticsProcessor::insertAnalyticsRow(const std::string& frame_time,
-                                            const std::string& object_type,
-                                            int estimated_age,
-                                            int x,
-                                            int y,
-                                            const std::string& event_name,
-                                            const std::string& photo_path) {
+bool AnalyticsProcessor::insertAnalyticsRow(const FraudRecord& record) {
     if (conn == nullptr || analyticsInsertStmt == nullptr) return false;
 
     if (mysql_stmt_reset(analyticsInsertStmt) != 0) {
@@ -362,45 +519,32 @@ bool AnalyticsProcessor::insertAnalyticsRow(const std::string& frame_time,
         return false;
     }
 
-    MYSQL_BIND params[7];
+    MYSQL_BIND params[4];
     std::memset(params, 0, sizeof(params));
 
-    unsigned long frame_time_len = static_cast<unsigned long>(frame_time.size());
-    unsigned long object_type_len = static_cast<unsigned long>(object_type.size());
-    unsigned long photo_path_len = static_cast<unsigned long>(photo_path.size());
-    unsigned long event_name_len = static_cast<unsigned long>(event_name.size());
-    int age_param = estimated_age;
-    double x_param = static_cast<double>(x);
-    double y_param = static_cast<double>(y);
+    unsigned long object_id_len = static_cast<unsigned long>(record.object_id.size());
+    unsigned long card_age_text_len = static_cast<unsigned long>(record.card_age_text.size());
+    unsigned long age_group_len = static_cast<unsigned long>(record.age_group.size());
+    signed char fraud_value = record.is_fraud ? 1 : 0;
 
     params[0].buffer_type = MYSQL_TYPE_STRING;
-    params[0].buffer = const_cast<char*>(frame_time.c_str());
-    params[0].buffer_length = frame_time_len;
-    params[0].length = &frame_time_len;
+    params[0].buffer = const_cast<char*>(record.object_id.c_str());
+    params[0].buffer_length = object_id_len;
+    params[0].length = &object_id_len;
 
     params[1].buffer_type = MYSQL_TYPE_STRING;
-    params[1].buffer = const_cast<char*>(object_type.c_str());
-    params[1].buffer_length = object_type_len;
-    params[1].length = &object_type_len;
+    params[1].buffer = const_cast<char*>(record.card_age_text.c_str());
+    params[1].buffer_length = card_age_text_len;
+    params[1].length = &card_age_text_len;
 
-    params[2].buffer_type = MYSQL_TYPE_LONG;
-    params[2].buffer = &age_param;
+    params[2].buffer_type = MYSQL_TYPE_STRING;
+    params[2].buffer = const_cast<char*>(record.age_group.c_str());
+    params[2].buffer_length = age_group_len;
+    params[2].length = &age_group_len;
 
-    params[3].buffer_type = MYSQL_TYPE_STRING;
-    params[3].buffer = const_cast<char*>(photo_path.c_str());
-    params[3].buffer_length = photo_path_len;
-    params[3].length = &photo_path_len;
-
-    params[4].buffer_type = MYSQL_TYPE_DOUBLE;
-    params[4].buffer = &x_param;
-
-    params[5].buffer_type = MYSQL_TYPE_DOUBLE;
-    params[5].buffer = &y_param;
-
-    params[6].buffer_type = MYSQL_TYPE_STRING;
-    params[6].buffer = const_cast<char*>(event_name.c_str());
-    params[6].buffer_length = event_name_len;
-    params[6].length = &event_name_len;
+    params[3].buffer_type = MYSQL_TYPE_TINY;
+    params[3].buffer = &fraud_value;
+    params[3].is_unsigned = 0;
 
     if (mysql_stmt_bind_param(analyticsInsertStmt, params) != 0) {
         std::cerr << "[Analytics DB Error] stmt bind failed: "
@@ -417,184 +561,9 @@ bool AnalyticsProcessor::insertAnalyticsRow(const std::string& frame_time,
     return true;
 }
 
-void AnalyticsProcessor::processLine(const std::string& rawLine) {
-    std::string line = trim(rawLine);
-    if (line.empty()) return;
-
-    std::string tag;
-    if (line.front() == '[') {
-        const size_t close_bracket = line.find(']');
-        if (close_bracket != std::string::npos) {
-            tag = line.substr(1, close_bracket - 1);
-            line = trim(line.substr(close_bracket + 1));
-            if (!line.empty() && line.front() == '|') {
-                line = trim(line.substr(1));
-            }
-        }
-    }
-
-    std::vector<std::string> parts;
-    size_t start = 0;
-    while (start < line.size()) {
-        const size_t sep = line.find(" | ", start);
-        if (sep == std::string::npos) {
-            parts.push_back(trim(line.substr(start)));
-            break;
-        }
-
-        parts.push_back(trim(line.substr(start, sep - start)));
-        start = sep + 3;
-    }
-
-    std::string id;
-    std::string type;
-    std::string time_str;
-    std::string event_str;
-    std::string photo_path;
-    int x = 0;
-    int y = 0;
-    int estimated_age = 0;
-
-    for (const std::string& part : parts) {
-        if (part.empty()) continue;
-
-        const size_t colon = part.find(':');
-        if (colon == std::string::npos) {
-            if (event_str.empty()) {
-                event_str = part;
-            }
-            continue;
-        }
-
-        const std::string key = trim(part.substr(0, colon));
-        const std::string val = trim(part.substr(colon + 1));
-
-        if (key == "ID") {
-            id = val;
-        } else if (key == "Type") {
-            type = val;
-        } else if (key == "Pos") {
-            size_t a = val.find('(');
-            size_t b = val.find(')');
-            std::string coords = val;
-            if (a != std::string::npos && b != std::string::npos && b > a) {
-                coords = val.substr(a + 1, b - a - 1);
-            }
-
-            const size_t comma = coords.find(',');
-            if (comma != std::string::npos) {
-                const std::string xs = trim(coords.substr(0, comma));
-                const std::string ys = trim(coords.substr(comma + 1));
-                try {
-                    const double nx = std::stod(xs);
-                    const double ny = std::stod(ys);
-                    x = static_cast<int>(nx * cam_w);
-                    y = static_cast<int>(ny * cam_h);
-                } catch (...) {
-                }
-            }
-        } else if (key == "Time") {
-            time_str = val;
-        } else if (key == "Event") {
-            event_str = val;
-        } else if (key == "Age") {
-            try {
-                estimated_age = std::stoi(val);
-            } catch (...) {
-            }
-        }
-    }
-
-    if (type.empty()) {
-        type = "Unknown";
-    }
-    if (event_str.empty()) {
-        event_str = "Detected";
-    }
-
-    if (tag != "EVENT") return;
-    if (!is_first_or_second_event(event_str)) return;
-
-    if (time_str.empty()) {
-        const std::time_t now = std::time(nullptr);
-        std::tm* timeinfo = std::localtime(&now);
-        char buf[80] = {0};
-        if (timeinfo != nullptr) {
-            std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", timeinfo);
-            time_str = std::string(buf);
-        }
-    }
-
-    static std::unordered_map<std::string, unsigned int> gate_last_pass_time;
-    const unsigned int event_ts = parse_time_to_epoch_seconds(time_str);
-
-    auto emit_timing_log = [&](const std::string& local_event,
-                               const std::string& local_id,
-                               unsigned int local_event_ts,
-                               unsigned int prev_ts) {
-        const double tailgate_sec = static_cast<double>(TAILGATE_LIMIT) / 90000.0;
-        if (prev_ts != 0 && local_event_ts >= prev_ts) {
-            const double diff_sec = static_cast<double>(local_event_ts - prev_ts);
-            if (diff_sec < tailgate_sec) {
-                std::cout << "[analytics.cpp] [TAILGATING] " << local_event << " | ID=" << local_id
-                          << " | gap=" << diff_sec << "s" << std::endl;
-            } else {
-                std::cout << "[analytics.cpp] [EVENT] " << local_event << " | ID=" << local_id
-                          << " | time=" << time_str << std::endl;
-            }
-            return;
-        }
-
-        std::cout << "[analytics.cpp] [EVENT] " << local_event << " | ID=" << local_id
-                  << " | time=" << time_str << std::endl;
-    };
-
-    const std::string lower_event = to_lower_copy(event_str);
-    const size_t p_first = lower_event.find("first");
-    const size_t p_second = lower_event.find("second");
-
-    if (p_first != std::string::npos) {
-        std::string gate = event_str.substr(0, p_first);
-        gate.erase(std::remove_if(gate.begin(), gate.end(), [](unsigned char c) {
-            return std::isspace(c) != 0;
-        }),
-                   gate.end());
-
-        static std::mt19937 rng(std::random_device {}());
-        static const std::vector<std::string> ages = {"Adult", "Senior", "Youth"};
-        std::uniform_int_distribution<int> dist(0, static_cast<int>(ages.size()) - 1);
-        const std::string assigned = ages[dist(rng)];
-
-        EventMatcher::instance().register_first(gate, id.empty() ? "" : id, assigned, gate, estimated_age);
-
-        unsigned int& prev_ts = gate_last_pass_time[event_str];
-        emit_timing_log(event_str, id, event_ts, prev_ts);
-        prev_ts = event_ts;
-    }
-
-    if (p_second != std::string::npos) {
-        std::string gate = event_str.substr(0, p_second);
-        gate.erase(std::remove_if(gate.begin(), gate.end(), [](unsigned char c) {
-            return std::isspace(c) != 0;
-        }),
-                   gate.end());
-
-        std::string out_msg;
-        EventMatcher::instance().on_second(gate, out_msg);
-
-        unsigned int& prev_second_ts = gate_last_pass_time[event_str];
-        emit_timing_log(event_str, id, event_ts, prev_second_ts);
-        prev_second_ts = event_ts;
-    }
-
-    if (!insertAnalyticsRow(time_str, type, estimated_age, x, y, event_str, photo_path)) {
-        std::cerr << "[Analytics DB Error] failed to insert analytics row" << std::endl;
-    }
-}
-
 void AnalyticsProcessor::workerLoop() {
     while (true) {
-        std::vector<std::string> batch;
+        std::vector<FraudRecord> batch;
         {
             std::unique_lock<std::mutex> lock(mtx);
             cv.wait(lock, [&] { return !q.empty() || !running.load(); });
@@ -608,11 +577,13 @@ void AnalyticsProcessor::workerLoop() {
             }
         }
 
-        for (const auto& raw : batch) {
-            std::istringstream iss(raw);
-            std::string line;
-            while (std::getline(iss, line)) {
-                processLine(line);
+        for (const auto& record : batch) {
+            if (!record.is_fraud) continue;
+
+            if (!insertAnalyticsRow(record)) {
+                std::cerr << "[Analytics DB Error] failed to insert fraud row: object_id="
+                          << record.object_id << ", card_age_text=" << record.card_age_text
+                          << std::endl;
             }
         }
     }

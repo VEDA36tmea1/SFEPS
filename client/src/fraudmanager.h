@@ -19,20 +19,29 @@ public:
     Q_INVOKABLE void connectToServer(const QString &host = "192.168.0.97", int port = 5557);
 
 signals:
-    void fraudDetected(const QString &cardId, const QString &ageGroup, const QString &gateId, int estAge);
+    void fraudDetected(const QString &objectId,
+                       const QString &cardAgeText,
+                       const QString &ageGroup,
+                       bool isFraud);
 
 private slots:
     void onReadyRead();
     void onConnected();
     void onDisconnected();
     void retryConnection();
+    void onSocketError(QAbstractSocket::SocketError socketError);
+    void onSslErrors(const QList<QSslError> &errors);
 
 private:
+    void attachSocketSignals();
+    bool resolveAlertTlsEnabled() const;
+
     QTcpSocket *socket;
     QTimer *retryTimer;
     QString lastHost;
     int lastPort;
     QByteArray recvBuffer; // 누적 수신 버퍼 (부분 수신 처리용)
+    bool m_alertTlsEnabled = false;
 };
 
 #endif // FRAUDMANAGER_H
