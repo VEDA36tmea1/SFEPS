@@ -31,6 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libswscale-dev \
     libasound2-dev \
     libssl-dev \
+    ffmpeg \
     curl \
     xz-utils \
     ca-certificates \

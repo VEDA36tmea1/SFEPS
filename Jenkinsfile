@@ -181,6 +181,60 @@ PY
 import socket
 import time
 
+def rtsp_port_ready(timeout=2.0):
+    try:
+        with socket.create_connection(("127.0.0.1", 8554), timeout=timeout) as s:
+            return True
+    except OSError:
+        return False
+
+deadline = time.time() + 60
+while time.time() < deadline:
+    if rtsp_port_ready():
+        print("mediamtx TCP is ready on 127.0.0.1:8554")
+        break
+    time.sleep(1)
+else:
+    raise SystemExit("mediamtx did not open 127.0.0.1:8554 in time")
+PY
+                '''
+            }
+        }
+
+        stage('Start RTSP Publisher') {
+            steps {
+                sh '''
+                    set -eu
+
+                    export SFEPS_STREAM_RTSP_URL="${SFEPS_STREAM_RTSP_URL:-rtsp://127.0.0.1:8554/cam1}"
+                    FFMPEG_PID_FILE="$WORKSPACE/.ci-ffmpeg-publisher.pid"
+                    FFMPEG_LOG="$WORKSPACE/.ci-ffmpeg-publisher.log"
+
+                    if ! command -v ffmpeg >/dev/null 2>&1; then
+                      echo "ffmpeg is required for stream publishing but not found in PATH" >&2
+                      exit 1
+                    fi
+
+                    # Keep a single local publisher process per build.
+                    pkill -f "ffmpeg.*${SFEPS_STREAM_RTSP_URL}" 2>/dev/null || true
+
+                    nohup env SFEPS_STREAM_RTSP_URL="$SFEPS_STREAM_RTSP_URL" bash -c '
+                      set +e
+                      while true; do
+                        ffmpeg -hide_banner -loglevel warning -re \
+                          -f lavfi -i testsrc=size=640x360:rate=15 \
+                          -an \
+                          -c:v mpeg4 -pix_fmt yuv420p -g 30 \
+                          -f rtsp -rtsp_transport tcp "$SFEPS_STREAM_RTSP_URL"
+                        sleep 1
+                      done
+                    ' >"$FFMPEG_LOG" 2>&1 &
+                    echo "$!" > "$FFMPEG_PID_FILE"
+
+                    python3 - <<'PY'
+import socket
+import time
+
 def rtsp_describe_ok(timeout=2.0):
     try:
         with socket.create_connection(("127.0.0.1", 8554), timeout=timeout) as s:
@@ -201,12 +255,12 @@ deadline = time.time() + 60
 last_error = None
 while time.time() < deadline:
     if rtsp_describe_ok():
-        print("mediamtx DESCRIBE ok on rtsp://127.0.0.1:8554/cam1")
+        print("RTSP publisher ready: DESCRIBE 200 + m=video on rtsp://127.0.0.1:8554/cam1")
         break
     last_error = "DESCRIBE not ready"
     time.sleep(1)
 else:
-    raise SystemExit(f"mediamtx did not become RTSP-ready in time: {last_error}")
+    raise SystemExit(f"RTSP publisher did not become ready in time: {last_error}")
 PY
                 '''
             }
@@ -243,9 +297,15 @@ PY
                   kill "$(cat "$MTX_PID_FILE")" 2>/dev/null || true
                 fi
                 pkill -f '/usr/local/bin/mediamtx' 2>/dev/null || true
+
+                FFMPEG_PID_FILE="$WORKSPACE/.ci-ffmpeg-publisher.pid"
+                if [ -f "$FFMPEG_PID_FILE" ]; then
+                  kill "$(cat "$FFMPEG_PID_FILE")" 2>/dev/null || true
+                fi
+                pkill -f 'ffmpeg.*rtsp://127.0.0.1:8554/cam1' 2>/dev/null || true
             '''
             junit testResults: 'reports/*.xml', allowEmptyResults: true
-            archiveArtifacts artifacts: 'tests/real_server.log,.ci-mediamtx.log', allowEmptyArchive: true
+            archiveArtifacts artifacts: 'tests/real_server.log,.ci-mediamtx.log,.ci-ffmpeg-publisher.log', allowEmptyArchive: true
         }
     }
 }

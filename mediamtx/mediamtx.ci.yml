@@ -10,7 +10,7 @@ rtspEncryption: "no"
 
 paths:
   cam1:
-    # 테스트에서 publisher 없이도 경로 확인이 가능하도록 on-demand 비활성
+    # CI에서 ffmpeg publisher가 rtsp://127.0.0.1:8554/cam1 로 push
     sourceOnDemand: no
 
   all_others:
