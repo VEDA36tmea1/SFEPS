@@ -153,6 +153,17 @@ PY
                 '''
             }
         }
+
+        stage('Run Stream Tests') {
+            steps {
+                sh '''
+                    set -eu
+                    export MYSQL_UNIX_PORT="$WORKSPACE/.ci-mariadb/mysqld.sock"
+                    mkdir -p reports
+                    python3 -m pytest -q tests/test_tc_func_stream.py -r a --junitxml=reports/stream-tests.xml
+                '''
+            }
+        }
     }
 
     post {
@@ -163,7 +174,7 @@ PY
                   kill "$(cat "$DB_PID")" 2>/dev/null || true
                 fi
             '''
-            junit testResults: 'reports/login-tests.xml', allowEmptyResults: true
+            junit testResults: 'reports/*.xml', allowEmptyResults: true
             archiveArtifacts artifacts: 'tests/real_server.log', allowEmptyArchive: true
         }
     }
