@@ -84,24 +84,93 @@ bool subtree_has_human_type(tinyxml2::XMLNode* node) {
     return false;
 }
 
-void collect_human_object_ids(tinyxml2::XMLNode* node, std::unordered_set<std::string>& out) {
+struct CardAgeDecision {
+    const char* canonical_text;
+    bool is_fraud;
+};
+
+struct NormalizedBBox {
+    float left = -1.0f;
+    float top = -1.0f;
+    float right = -1.0f;
+    float bottom = -1.0f;
+
+    bool valid() const {
+        return left >= 0.0f && top >= 0.0f && right >= left && bottom >= top;
+    }
+};
+
+struct HumanObjectInfo {
+    std::string object_id;
+    NormalizedBBox bbox;
+};
+
+float to_pixel_axis(float raw, int full_scale);
+
+bool read_bbox_from_element(tinyxml2::XMLElement* element, int cam_w, int cam_h, NormalizedBBox& bbox) {
+    if (element == nullptr) return false;
+
+    const char* left_attr = element->Attribute("left");
+    const char* top_attr = element->Attribute("top");
+    const char* right_attr = element->Attribute("right");
+    const char* bottom_attr = element->Attribute("bottom");
+    if (left_attr == nullptr || top_attr == nullptr || right_attr == nullptr || bottom_attr == nullptr) {
+        return false;
+    }
+
+    bbox.left = to_pixel_axis(element->FloatAttribute("left"), cam_w);
+    bbox.top = to_pixel_axis(element->FloatAttribute("top"), cam_h);
+    bbox.right = to_pixel_axis(element->FloatAttribute("right"), cam_w);
+    bbox.bottom = to_pixel_axis(element->FloatAttribute("bottom"), cam_h);
+    return bbox.valid();
+}
+
+float to_pixel_axis(float raw, int full_scale) {
+    if (raw < 0.0f) return raw;
+    if (raw <= 1.0f && full_scale > 0) {
+        return raw * static_cast<float>(full_scale);
+    }
+    return raw;
+}
+
+bool find_explicit_bbox(tinyxml2::XMLNode* node, int cam_w, int cam_h, NormalizedBBox& bbox) {
+    for (tinyxml2::XMLNode* cur = node; cur != nullptr; cur = cur->NextSibling()) {
+        tinyxml2::XMLElement* element = cur->ToElement();
+        if (read_bbox_from_element(element, cam_w, cam_h, bbox)) {
+            return true;
+        }
+        if (find_explicit_bbox(cur->FirstChild(), cam_w, cam_h, bbox)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+NormalizedBBox extract_object_bbox(tinyxml2::XMLElement* object_element, int cam_w, int cam_h) {
+    NormalizedBBox bbox;
+    if (object_element != nullptr && find_explicit_bbox(object_element->FirstChild(), cam_w, cam_h, bbox)) {
+        return bbox;
+    }
+    return bbox;
+}
+
+void collect_human_object_infos(tinyxml2::XMLNode* node, int cam_w, int cam_h,
+                                std::vector<HumanObjectInfo>& out) {
     for (tinyxml2::XMLNode* cur = node; cur != nullptr; cur = cur->NextSibling()) {
         tinyxml2::XMLElement* element = cur->ToElement();
         if (element != nullptr && has_local_name(element->Name(), "Object")) {
             const char* object_id = element->Attribute("ObjectId");
             if (object_id != nullptr && object_id[0] != '\0' &&
                 subtree_has_human_type(element->FirstChild())) {
-                out.insert(object_id);
+                HumanObjectInfo info;
+                info.object_id = object_id;
+                info.bbox = extract_object_bbox(element, cam_w, cam_h);
+                out.push_back(std::move(info));
             }
         }
-        collect_human_object_ids(cur->FirstChild(), out);
+        collect_human_object_infos(cur->FirstChild(), cam_w, cam_h, out);
     }
 }
-
-struct CardAgeDecision {
-    const char* canonical_text;
-    bool is_fraud;
-};
 
 CardAgeDecision evaluate_card_age(std::string_view raw) {
     std::size_t begin = 0;
@@ -237,6 +306,10 @@ void AnalyticsProcessor::stop() {
     }
 }
 
+void AnalyticsProcessor::setFraudBBoxCallback(FraudBBoxCallback callback) {
+    fraud_bbox_callback = std::move(callback);
+}
+
 void AnalyticsProcessor::pruneExpiredPendingLocked(std::chrono::steady_clock::time_point now) {
     const auto ttl = std::chrono::seconds(static_cast<long long>(pending_ttl_seconds));
     std::uint64_t expired = 0;
@@ -276,16 +349,16 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
         return;
     }
 
-    std::unordered_set<std::string> object_ids;
-    collect_human_object_ids(doc.FirstChild(), object_ids);
+    std::vector<HumanObjectInfo> human_objects;
+    collect_human_object_infos(doc.FirstChild(), cam_w, cam_h, human_objects);
 
     const std::uint64_t parsed_ok = ++parsed_xml_ok_count;
     if (should_sample(parsed_ok, std::max<std::size_t>(1000, drop_log_interval))) {
         std::cout << "[analytics.cpp] [MetaXML] parsed_ok=" << parsed_ok
-                  << ", human_object_candidates=" << object_ids.size() << std::endl;
+                  << ", human_object_candidates=" << human_objects.size() << std::endl;
     }
 
-    if (object_ids.empty()) return;
+    if (human_objects.empty()) return;
 
     std::size_t accepted_count = 0;
     bool line_limit_hit = false;
@@ -295,13 +368,13 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
         std::lock_guard<std::mutex> lock(mtx);
         pruneExpiredPendingLocked(now);
 
-        for (const auto& raw_id : object_ids) {
+        for (const auto& human_object : human_objects) {
             if (accepted_count >= max_lines_per_batch) {
                 line_limit_hit = true;
                 break;
             }
 
-            std::string object_id = trim(raw_id);
+            std::string object_id = trim(human_object.object_id);
             if (object_id.empty()) continue;
             if (object_id.size() > kMaxObjectIdBytes) {
                 object_id.resize(kMaxObjectIdBytes);
@@ -328,6 +401,10 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
             pending.card_age_text = "0";
             pending.age_group = "20th";
             pending.is_fraud = false;
+            pending.bbox_left = human_object.bbox.left;
+            pending.bbox_top = human_object.bbox.top;
+            pending.bbox_right = human_object.bbox.right;
+            pending.bbox_bottom = human_object.bbox.bottom;
             pending.created_at = now;
 
             pending_queue.push_back(std::move(pending));
@@ -352,7 +429,9 @@ void AnalyticsProcessor::onRfidRead(const std::string& card_age_text_raw) {
     const auto now = std::chrono::steady_clock::now();
 
     FraudRecord fraud_record;
+    FraudBBoxPayload fraud_bbox_payload;
     bool should_insert = false;
+    bool should_notify_esp = false;
 
     {
         std::lock_guard<std::mutex> lock(mtx);
@@ -390,6 +469,20 @@ void AnalyticsProcessor::onRfidRead(const std::string& card_age_text_raw) {
         fraud_record.card_age_text = pending.card_age_text;
         fraud_record.age_group = pending.age_group;
         fraud_record.is_fraud = true;
+        if (pending.bbox_left >= 0.0f && pending.bbox_top >= 0.0f &&
+            pending.bbox_right >= pending.bbox_left && pending.bbox_bottom >= pending.bbox_top) {
+            fraud_bbox_payload.object_id = pending.object_id;
+            fraud_bbox_payload.card_age_text = pending.card_age_text;
+            fraud_bbox_payload.age_group = pending.age_group;
+            fraud_bbox_payload.left = pending.bbox_left;
+            fraud_bbox_payload.top = pending.bbox_top;
+            fraud_bbox_payload.right = pending.bbox_right;
+            fraud_bbox_payload.bottom = pending.bbox_bottom;
+            should_notify_esp = true;
+        } else {
+            std::cout << "[analytics.cpp] [ESP] bbox missing for object_id=" << pending.object_id
+                      << ", skip ESP fraud bbox send" << std::endl;
+        }
 
         if (q.size() >= max_queue_size) {
             q.pop();
@@ -411,6 +504,9 @@ void AnalyticsProcessor::onRfidRead(const std::string& card_age_text_raw) {
                                     fraud_record.age_group + "|" +
                                     fraud_flag(fraud_record.is_fraud);
     send_alert_to_clients(out_message + "\n");
+    if (should_notify_esp && fraud_bbox_callback) {
+        fraud_bbox_callback(fraud_bbox_payload);
+    }
     cv.notify_one();
 }
 

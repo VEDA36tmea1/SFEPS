@@ -13,6 +13,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include <arpa/inet.h>
@@ -28,6 +29,7 @@
 #include "audio_ring_buffer.h"
 #include "auth.h"
 #include "cleanup.h"
+#include "esp_manager.h"
 #include "log.h"
 #include "recorder.h"
 #include "rfid_monitor.h"
@@ -62,6 +64,12 @@ struct SecurityRuntimeOptions {
     std::string app_tls_key_file;
     int app_tls_handshake_timeout_ms = 3000;
     std::string app_bind_ip = "0.0.0.0";
+
+    bool esp_tcp_enable = false;
+    int esp_tcp_port = 5565;
+    std::size_t esp_tcp_max_clients = 4;
+    std::string esp_tcp_bind_ip = "192.168.4.1";
+    std::unordered_set<std::string> esp_tcp_allow_ips;
 };
 
 std::string trim_copy(const std::string& s) {
@@ -216,6 +224,15 @@ SecurityRuntimeOptions load_security_runtime_options() {
         cfg.app_tls_key_file = key_file;
     }
 
+    cfg.esp_tcp_enable = load_env_bool("SFEPS_ESP_TCP_ENABLE", false);
+    cfg.esp_tcp_port = load_env_port("SFEPS_ESP_TCP_PORT", 5565);
+    cfg.esp_tcp_max_clients = load_env_size_t("SFEPS_ESP_TCP_MAX_CLIENTS", 4, 1);
+    cfg.esp_tcp_allow_ips = parse_allowlist_env("SFEPS_ESP_TCP_ALLOW_IPS");
+    const char* esp_bind_ip = std::getenv("SFEPS_ESP_TCP_BIND_IP");
+    if (esp_bind_ip != nullptr && esp_bind_ip[0] != '\0') {
+        cfg.esp_tcp_bind_ip = trim_copy(esp_bind_ip);
+    }
+
     return cfg;
 }
 
@@ -229,6 +246,14 @@ bool validate_security_runtime_options(const SecurityRuntimeOptions& cfg, std::s
     if (inet_pton(AF_INET, cfg.app_bind_ip.c_str(), &bind_addr) != 1) {
         err = "invalid bind IP in SFEPS_APP_BIND_IP: " + cfg.app_bind_ip;
         return false;
+    }
+
+    if (cfg.esp_tcp_enable) {
+        in_addr esp_bind_addr {};
+        if (inet_pton(AF_INET, cfg.esp_tcp_bind_ip.c_str(), &esp_bind_addr) != 1) {
+            err = "invalid bind IP in SFEPS_ESP_TCP_BIND_IP: " + cfg.esp_tcp_bind_ip;
+            return false;
+        }
     }
 
     if (!cfg.app_tls_enable) {
@@ -313,6 +338,22 @@ void log_transport_mode(const SecurityRuntimeOptions& cfg) {
         std::cout << "[main.cpp] [Security] TLS cert file=" << cfg.app_tls_cert_file << std::endl;
     }
     std::cout << "[main.cpp] [Security] Bind IP=" << cfg.app_bind_ip << std::endl;
+}
+
+void log_esp_transport_mode(const SecurityRuntimeOptions& cfg) {
+    std::cout << "[main.cpp] [ESP] enabled=" << (cfg.esp_tcp_enable ? "on" : "off")
+              << ", bind_ip=" << cfg.esp_tcp_bind_ip
+              << ", port=" << cfg.esp_tcp_port
+              << ", max_clients=" << cfg.esp_tcp_max_clients << std::endl;
+    if (cfg.esp_tcp_enable) {
+        if (cfg.esp_tcp_allow_ips.empty()) {
+            std::cout << "[main.cpp] [ESP] SFEPS_ESP_TCP_ALLOW_IPS is empty: allow-all within bound interface."
+                      << std::endl;
+        } else {
+            std::cout << "[main.cpp] [ESP] SFEPS_ESP_TCP_ALLOW_IPS enabled with "
+                      << cfg.esp_tcp_allow_ips.size() << " IP(s)." << std::endl;
+        }
+    }
 }
 
 bool is_ip_allowed(const std::unordered_set<std::string>& allowlist, const std::string& client_ip) {
@@ -1050,6 +1091,7 @@ int main(int argc, char* argv[]) {
     log_allowlist_mode("SFEPS_AUDIO_ALLOW_IPS", sec_cfg.audio_allow_ips);
     log_allowlist_mode("SFEPS_ALERT_ALLOW_IPS", sec_cfg.alert_allow_ips);
     log_transport_mode(sec_cfg);
+    log_esp_transport_mode(sec_cfg);
 
     std::cout << "[main.cpp] [Security] auth_max_bytes=" << sec_cfg.auth_max_bytes
               << ", audio_max_bytes=" << sec_cfg.audio_max_bytes
@@ -1090,6 +1132,30 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
+    EspManager::Config esp_cfg;
+    esp_cfg.enabled = sec_cfg.esp_tcp_enable;
+    esp_cfg.bind_ip = sec_cfg.esp_tcp_bind_ip;
+    esp_cfg.port = sec_cfg.esp_tcp_port;
+    esp_cfg.max_clients = sec_cfg.esp_tcp_max_clients;
+    esp_cfg.allow_ips = sec_cfg.esp_tcp_allow_ips;
+    EspManager esp_manager(std::move(esp_cfg));
+    analytics.setFraudBBoxCallback([&esp_manager](const AnalyticsProcessor::FraudBBoxPayload& payload) {
+        EspManager::FraudBboxPayload esp_payload;
+        esp_payload.object_id = payload.object_id;
+        esp_payload.card_age_text = payload.card_age_text;
+        esp_payload.age_group = payload.age_group;
+        esp_payload.left = payload.left;
+        esp_payload.top = payload.top;
+        esp_payload.right = payload.right;
+        esp_payload.bottom = payload.bottom;
+        esp_manager.publishFraudBbox(esp_payload);
+    });
+    if (sec_cfg.esp_tcp_enable && !esp_manager.start(g_running)) {
+        std::cerr << "[Fatal] ESP manager startup failed." << std::endl;
+        analytics.stop();
+        return -1;
+    }
+
     std::thread t_file_cleanup(run_file_cleanup_worker, std::ref(g_running),
                                std::string(VIDEO_SAVE_DIR), 300);
 
@@ -1126,6 +1192,7 @@ int main(int argc, char* argv[]) {
     g_running = false;
 
     close_alert_client_connections();
+    esp_manager.stop();
 
     if (t_test_ping.joinable()) t_test_ping.join();
     if (t_rfid.joinable()) t_rfid.join();
