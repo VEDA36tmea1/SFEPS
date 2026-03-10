@@ -159,19 +159,21 @@ PY
                 sh '''
                     set -eu
 
-                    MTX_SCRIPT="$WORKSPACE/mediamtx/run_mediamtx.sh"
+                    export SFEPS_MTX_BIN="${SFEPS_MTX_BIN:-/usr/local/bin/mediamtx}"
+                    export SFEPS_MTX_CONFIG="${SFEPS_MTX_CONFIG:-/etc/mediamtx/mediamtx.yml}"
+                    MTX_SCRIPT="${SFEPS_CI_MTX_SCRIPT:-/usr/local/bin/run_mediamtx_ci.sh}"
                     MTX_PID_FILE="$WORKSPACE/.ci-mediamtx.pid"
                     MTX_LOG="$WORKSPACE/.ci-mediamtx.log"
 
-                    if [ ! -f "$MTX_SCRIPT" ]; then
-                      echo "mediamtx start script is missing: $MTX_SCRIPT" >&2
+                    if [ ! -x "$MTX_SCRIPT" ]; then
+                      echo "mediamtx start script is missing or not executable: $MTX_SCRIPT" >&2
                       exit 1
                     fi
 
                     # Keep a single local mediamtx process per build.
-                    pkill -f '/mediamtx/bin/mediamtx' 2>/dev/null || true
+                    pkill -f '/usr/local/bin/mediamtx' 2>/dev/null || true
 
-                    nohup bash "$MTX_SCRIPT" >"$MTX_LOG" 2>&1 &
+                    nohup env SFEPS_MTX_BIN="$SFEPS_MTX_BIN" SFEPS_MTX_CONFIG="$SFEPS_MTX_CONFIG" bash "$MTX_SCRIPT" >"$MTX_LOG" 2>&1 &
                     echo "$!" > "$MTX_PID_FILE"
 
                     python3 - <<'PY'
@@ -201,8 +203,11 @@ PY
                     set -eu
                     export MYSQL_UNIX_PORT="$WORKSPACE/.ci-mariadb/mysqld.sock"
                     export SFEPS_STREAM_RTSP_URL="${SFEPS_STREAM_RTSP_URL:-rtsp://127.0.0.1:8554/cam1}"
-                    export SFEPS_STREAM_FAULT_DOWN_CMD="pkill -f '/mediamtx/bin/mediamtx' || true"
-                    export SFEPS_STREAM_FAULT_UP_CMD="nohup bash '$WORKSPACE/mediamtx/run_mediamtx.sh' >'$WORKSPACE/.ci-mediamtx.log' 2>&1 &"
+                    export SFEPS_MTX_BIN="${SFEPS_MTX_BIN:-/usr/local/bin/mediamtx}"
+                    export SFEPS_MTX_CONFIG="${SFEPS_MTX_CONFIG:-/etc/mediamtx/mediamtx.yml}"
+                    export SFEPS_CI_MTX_SCRIPT="${SFEPS_CI_MTX_SCRIPT:-/usr/local/bin/run_mediamtx_ci.sh}"
+                    export SFEPS_STREAM_FAULT_DOWN_CMD="pkill -f '/usr/local/bin/mediamtx' || true"
+                    export SFEPS_STREAM_FAULT_UP_CMD="nohup env SFEPS_MTX_BIN=${SFEPS_MTX_BIN} SFEPS_MTX_CONFIG=${SFEPS_MTX_CONFIG} bash ${SFEPS_CI_MTX_SCRIPT} >${WORKSPACE}/.ci-mediamtx.log 2>&1 &"
                     mkdir -p reports
                     python3 -m pytest -q tests/test_tc_func_stream.py -r a --junitxml=reports/stream-tests.xml
                 '''
@@ -222,7 +227,7 @@ PY
                 if [ -f "$MTX_PID_FILE" ]; then
                   kill "$(cat "$MTX_PID_FILE")" 2>/dev/null || true
                 fi
-                pkill -f '/mediamtx/bin/mediamtx' 2>/dev/null || true
+                pkill -f '/usr/local/bin/mediamtx' 2>/dev/null || true
             '''
             junit testResults: 'reports/*.xml', allowEmptyResults: true
             archiveArtifacts artifacts: 'tests/real_server.log,.ci-mediamtx.log', allowEmptyArchive: true
