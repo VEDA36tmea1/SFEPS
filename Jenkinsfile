@@ -163,15 +163,15 @@ PY
                     MTX_PID_FILE="$WORKSPACE/.ci-mediamtx.pid"
                     MTX_LOG="$WORKSPACE/.ci-mediamtx.log"
 
-                    if [ ! -x "$MTX_SCRIPT" ]; then
-                      echo "mediamtx start script is missing or not executable: $MTX_SCRIPT" >&2
+                    if [ ! -f "$MTX_SCRIPT" ]; then
+                      echo "mediamtx start script is missing: $MTX_SCRIPT" >&2
                       exit 1
                     fi
 
                     # Keep a single local mediamtx process per build.
                     pkill -f '/mediamtx/bin/mediamtx' 2>/dev/null || true
 
-                    nohup "$MTX_SCRIPT" >"$MTX_LOG" 2>&1 &
+                    nohup bash "$MTX_SCRIPT" >"$MTX_LOG" 2>&1 &
                     echo "$!" > "$MTX_PID_FILE"
 
                     python3 - <<'PY'
@@ -202,7 +202,7 @@ PY
                     export MYSQL_UNIX_PORT="$WORKSPACE/.ci-mariadb/mysqld.sock"
                     export SFEPS_STREAM_RTSP_URL="${SFEPS_STREAM_RTSP_URL:-rtsp://127.0.0.1:8554/cam1}"
                     export SFEPS_STREAM_FAULT_DOWN_CMD="pkill -f '/mediamtx/bin/mediamtx' || true"
-                    export SFEPS_STREAM_FAULT_UP_CMD="nohup '$WORKSPACE/mediamtx/run_mediamtx.sh' >'$WORKSPACE/.ci-mediamtx.log' 2>&1 &"
+                    export SFEPS_STREAM_FAULT_UP_CMD="nohup bash '$WORKSPACE/mediamtx/run_mediamtx.sh' >'$WORKSPACE/.ci-mediamtx.log' 2>&1 &"
                     mkdir -p reports
                     python3 -m pytest -q tests/test_tc_func_stream.py -r a --junitxml=reports/stream-tests.xml
                 '''
