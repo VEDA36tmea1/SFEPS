@@ -1,0 +1,16 @@
+###############################################
+# CI 전용 MediaMTX 설정
+###############################################
+
+# 테스트 안정성을 위해 TCP만 사용
+rtspTransports: [tcp]
+
+# CI에서는 TLS를 비활성화해서 인증서 의존 제거
+rtspEncryption: "no"
+
+paths:
+  cam1:
+    # CI에서 ffmpeg publisher가 rtsp://127.0.0.1:8554/cam1 로 push
+    sourceOnDemand: no
+
+  all_others:

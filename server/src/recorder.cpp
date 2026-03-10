@@ -11,7 +11,7 @@
 #include <unistd.h>
 
 namespace {
-constexpr const char* kRtspUrl = "rtsps://192.168.0.92:8332/cam1";
+constexpr const char* kRtspUrl = "rtsp://192.168.0.97:8554/cam1";
 constexpr int kSegmentDurationSec = 60;
 constexpr const char* kXmlDeclStart = "<?xml";
 constexpr const char* kMetadataStreamStartTag = "<tt:MetadataStream";
@@ -314,12 +314,12 @@ bool RTSPRecorder::connect_and_record() {
 
     const char* tls_ca = std::getenv("RTSPS_TLS_CA");
     if (tls_ca == nullptr || tls_ca[0] == '\0') {
-        std::cerr << "[Error] RTSPS_TLS_CA is not set (fail-closed)." << std::endl;
+        // std::cerr << "[Error] RTSPS_TLS_CA is not set (fail-closed)." << std::endl;
         av_dict_free(&opts);
         return false;
     }
     if (access(tls_ca, R_OK) != 0) {
-        std::cerr << "[Error] RTSPS_TLS_CA is not readable: " << tls_ca << std::endl;
+        // std::cerr << "[Error] RTSPS_TLS_CA is not readable: " << tls_ca << std::endl;
         av_dict_free(&opts);
         return false;
     }
@@ -332,7 +332,7 @@ bool RTSPRecorder::connect_and_record() {
         verify_host = derive_verify_host_from_url(kRtspUrl);
     }
     if (verify_host.empty()) {
-        std::cerr << "[Error] Unable to resolve TLS verify host from RTSP_URL." << std::endl;
+        // std::cerr << "[Error] Unable to resolve TLS verify host from RTSP_URL." << std::endl;
         av_dict_free(&opts);
         return false;
     }
@@ -348,11 +348,11 @@ bool RTSPRecorder::connect_and_record() {
     }
     input_ctx->interrupt_callback.callback = ffmpeg_interrupt_cb;
     input_ctx->interrupt_callback.opaque = &running_flag;
-    std::cout << "[recorder.cpp] " << "[System] Connecting to " << kRtspUrl << " (Secure Mode)..." << std::endl;
+    // std::cout << "[recorder.cpp] " << "[System] Connecting to " << kRtspUrl << " (Secure Mode)..." << std::endl;
     
     if (avformat_open_input(&input_ctx, kRtspUrl, nullptr, &opts) != 0) {
         av_dict_free(&opts);
-        std::cerr << "[Error] Failed to connect! Check IP, Port(8332), or Cert." << std::endl;
+        // std::cerr << "[Error] Failed to connect! Check IP, Port(8332), or Cert." << std::endl;
         if (input_ctx) {
             avformat_free_context(input_ctx);
             input_ctx = nullptr;
