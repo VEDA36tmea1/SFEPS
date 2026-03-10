@@ -1,0 +1,16 @@
+###############################################
+# CI 전용 MediaMTX 설정
+###############################################
+
+# 테스트 안정성을 위해 TCP만 사용
+rtspTransports: [tcp]
+
+# CI에서는 TLS를 비활성화해서 인증서 의존 제거
+rtspEncryption: "no"
+
+paths:
+  cam1:
+    # 테스트에서 publisher 없이도 경로 확인이 가능하도록 on-demand 비활성
+    sourceOnDemand: no
+
+  all_others:

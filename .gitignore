@@ -164,4 +164,5 @@ credentials.*
 .github/PULL_REQUEST_TEMPLATE.md  # 필요 시 커밋하지만 보통은 아니에요
 mediamtx/*
 !mediamtx/mediamtx.yml
+!mediamtx/mediamtx.ci.yml
 !mediamtx/run_mediamtx.sh

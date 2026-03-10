@@ -161,6 +161,7 @@ PY
 
                     export SFEPS_MTX_BIN="${SFEPS_MTX_BIN:-/usr/local/bin/mediamtx}"
                     export SFEPS_MTX_CONFIG="${SFEPS_MTX_CONFIG:-/etc/mediamtx/mediamtx.yml}"
+                    export SFEPS_STREAM_RTSP_URL="${SFEPS_STREAM_RTSP_URL:-rtsp://127.0.0.1:8554/cam1}"
                     MTX_SCRIPT="${SFEPS_CI_MTX_SCRIPT:-/usr/local/bin/run_mediamtx_ci.sh}"
                     MTX_PID_FILE="$WORKSPACE/.ci-mediamtx.pid"
                     MTX_LOG="$WORKSPACE/.ci-mediamtx.log"
@@ -180,18 +181,32 @@ PY
 import socket
 import time
 
+def rtsp_describe_ok(timeout=2.0):
+    try:
+        with socket.create_connection(("127.0.0.1", 8554), timeout=timeout) as s:
+            s.settimeout(timeout)
+            req = (
+                "DESCRIBE rtsp://127.0.0.1:8554/cam1 RTSP/1.0\\r\\n"
+                "CSeq: 1\\r\\n"
+                "Accept: application/sdp\\r\\n"
+                "User-Agent: jenkins-ci\\r\\n\\r\\n"
+            )
+            s.sendall(req.encode("utf-8"))
+            data = s.recv(4096).decode("latin1", "replace")
+            return ("RTSP/1.0 200" in data) and ("m=video" in data)
+    except OSError:
+        return False
+
 deadline = time.time() + 60
 last_error = None
 while time.time() < deadline:
-    try:
-        with socket.create_connection(("127.0.0.1", 8554), timeout=1.0):
-            print("mediamtx is listening on 127.0.0.1:8554")
-            break
-    except OSError as exc:
-        last_error = exc
-        time.sleep(1)
+    if rtsp_describe_ok():
+        print("mediamtx DESCRIBE ok on rtsp://127.0.0.1:8554/cam1")
+        break
+    last_error = "DESCRIBE not ready"
+    time.sleep(1)
 else:
-    raise SystemExit(f"mediamtx did not open 127.0.0.1:8554 in time: {last_error}")
+    raise SystemExit(f"mediamtx did not become RTSP-ready in time: {last_error}")
 PY
                 '''
             }
@@ -202,10 +217,10 @@ PY
                 sh '''
                     set -eu
                     export MYSQL_UNIX_PORT="$WORKSPACE/.ci-mariadb/mysqld.sock"
-                    export SFEPS_STREAM_RTSP_URL="${SFEPS_STREAM_RTSP_URL:-rtsp://127.0.0.1:8554/cam1}"
                     export SFEPS_MTX_BIN="${SFEPS_MTX_BIN:-/usr/local/bin/mediamtx}"
                     export SFEPS_MTX_CONFIG="${SFEPS_MTX_CONFIG:-/etc/mediamtx/mediamtx.yml}"
                     export SFEPS_CI_MTX_SCRIPT="${SFEPS_CI_MTX_SCRIPT:-/usr/local/bin/run_mediamtx_ci.sh}"
+                    export SFEPS_STREAM_RTSP_URL="${SFEPS_STREAM_RTSP_URL:-rtsp://127.0.0.1:8554/cam1}"
                     export SFEPS_STREAM_FAULT_DOWN_CMD="pkill -f '/usr/local/bin/mediamtx' || true"
                     export SFEPS_STREAM_FAULT_UP_CMD="nohup env SFEPS_MTX_BIN=${SFEPS_MTX_BIN} SFEPS_MTX_CONFIG=${SFEPS_MTX_CONFIG} bash ${SFEPS_CI_MTX_SCRIPT} >${WORKSPACE}/.ci-mediamtx.log 2>&1 &"
                     mkdir -p reports

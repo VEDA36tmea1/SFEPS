@@ -51,7 +51,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /tmp/mediamtx /tmp/mediamtx.tar.gz \
  && rm -rf /var/lib/apt/lists/*
 
-COPY mediamtx/mediamtx.yml /etc/mediamtx/mediamtx.yml
+COPY mediamtx/mediamtx.ci.yml /etc/mediamtx/mediamtx.yml
 COPY mediamtx/run_mediamtx.sh /usr/local/bin/run_mediamtx_ci.sh
 RUN chmod +x /usr/local/bin/run_mediamtx_ci.sh
 
