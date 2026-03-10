@@ -73,7 +73,7 @@ static irqreturn_t rc522_spi_irq_thread(int irq, void *dev_id)
 	struct rc522_spi *rspi = dev_id;
 
 	atomic_set(&rspi->chip.irq_event, 1);
-	wake_up_interruptible(&rspi->chip.wagititq);
+	wake_up_interruptible(&rspi->chip.waitq);
 	dev_info(&rspi->spi->dev, "rc522_irq: interrupt received (irq=%d)\n", irq);
 	return IRQ_HANDLED;
 }
@@ -180,4 +180,3 @@ module_spi_driver(rc522_spi_driver);
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("RC522/MFRC522 RFID SPI driver (IRQ workspace)");
 MODULE_AUTHOR("SFEPS");
-

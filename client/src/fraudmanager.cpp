@@ -32,7 +32,11 @@ static QList<QSslCertificate> loadCaCertificates(const QString &path, QString &o
 }
 
 namespace {
-bool parseFraudMessage(const QString &msg, QString &cardId, QString &ageGroup, QString &gateId, int &estAge)
+bool parseFraudMessage(const QString &msg,
+                       QString &objectId,
+                       QString &cardAgeText,
+                       QString &ageGroup,
+                       bool &isFraud)
 {
     if (!msg.startsWith("FRAUD|")) {
         return false;
@@ -44,13 +48,21 @@ bool parseFraudMessage(const QString &msg, QString &cardId, QString &ageGroup, Q
         return false;
     }
 
-    cardId = parts[1].trimmed();
-    ageGroup = parts[2].trimmed();
-    gateId = parts[3].trimmed();
+    objectId = parts[1].trimmed();
+    cardAgeText = parts[2].trimmed();
+    ageGroup = parts[3].trimmed();
 
-    bool ok = false;
-    estAge = parts[4].trimmed().toInt(&ok);
-    if (!ok || cardId.isEmpty() || ageGroup.isEmpty() || gateId.isEmpty()) {
+    const QString fraudRaw = parts[4].trimmed().toLower();
+    if (fraudRaw == "1" || fraudRaw == "true" || fraudRaw == "y" || fraudRaw == "yes") {
+        isFraud = true;
+    } else if (fraudRaw == "0" || fraudRaw == "false" || fraudRaw == "n" || fraudRaw == "no") {
+        isFraud = false;
+    } else {
+        qWarning() << "[FraudManager] Ignore malformed message (invalid fraud flag):" << msg;
+        return false;
+    }
+
+    if (objectId.isEmpty() || cardAgeText.isEmpty() || ageGroup.isEmpty()) {
         qWarning() << "[FraudManager] Ignore malformed message (invalid value):" << msg;
         return false;
     }
@@ -209,25 +221,25 @@ void FraudManager::onReadyRead()
         QString msg = QString::fromUtf8(line);
         qDebug() << "[FraudManager] Received:" << msg;
 
-        QString cardId;
+        QString objectId;
+        QString cardAgeText;
         QString ageGroup;
-        QString gateId;
-        int estAge = 0;
-        if (parseFraudMessage(msg, cardId, ageGroup, gateId, estAge)) {
-            emit fraudDetected(cardId, ageGroup, gateId, estAge);
+        bool isFraud = false;
+        if (parseFraudMessage(msg, objectId, cardAgeText, ageGroup, isFraud)) {
+            emit fraudDetected(objectId, cardAgeText, ageGroup, isFraud);
         }
     }
 
     // 폴백: 개행이 없더라도 버퍼 내용이 완전한 메시지 형식이면 처리
     if (!recvBuffer.isEmpty()) {
         QString s = QString::fromUtf8(recvBuffer).trimmed();
-        QString cardId;
+        QString objectId;
+        QString cardAgeText;
         QString ageGroup;
-        QString gateId;
-        int estAge = 0;
-        if (!s.isEmpty() && parseFraudMessage(s, cardId, ageGroup, gateId, estAge)) {
+        bool isFraud = false;
+        if (!s.isEmpty() && parseFraudMessage(s, objectId, cardAgeText, ageGroup, isFraud)) {
             qDebug() << "[FraudManager] Received (no-nl fallback):" << s;
-            emit fraudDetected(cardId, ageGroup, gateId, estAge);
+            emit fraudDetected(objectId, cardAgeText, ageGroup, isFraud);
             recvBuffer.clear();
         }
 

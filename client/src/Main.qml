@@ -40,10 +40,10 @@ Window {
             layer.enabled: true
         }
 
-        property alias cardId: detailView.cardId
+        property alias objectId: detailView.objectId
+        property alias cardAgeText: detailView.cardAgeText
         property alias ageGroup: detailView.ageGroup
-        property alias gateId: detailView.gateId
-        property alias estAge: detailView.estAge
+        property alias isFraud: detailView.isFraud
 
         DetailView {
             id: detailView
@@ -476,8 +476,8 @@ Window {
                                             
                                             ColumnLayout {
                                                 spacing: 4
-                                                Text { text: cardId; color: "white"; font.bold: true; font.pixelSize: 14 }
-                                                Text { text: ((gateId.toString().indexOf("Gate") !== -1 || gateId.toString().indexOf("gate") !== -1) ? gateId : "Gate " + gateId) + " • " + timestamp; color: AppTheme.textSecondary; font.pixelSize: 11 }
+                                                Text { text: "Object " + objectId; color: "white"; font.bold: true; font.pixelSize: 14 }
+                                                Text { text: cardAgeText.toUpperCase() + " • " + timestamp; color: AppTheme.textSecondary; font.pixelSize: 11 }
                                             }
                                             
                                             Item { Layout.fillWidth: true }
@@ -494,10 +494,10 @@ Window {
                                                 }
                                                 onClicked: {
                                                     currentNotificationIndex = index
-                                                    detailPopup.cardId = cardId
+                                                    detailPopup.objectId = objectId
+                                                    detailPopup.cardAgeText = cardAgeText
                                                     detailPopup.ageGroup = ageGroup
-                                                    detailPopup.gateId = gateId
-                                                    detailPopup.estAge = estAge
+                                                    detailPopup.isFraud = isFraud
                                                     detailPopup.open()
                                                     notificationDrawer.close()
                                                 }
@@ -530,11 +530,11 @@ Window {
                     currentIndex: currentViewIndex - 1
 
                     MonitoringView {
-                        onViewDetailRequest: (cardId, ageGroup, gateId, estAge) => {
-                            detailPopup.cardId = cardId
+                        onViewDetailRequest: (objectId, cardAgeText, ageGroup, isFraud) => {
+                            detailPopup.objectId = objectId
+                            detailPopup.cardAgeText = cardAgeText
                             detailPopup.ageGroup = ageGroup
-                            detailPopup.gateId = gateId
-                            detailPopup.estAge = estAge
+                            detailPopup.isFraud = isFraud
                             detailPopup.open()
                         }
                     }
@@ -548,12 +548,12 @@ Window {
     // --- Fraud Detection Notification ---
     Connections {
         target: fraudManager
-        function onFraudDetected(cardId, ageGroup, gateId, estAge) {
+        function onFraudDetected(objectId, cardAgeText, ageGroup, isFraud) {
             notificationModel.insert(0, {
-                cardId: cardId,
+                objectId: objectId,
+                cardAgeText: cardAgeText,
                 ageGroup: ageGroup,
-                gateId: gateId,
-                estAge: estAge,
+                isFraud: isFraud,
                 timestamp: Qt.formatDateTime(new Date(), "HH:mm:ss")
             })
             unreadCount++

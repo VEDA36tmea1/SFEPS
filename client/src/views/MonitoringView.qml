@@ -9,7 +9,7 @@ Page {
         color: AppTheme.background
     }
 
-    signal viewDetailRequest(string cardId, string ageGroup, string gateId, int estAge)
+    signal viewDetailRequest(string objectId, string cardAgeText, string ageGroup, bool isFraud)
 
     // Properties for live stats
     property int alertsToday: 0
@@ -476,19 +476,19 @@ Page {
 
                     Connections {
                         target: fraudManager
-                        function onFraudDetected(cardId, ageGroup, gateId, estAge) {
+                        function onFraudDetected(objectId, cardAgeText, ageGroup, isFraud) {
                             monitoringEventModel.insert(0, {
-                                eventId: cardId,
+                                eventId: objectId,
                                 eventType: "FARE EVASION DETECTED",
-                                title: ((gateId.toString().indexOf("Gate") !== -1 || gateId.toString().indexOf("gate") !== -1) ? gateId : "Gate " + gateId) + " - " + ageGroup.toUpperCase() + " CARD",
-                                camera: "Card ID: " + cardId + " (Est. Age: " + estAge + ")",
+                                title: "Object " + objectId + " - " + cardAgeText.toUpperCase() + " CARD",
+                                camera: "Age Group: " + ageGroup.toUpperCase() + " (Fraud: " + (isFraud ? "Y" : "N") + ")",
                                 timestamp: Qt.formatDateTime(new Date(), "HH:mm:ss"),
                                 confidence: "98.5%",
                                 // Raw data for DetailView
-                                cardId: cardId,
+                                objectId: objectId,
+                                cardAgeText: cardAgeText,
                                 ageGroup: ageGroup,
-                                gateId: gateId,
-                                estAge: estAge
+                                isFraud: isFraud
                             })
                             alertsToday++
                         }
@@ -576,7 +576,7 @@ Page {
                                         horizontalAlignment: Text.AlignHCenter
                                         verticalAlignment: Text.AlignVCenter
                                     }
-                                    onClicked: viewDetailRequest(cardId, ageGroup, gateId, estAge)
+                                    onClicked: viewDetailRequest(objectId, cardAgeText, ageGroup, isFraud)
                                 }
 
                                 Button {
