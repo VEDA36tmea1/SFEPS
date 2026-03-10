@@ -31,7 +31,7 @@ cd /home/iam/SFEPS/server
 ./tunnel_vscode_db.sh [pi-ip]
 ```
 
-`[pi-ip]`가 생략되면 기본 `192.168.0.97`로 실행됩니다.
+`[pi-ip]`가 생략되면 기본 `192.168.0.92`로 실행됩니다.
 
 ### 2) VSCode 연결 정보
 
@@ -66,7 +66,7 @@ export SFEPS_AUTH_MAX_BYTES=256
 export SFEPS_AUDIO_MAX_BYTES=4194304
 export SFEPS_ALERT_MAX_CLIENTS=64
 export SFEPS_SOCKET_READ_TIMEOUT_MS=5000
-export SFEPS_RTSPS_VERIFYHOST=192.168.0.97
+export SFEPS_RTSPS_VERIFYHOST=192.168.0.92
 
 export SFEPS_APP_TLS_ENABLE=0
 export SFEPS_APP_PLAINTEXT_ENABLE=1
@@ -157,16 +157,49 @@ cd ..
 ./run_server.sh --test-ping
 ```
 
+## analytics_logs 1회 DDL 적용 (ObjectId + RFID Fraud 전용)
+
+주의:
+- 이 작업은 기존 `analytics_logs` 데이터를 즉시 삭제합니다.
+- 1회성 작업이므로 SQL 파일 없이 터미널에서 직접 실행해도 됩니다.
+
+```bash
+cd /home/iam/SFEPS/server
+
+# .env.local 사용 시
+set -a
+source .env.local
+set +a
+
+mysql -u"$SFEPS_DB_USER" -p"$SFEPS_DB_PASS" "$SFEPS_DB_NAME_ANALYTICS" \
+  -e "DROP TABLE IF EXISTS analytics_logs; \
+      CREATE TABLE analytics_logs ( \
+        id INT(11) NOT NULL AUTO_INCREMENT, \
+        object_id VARCHAR(128) NOT NULL, \
+        card_age_text VARCHAR(64) NOT NULL DEFAULT '0', \
+        age_group VARCHAR(32) NOT NULL DEFAULT '20s', \
+        is_fraud TINYINT(1) NOT NULL DEFAULT 0, \
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, \
+        PRIMARY KEY (id), \
+        KEY idx_analytics_logs_object_id (object_id), \
+        KEY idx_analytics_logs_created_at (created_at), \
+        KEY idx_analytics_logs_is_fraud (is_fraud) \
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;"
+```
+
+검증:
+
+```bash
+mysql -u"$SFEPS_DB_USER" -p"$SFEPS_DB_PASS" "$SFEPS_DB_NAME_ANALYTICS" \
+  -e "SHOW CREATE TABLE analytics_logs\G"
+```
+
 ## RFID 부팅 자동화 (systemd)
 
-책임 분리:
-- `hardware`: 부팅 시 `rc522` 모듈 로드 + RFID 데몬 서비스 제공
-- `server`: RFID 소켓이 준비된 뒤에만 서버 시작
-
-리소스 정책:
-- `sfeps-rfid-module.service`만 부팅 자동시작(`enable`)합니다.
-- `sfeps-rfid.service`는 **enable하지 않습니다**.
-- `sfeps-server.service`가 시작될 때 의존성으로 `sfeps-rfid.service`가 같이 올라오고, 서버가 내려가면 함께 정지합니다.
+목표 동작:
+- 부팅 시 `sfeps-rfid-module.service`가 `rc522` 모듈을 자동 로드
+- 서버 시작 시 `sfeps-rfid.service`가 소켓(`/tmp/rc522_events.sock`) 생성
+- 서버 종료 시 `sfeps-rfid.service`가 정지되고 소켓 자동 삭제
 
 ### 1회 수동 적용
 
@@ -181,18 +214,17 @@ sudo vi /etc/default/sfeps-rfid
 sudo cp hardware/Raspi-driver/RC522_RFID/systemd/sfeps-rfid-module.service /etc/systemd/system/sfeps-rfid-module.service
 sudo cp hardware/Raspi-driver/RC522_RFID/systemd/sfeps-rfid.service /etc/systemd/system/sfeps-rfid.service
 
-# 3) server 유닛 drop-in 설치 (소켓 준비 보장)
+# 3) server 본 유닛 + drop-in 설치
+sudo cp server/systemd/sfeps-server.service /etc/systemd/system/sfeps-server.service
 sudo mkdir -p /etc/systemd/system/sfeps-server.service.d
 sudo cp server/systemd/sfeps-server.service.d/rfid.conf /etc/systemd/system/sfeps-server.service.d/rfid.conf
 
 # 4) 반영
 sudo systemctl daemon-reload
 
-# 5) 모듈 로더만 부팅 자동시작
+# 5) 자동시작
 sudo systemctl enable --now sfeps-rfid-module.service
-
-# 6) 서버 재시작 (서버가 sfeps-rfid.service를 on-demand로 기동)
-sudo systemctl restart sfeps-server.service
+sudo systemctl enable --now sfeps-server.service
 ```
 
 ### 확인 명령
@@ -214,25 +246,32 @@ journalctl -u sfeps-rfid-module -u sfeps-rfid -u sfeps-server -b
 sudo reboot
 # 재접속 후
 systemctl is-active sfeps-rfid-module
+systemctl is-active sfeps-server
 lsmod | grep rc522
 ls -l /dev/rc522
 ```
 
-2. 서버 시작 순서/소켓 보장
+2. 서버 시작 시 소켓 생성
 ```bash
-sudo systemctl restart sfeps-server
+sudo systemctl start sfeps-server
 systemctl is-active sfeps-rfid
 ls -l /tmp/rc522_events.sock
-journalctl -u sfeps-rfid -u sfeps-server -b | grep -E "Started|Starting|RFID|socket"
 ```
 
-3. 실패 시 fail-closed
+3. 서버 종료 시 소켓 소멸
+```bash
+sudo systemctl stop sfeps-server
+systemctl is-active sfeps-rfid
+ls -l /tmp/rc522_events.sock
+```
+
+4. 실패 시 fail-closed
 ```bash
 sudo sed -i 's#^SFEPS_RFID_KO_PATH=.*#SFEPS_RFID_KO_PATH=/bad/path/rc522.ko#' /etc/default/sfeps-rfid
 sudo systemctl daemon-reload
 sudo systemctl restart sfeps-rfid-module
 systemctl is-failed sfeps-rfid-module
-sudo systemctl restart sfeps-server
+sudo systemctl start sfeps-server
 systemctl is-active sfeps-server
 
 # 테스트 후 원복
@@ -241,7 +280,7 @@ sudo systemctl restart sfeps-rfid-module
 sudo systemctl restart sfeps-server
 ```
 
-4. 정상 태깅 경로
+5. 정상 태깅 경로
 ```bash
 journalctl -u sfeps-server -f
 # 카드 태깅 후 "RFID Tag" 로그 확인
@@ -263,10 +302,13 @@ journalctl -u sfeps-server -f
 - 알림 포트 동시 접속 수 상한 (`SFEPS_ALERT_MAX_CLIENTS`)
 - 포트별 allowlist 기반 접속 제어 (`SFEPS_*_ALLOW_IPS`)
 - 메타데이터 패킷/큐 상한 및 XML 재조립 제한 + 샘플링 드롭 로그 (`SFEPS_META_*`, `SFEPS_ANALYTICS_QUEUE_MAX`)
-- XML 메타데이터 엄격 파싱(tinyxml2) + 필수 필드 검증(`RuleName`, `State`) + 필드 길이 제한
+- XML 메타데이터에서 `Type=Human` 객체 `ObjectId`를 pending으로 등록하고 RFID와 FIFO 매칭
+- RFID `text`가 `성인/adult`가 아니면 부정승차(`fraud=Y`)로 판정
+- `fraud=Y` 건만 `analytics_logs(object_id, card_age_text, age_group, is_fraud, created_at)`에 저장
+- 알림 포맷: `FRAUD|object_id|card_age_text|age_group|is_fraud`
 - 음성 RAW PCM 수신 후 `AudioRingBuffer + AudioPlayback(ALSA)` 경로로 재생
 - 부정승차/테스트 메시지 알림 브로드캐스트
 - DB 단일 스키마 모드: 인증/로그/분석 저장을 `SFEPS_DB_NAME_ANALYTICS`(예: `CCgbd`)로 통합
 - Auth/Startup 정책: fail-closed (`Auth DB`, `logger`, `analytics` 실패 시 중단)
 
-마지막 업데이트: 2026-02-24
+마지막 업데이트: 2026-03-09
