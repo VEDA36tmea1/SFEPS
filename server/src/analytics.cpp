@@ -50,20 +50,70 @@ std::string trim(const std::string& s) {
 
 struct CardAgeDecision {
     const char* canonical_text;
-    bool is_fraud;
+    int bucket;
+    bool known;
 };
+
+enum AgeBucket {
+    kAgeBucketUnknown = -1,
+    kAgeBucketYouth = 0,
+    kAgeBucketAdult = 1,
+    kAgeBucketSenior = 2
+};
+
+std::string to_lower_copy(std::string_view raw) {
+    std::string out(raw);
+    std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return out;
+}
+
+int extract_first_number(std::string_view raw) {
+    std::size_t i = 0;
+    while (i < raw.size() && std::isdigit(static_cast<unsigned char>(raw[i])) == 0) ++i;
+    if (i >= raw.size()) return -1;
+    int value = 0;
+    while (i < raw.size() && std::isdigit(static_cast<unsigned char>(raw[i])) != 0) {
+        value = (value * 10) + (raw[i] - '0');
+        ++i;
+    }
+    return value;
+}
+
+int age_bucket_from_age_group(std::string_view raw) {
+    const std::string lower = to_lower_copy(raw);
+    if (lower.find("youth") != std::string::npos) return kAgeBucketYouth;
+    if (lower.find("adult") != std::string::npos) return kAgeBucketAdult;
+    if (lower.find("senior") != std::string::npos) return kAgeBucketSenior;
+
+    const int age_number = extract_first_number(lower);
+    if (age_number < 0) return kAgeBucketUnknown;
+
+    if (age_number < 20) return kAgeBucketYouth;
+    if (age_number < 60) return kAgeBucketAdult;
+    return kAgeBucketSenior;
+}
 
 CardAgeDecision evaluate_card_age(std::string_view raw) {
     std::size_t begin = 0;
     while (begin < raw.size() && std::isspace(static_cast<unsigned char>(raw[begin])) != 0) ++begin;
     std::size_t end = raw.size();
     while (end > begin && std::isspace(static_cast<unsigned char>(raw[end - 1])) != 0) --end;
-    raw = raw.substr(begin, end - begin);
+    const std::string normalized = to_lower_copy(raw.substr(begin, end - begin));
 
-    if (raw == "Adult") return {"Adult", false};
-    if (raw == "Senior") return {"Senior", true};
-    if (raw == "Youth") return {"Youth", true};
-    return {"0", true};
+    if (normalized == "adult") return {"Adult", kAgeBucketAdult, true};
+    if (normalized == "senior") return {"Senior", kAgeBucketSenior, true};
+    if (normalized == "youth") return {"Youth", kAgeBucketYouth, true};
+    return {"0", kAgeBucketUnknown, false};
+}
+
+bool is_fraud_by_age_mismatch(const CardAgeDecision& card_age, std::string_view age_group) {
+    const int camera_bucket = age_bucket_from_age_group(age_group);
+    if (!card_age.known || camera_bucket == kAgeBucketUnknown) {
+        return true;
+    }
+    return card_age.bucket != camera_bucket;
 }
 
 std::string fraud_flag(bool is_fraud) {
@@ -317,7 +367,7 @@ void AnalyticsProcessor::onRfidRead(const std::string& card_age_text_raw) {
         pending_object_ids.erase(pending.object_id);
 
         pending.card_age_text = card_age.canonical_text;
-        pending.is_fraud = card_age.is_fraud;
+        pending.is_fraud = is_fraud_by_age_mismatch(card_age, pending.age_group);
 
         if (!pending.is_fraud) {
             static std::uint64_t pass_count = 0;

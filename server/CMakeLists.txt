@@ -28,6 +28,8 @@ add_executable(smart_server
     src/cleanup.cpp
     src/auth.cpp
     src/runtime_config.cpp
+    src/net_utils.cpp
+    src/app_services.cpp
     src/rfid_monitor.cpp
     # src/event_matcher.cpp  # disabled: legacy matcher module (not used in runtime path)
     src/alert.cpp

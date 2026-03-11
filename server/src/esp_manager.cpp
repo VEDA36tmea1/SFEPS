@@ -1,4 +1,5 @@
 #include "esp_manager.h"
+#include "net_utils.h"
 
 #include <arpa/inet.h>
 #include <chrono>
@@ -13,35 +14,6 @@
 #include <utility>
 
 namespace {
-
-bool send_all_plain(int fd, const char* data, std::size_t len) {
-    std::size_t sent = 0;
-    while (sent < len) {
-        const ssize_t n = ::send(fd, data + sent, len - sent, MSG_NOSIGNAL);
-        if (n > 0) {
-            sent += static_cast<std::size_t>(n);
-            continue;
-        }
-        if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
-            continue;
-        }
-        return false;
-    }
-    return true;
-}
-
-std::string peer_ip_to_string(const sockaddr_in& peer_addr) {
-    char ip_buf[INET_ADDRSTRLEN] = {0};
-    const char* ip_res =
-        ::inet_ntop(AF_INET, &peer_addr.sin_addr, ip_buf, static_cast<socklen_t>(sizeof(ip_buf)));
-    return (ip_res != nullptr) ? std::string(ip_buf) : std::string("Unknown_IP");
-}
-
-bool is_ip_allowed(const std::unordered_set<std::string>& allow_ips, const std::string& client_ip) {
-    if (allow_ips.empty()) return true;
-    return allow_ips.find(client_ip) != allow_ips.end();
-}
-
 constexpr const char* kStartupReadyMessage = "ESP_READY|SERVER_ONLINE\n";
 
 }  // namespace
@@ -249,7 +221,7 @@ void EspManager::acceptLoop() {
         }
 
         const std::string client_ip = peer_ip_to_string(peer_addr);
-        if (!is_ip_allowed(config_.allow_ips, client_ip)) {
+        if (!config_.allow_ips.empty() && !is_ip_allowed(config_.allow_ips, client_ip)) {
             std::cout << "[esp_manager.cpp] [ESP] reject client by allowlist: ip=" << client_ip
                       << std::endl;
             ::close(client_fd);
