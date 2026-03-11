@@ -342,24 +342,23 @@ Page {
 
                     Connections {
                         target: fraudManager
-                        function onFraudDetected(objectId, cardAgeText, ageGroup, isFraud) {
+                        function onFraudDetected(cardId, ageGroup, gateId, estAge) {
                             alertsModel.insert(0, {
                                 ts: Qt.formatDateTime(new Date(), "HH:mm:ss"),
-                                location: "Object " + objectId,
-                                type: cardAgeText.toUpperCase() + " CARD",
-                                confidence: ageGroup.toUpperCase(),
+                                location: "Gate " + gateId,
+                                type: ageGroup.toUpperCase() + " CARD",
+                                confidence: cardId,
                                 action: "Footage"
                             })
                             sessionEvasions++
                             totalEntries++
-
-                            // Increment age demographics based on age_group text
-                            const grp = ageGroup.toLowerCase()
-                            if (grp.indexOf("10") !== -1) ageCount18++
-                            else if (grp.indexOf("20") !== -1) ageCount25++
-                            else if (grp.indexOf("30") !== -1) ageCount35++
-                            else if (grp.indexOf("40") !== -1) ageCount45++
-                            else if (grp.indexOf("50") !== -1 || grp.indexOf("60") !== -1) ageCount60++
+                            
+                            // Increment age demographics based on estAge
+                            if (estAge < 18) ageCount18++
+                            else if (estAge <= 25) ageCount25++
+                            else if (estAge <= 35) ageCount35++
+                            else if (estAge <= 45) ageCount45++
+                            else if (estAge <= 60) ageCount60++
                             else ageCountPlus++
                         }
                     }

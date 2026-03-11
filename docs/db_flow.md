@@ -1,6 +1,6 @@
 # SFEPS DB Flow (Table-Centric)
 
-Generated on 2026-03-09.
+Generated on 2026-03-05.
 
 ## 1) ER Diagram
 
@@ -22,11 +22,14 @@ erDiagram
 
     ANALYTICS_LOGS {
         int id PK
-        varchar object_id
-        varchar card_age_text
-        varchar age_group
-        tinyint is_fraud
+        varchar frame_time
+        varchar object_type
         timestamp created_at
+        int estimated_age
+        varchar photo_path
+        double x
+        double y
+        varchar event
     }
 
     RECORDINGS {
@@ -90,16 +93,13 @@ flowchart TB
     T[(analytics_logs)]:::table
     F0["recorder.cpp::RTSPRecorder::connect_and_record"]:::func
     F1["analytics.cpp::AnalyticsProcessor::publishRaw"]:::func
-    F2["rfid_monitor.cpp::RfidMonitor::process_rfid_tag"]:::func
-    F3["analytics.cpp::AnalyticsProcessor::onRfidRead"]:::func
-    F4["analytics.cpp::AnalyticsProcessor::workerLoop"]:::func
-    F5["analytics.cpp::AnalyticsProcessor::insertAnalyticsRow"]:::func
-    F6["main.cpp::t_db_cleanup + log.cpp::requestDbCleanup/processQueue"]:::func
+    F2["analytics.cpp::AnalyticsProcessor::workerLoop/processLine"]:::func
+    F3["analytics.cpp::AnalyticsProcessor::insertAnalyticsRow"]:::func
+    F4["main.cpp::t_db_cleanup + log.cpp::requestDbCleanup/processQueue"]:::func
 
-    F0 --> F1
-    F2 --> F3 --> F4 --> F5
-    F5 -- "INSERT (fraud=Y only)" --> T
-    F6 -- "DELETE old rows" --> T
+    F0 --> F1 --> F2 --> F3
+    F3 -- "INSERT" --> T
+    F4 -- "DELETE old rows" --> T
 ```
 
 ### 2-4) RECORDINGS

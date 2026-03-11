@@ -9,7 +9,6 @@
 #include <QTextStream>
 #include <QDateTime>
 #include <QProcessEnvironment>
-#include <QString>
 #include "authmanager.h"
 #include "mainwindow.h"
 #include "voicemanager.h"
@@ -60,31 +59,9 @@ int main(int argc, char *argv[]) {
 
   // 알림 서버 호스트: 환경변수 FRAUD_SERVER_HOST가 설정되어 있으면 그 값을 사용하고,
   // 설정되어 있지 않으면 기존 하드코드된 주소를 기본값으로 사용합니다.
-  const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-  auto parseEnvBool = [](const QProcessEnvironment &e, const QString &key, bool defaultValue) {
-      const QString raw = e.value(key).trimmed().toLower();
-      if (raw.isEmpty()) return defaultValue;
-      if (raw == "1" || raw == "true" || raw == "yes" || raw == "on") return true;
-      if (raw == "0" || raw == "false" || raw == "no" || raw == "off") return false;
-      return defaultValue;
-  };
-  auto parseEnvPort = [](const QProcessEnvironment &e, const QString &key, int defaultValue) {
-      const QString raw = e.value(key).trimmed();
-      if (raw.isEmpty()) return defaultValue;
-      bool ok = false;
-      const int parsed = raw.toInt(&ok);
-      if (!ok || parsed < 1 || parsed > 65535) return defaultValue;
-      return parsed;
-  };
-
-  const QString alertHost = env.value("FRAUD_SERVER_HOST", "192.168.0.97");
-  const bool clientTlsEnabled = parseEnvBool(env, "SFEPS_CLIENT_TLS_ENABLE", false);
-  const bool alertTlsEnabled = parseEnvBool(env, "SFEPS_ALERT_TLS_ENABLE", clientTlsEnabled);
-  const int alertPort = alertTlsEnabled
-                            ? parseEnvPort(env, "SFEPS_ALERT_TLS_PORT", 6557)
-                            : parseEnvPort(env, "FRAUD_SERVER_PORT", 5557);
-  qDebug() << "[Main] Fraud alert server:" << alertHost << ":" << alertPort
-           << (alertTlsEnabled ? "(TLS)" : "(Plain)");
+  QString alertHost = QProcessEnvironment::systemEnvironment().value("FRAUD_SERVER_HOST", "192.168.0.97");
+  const int alertPort = 5557;
+  qDebug() << "[Main] Fraud alert server:" << alertHost << ":" << alertPort;
   fraudManager.connectToServer(alertHost, alertPort);
 
   // QML 파일 URL 정의

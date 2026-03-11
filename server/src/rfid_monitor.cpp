@@ -1,6 +1,4 @@
 #include "rfid_monitor.h"
-
-#include <cctype>
 #include <chrono>
 #include <cstring>
 #include <ctime>
@@ -12,52 +10,10 @@
 #include <thread>
 #include <unistd.h>
 
-#include "analytics.h"
+#include "event_matcher.h"
 
-namespace {
-
-std::string trim_copy(const std::string& input) {
-    std::size_t begin = 0;
-    while (begin < input.size() &&
-           std::isspace(static_cast<unsigned char>(input[begin]))) {
-        ++begin;
-    }
-
-    std::size_t end = input.size();
-    while (end > begin &&
-           std::isspace(static_cast<unsigned char>(input[end - 1]))) {
-        --end;
-    }
-
-    return input.substr(begin, end - begin);
-}
-
-std::string sanitize_for_log(const std::string& input) {
-    std::string out;
-    out.reserve(input.size());
-    for (char ch : input) {
-        switch (ch) {
-            case '\n':
-                out += "\\n";
-                break;
-            case '\r':
-                out += "\\r";
-                break;
-            case '\t':
-                out += "\\t";
-                break;
-            default:
-                out += ch;
-                break;
-        }
-    }
-    return out;
-}
-
-}  // namespace
-
-RfidMonitor::RfidMonitor(std::atomic<bool>& running_flag, AnalyticsProcessor& analytics)
-    : m_running(running_flag), m_analytics(analytics), m_socket_path("/tmp/rc522_events.sock") {}
+RfidMonitor::RfidMonitor(std::atomic<bool>& running_flag)
+    : m_running(running_flag), m_socket_path("/tmp/rc522_events.sock") {}
 
 RfidMonitor::~RfidMonitor() {}
 
@@ -77,75 +33,24 @@ std::string RfidMonitor::get_current_datetime() {
 
 // 간단한 JSON 파서 (라이브러리 의존성 제거)
 std::string RfidMonitor::extract_json_value(const std::string& json, const std::string& key) {
-    const std::string key_token = "\"" + key + "\"";
-    const std::size_t key_pos = json.find(key_token);
-    if (key_pos == std::string::npos) return "";
+    std::string search = "\"" + key + "\":";
+    size_t start = json.find(search);
+    if (start == std::string::npos) return "";
 
-    std::size_t cursor = json.find(':', key_pos + key_token.size());
-    if (cursor == std::string::npos) return "";
-    ++cursor;
-
-    while (cursor < json.size() &&
-           std::isspace(static_cast<unsigned char>(json[cursor]))) {
-        ++cursor;
+    start += search.length();
+    if (json[start] == '"') { // 문자열 값인 경우
+        start++;
+        size_t end = json.find("\"", start);
+        return (end == std::string::npos) ? "" : json.substr(start, end - start);
+    } else { // 숫자 등인 경우
+        size_t end = json.find_first_of(",}", start);
+        return (end == std::string::npos) ? json.substr(start) : json.substr(start, end - start);
     }
-    if (cursor >= json.size()) return "";
-
-    if (json[cursor] == '"') {
-        ++cursor;
-        std::string parsed;
-        parsed.reserve(32);
-        bool escaped = false;
-        for (; cursor < json.size(); ++cursor) {
-            const char c = json[cursor];
-            if (escaped) {
-                switch (c) {
-                    case 'n':
-                        parsed.push_back('\n');
-                        break;
-                    case 'r':
-                        parsed.push_back('\r');
-                        break;
-                    case 't':
-                        parsed.push_back('\t');
-                        break;
-                    case '\\':
-                    case '"':
-                    case '/':
-                        parsed.push_back(c);
-                        break;
-                    default:
-                        parsed.push_back(c);
-                        break;
-                }
-                escaped = false;
-                continue;
-            }
-            if (c == '\\') {
-                escaped = true;
-                continue;
-            }
-            if (c == '"') {
-                return parsed;
-            }
-            parsed.push_back(c);
-        }
-        return "";
-    }
-
-    const std::size_t end = json.find_first_of(",}", cursor);
-    if (end == std::string::npos) {
-        return trim_copy(json.substr(cursor));
-    }
-    return trim_copy(json.substr(cursor, end - cursor));
 }
 
-void RfidMonitor::process_rfid_tag(const std::string& uid,
-                                   const std::string& card_age_text,
-                                   const std::string& time_str) {
-    std::cout << "[rfid_monitor.cpp] " << "[RFID] uid=" << uid
-              << ", card_age_text=" << card_age_text << ", time=" << time_str << std::endl;
-    m_analytics.onRfidRead(card_age_text);
+void RfidMonitor::save_to_db(const std::string& uid, const std::string& age_group, const std::string& time_str) {
+    std::cout << "[rfid_monitor.cpp] " << "[DB Save Request] UID: " << uid << ", Group: " << age_group << ", Time: " << time_str << std::endl;
+    EventMatcher::instance().on_rfid_read(uid, age_group, uid);
 }
 
 // 메인 루프 (poll 기반)
@@ -168,11 +73,10 @@ void RfidMonitor::run_loop() {
             // perror("rc522 socket connect");
             close(sock_fd);
             std::this_thread::sleep_for(std::chrono::seconds(1));
-            continue;
+            continue; 
         }
 
-        std::cout << "[rfid_monitor.cpp] " << ">> [RFID] 데몬 연결 성공! 데이터 수신 대기 중..."
-                  << std::endl;
+        std::cout << "[rfid_monitor.cpp] " << ">> [RFID] 데몬 연결 성공! 데이터 수신 대기 중..." << std::endl;
 
         char buffer[4096];
         std::string line_buffer;
@@ -187,12 +91,10 @@ void RfidMonitor::run_loop() {
                 if (errno == EINTR) continue;  // 신호 재시도
                 perror("rc522 poll");
                 break;  // 안쪽 루프 탈출
-            }
-            if (poll_result == 0) {
+            } else if (poll_result == 0) {
                 // 타임아웃 - 데이터 없음, 루프 계속
                 continue;
-            }
-            if (pfd.revents & POLLIN) {
+            } else if (pfd.revents & POLLIN) {
                 // 읽을 데이터 있음
                 ssize_t n = read(sock_fd, buffer, sizeof(buffer) - 1);
 
@@ -209,39 +111,13 @@ void RfidMonitor::run_loop() {
 
                         try {
                             std::string uid = extract_json_value(json_line, "id");
-                            std::string card_age_text = extract_json_value(json_line, "text");
-                            std::string device_id = extract_json_value(json_line, "device_id");
-                            std::string tag_timestamp = extract_json_value(json_line, "timestamp");
+                            std::string age_group = extract_json_value(json_line, "text");
                             std::string now = get_current_datetime();
-                            auto display = [](const std::string& value) {
-                                return value.empty() ? std::string("<empty>")
-                                                     : sanitize_for_log(value);
-                            };
 
-                            std::cout << "[rfid_monitor.cpp] " << "[RFID RAW] "
-                                      << sanitize_for_log(json_line) << std::endl;
-                            std::cout << "[rfid_monitor.cpp] "
-                                      << "[RFID Parsed] uid=" << display(uid)
-                                      << ", text=" << display(card_age_text)
-                                      << ", device_id=" << display(device_id)
-                                      << ", timestamp=" << display(tag_timestamp) << std::endl;
-
-                            std::cout << "[rfid_monitor.cpp] " << ">>> [RFID Tag] UID: " << uid
-                                      << " (" << card_age_text << ") Time: " << now << std::endl;
-
-                            if (uid.empty() || card_age_text.empty()) {
-                                std::cerr << "[rfid_monitor.cpp] "
-                                          << "[RFID Warn] missing required field(s): uid_empty="
-                                          << (uid.empty() ? "true" : "false")
-                                          << ", text_empty="
-                                          << (card_age_text.empty() ? "true" : "false")
-                                          << std::endl;
-                            }
-                            process_rfid_tag(uid, card_age_text, now);
+                            std::cout << "[rfid_monitor.cpp] " << ">>> [RFID Tag] UID: " << uid << " (" << age_group << ") Time: " << now << std::endl;
+                            save_to_db(uid, age_group, now);
                         } catch (...) {
-                            std::cerr << "[rfid_monitor.cpp] "
-                                      << "[RFID] Parse Error. raw="
-                                      << sanitize_for_log(json_line) << std::endl;
+                            std::cerr << "[RFID] Parse Error" << std::endl;
                         }
                     }
                 } else if (n == 0) {
@@ -256,17 +132,16 @@ void RfidMonitor::run_loop() {
                 }
             } else if (pfd.revents & (POLLERR | POLLHUP)) {
                 // 소켓 에러 또는 hang up
-                std::cerr << ">> [RFID] 소켓 에러 (revents=" << pfd.revents << "). 재접속 시도..."
-                          << std::endl;
+                std::cerr << ">> [RFID] 소켓 에러 (revents=" << pfd.revents << "). 재접속 시도..." << std::endl;
                 break;  // 안쪽 루프 탈출
             }
-        }  // 안쪽 while 끝
+        } // 안쪽 while 끝
 
         close(sock_fd);
-
+        
         // 너무 빠른 재접속 방지 (CPU 보호)
         if (m_running) std::this_thread::sleep_for(std::chrono::seconds(1));
-    }  // 바깥 while 끝
+    } // 바깥 while 끝
 
     std::cout << "[rfid_monitor.cpp] " << ">> [RFID] 모니터링 스레드 종료." << std::endl;
 }

@@ -19,11 +19,10 @@ Environment="SFEPS_RFID_DEV_WAIT_SEC=10"
 Environment="SFEPS_RFID_SOCKET_WAIT_SEC=10"
 
 # Fail-closed if RFID device isn't ready
-ExecStartPre=/bin/sh -c 'set -eu; wait_raw="${SFEPS_RFID_DEV_WAIT_SEC:-10}"; wait_sec="$(echo "${wait_raw}" | tr -cd "0-9")"; [ -n "${wait_sec}" ] || wait_sec=10; while [ ! -e "${SFEPS_RFID_DEV_PATH}" ] && [ "${wait_sec}" -gt 0 ]; do sleep 1; wait_sec=$((wait_sec-1)); done; [ -e "${SFEPS_RFID_DEV_PATH}" ] || { echo "RFID device not ready: ${SFEPS_RFID_DEV_PATH}" >&2; exit 1; }'
+ExecStartPre=/bin/sh -c 'set -eu; timeout="${SFEPS_RFID_DEV_WAIT_SEC}"; while [ ! -e "${SFEPS_RFID_DEV_PATH}" ] && [ "${timeout}" -gt 0 ]; do sleep 1; timeout=$((timeout-1)); done; [ -e "${SFEPS_RFID_DEV_PATH}" ] || { echo "RFID device not ready: ${SFEPS_RFID_DEV_PATH}" >&2; exit 1; }'
 ExecStartPre=/bin/sh -c 'set -eu; rm -f "${SFEPS_RFID_SOCKET_PATH}"'
 ExecStart=/bin/sh -c 'set -eu; exec "${SFEPS_RFID_DAEMON_PATH}" --no-daemon --socket "${SFEPS_RFID_SOCKET_PATH}" --socket-mode "${SFEPS_RFID_SOCKET_MODE}" --socket-group "${SFEPS_RFID_SOCKET_GROUP}"'
-ExecStartPost=/bin/sh -c 'set -eu; wait_raw="${SFEPS_RFID_SOCKET_WAIT_SEC:-10}"; wait_sec="$(echo "${wait_raw}" | tr -cd "0-9")"; [ -n "${wait_sec}" ] || wait_sec=10; while [ ! -S "${SFEPS_RFID_SOCKET_PATH}" ] && [ "${wait_sec}" -gt 0 ]; do sleep 1; wait_sec=$((wait_sec-1)); done; [ -S "${SFEPS_RFID_SOCKET_PATH}" ] || { echo "RFID socket not ready: ${SFEPS_RFID_SOCKET_PATH}" >&2; exit 1; }'
-ExecStopPost=/bin/sh -c 'rm -f "${SFEPS_RFID_SOCKET_PATH}"'
+ExecStartPost=/bin/sh -c 'set -eu; timeout="${SFEPS_RFID_SOCKET_WAIT_SEC}"; while [ ! -S "${SFEPS_RFID_SOCKET_PATH}" ] && [ "${timeout}" -gt 0 ]; do sleep 1; timeout=$((timeout-1)); done; [ -S "${SFEPS_RFID_SOCKET_PATH}" ] || { echo "RFID socket not ready: ${SFEPS_RFID_SOCKET_PATH}" >&2; exit 1; }'
 
 Restart=on-failure
 RestartSec=1s

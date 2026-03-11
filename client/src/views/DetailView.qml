@@ -8,10 +8,10 @@ Item {
     signal closeClicked
     signal confirmClicked
 
-    property string objectId: "3679"
-    property string cardAgeText: "Adult"
+    property string cardId: "**** 4921"
     property string ageGroup: "Senior"
-    property bool isFraud: true
+    property string gateId: "3"
+    property int estAge: 72
 
     RowLayout {
         anchors.fill: parent
@@ -79,7 +79,7 @@ Item {
                             anchors.left: parent.left; anchors.top: parent.top
                             width: 30; height: 30; color: AppTheme.accent
                             Text {
-                                text: isFraud ? "Y" : "N"
+                                text: estAge
                                 anchors.centerIn: parent
                                 color: "white"
                                 font.bold: true; font.pixelSize: 10
@@ -147,10 +147,10 @@ Item {
 
                     Repeater {
                         model: [
-                            { label: "Object ID", value: objectId },
-                            { label: "Card Age Text", value: cardAgeText },
+                            { label: "Location", value: (gateId.indexOf("Gate") !== -1 || gateId.indexOf("gate") !== -1) ? gateId : "Gate " + gateId },
+                            { label: "Card ID", value: cardId },
                             { label: "Age Group", value: ageGroup.toUpperCase() },
-                            { label: "Fraud", value: isFraud ? "Y" : "N" }
+                            { label: "Est. Age", value: estAge + "Y" }
                         ]
                         delegate: RowLayout {
                             Layout.fillWidth: true
