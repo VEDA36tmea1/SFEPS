@@ -8,6 +8,9 @@
 #include <ctime>
 #include <cstdint>
 
+// Legacy module disabled on 2026-03-11.
+// Current fraud detection path uses AnalyticsProcessor, not EventMatcher.
+#if 0
 class EventMatcher {
 public:
     static EventMatcher& instance();
@@ -42,5 +45,6 @@ private:
     std::unordered_map<std::string, std::deque<Pending>> pending; // keyed by gate
     std::uint64_t seq_counter = 0;
 };
+#endif
 
 #endif
