@@ -17,7 +17,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-FUNC-LOGIN-01 유효한 ID/PW 입력 시 로그인 성공
 - **Level/Type/Priority**: System / Functional / High
-- **Execution**: Manual
+- **Execution**: Auto
 - **Pre-condition**
   - QT Client 실행 가능
   - Server 접속 가능
@@ -35,7 +35,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-FUNC-LOGIN-02 존재하지 않는 ID 입력 시 로그인 실패 및 오류 메시지 표시
 - **Level/Type/Priority**: System / Functional / Medium
-- **Execution**: Manual
+- **Execution**: Auto
 - **Pre-condition**: Server 접속 가능
 - **Input Data**: ID=`no_user_999`, PW=`1111`
 - **Steps**: 존재하지 않는 ID로 로그인 시도
@@ -45,7 +45,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-FUNC-LOGIN-03 잘못된 PW 입력 시 로그인 실패 및 오류 메시지 표시
 - **Level/Type/Priority**: System / Functional / Medium
-- **Execution**: Manual
+- **Execution**: Auto
 - **Pre-condition**: `admin` 계정 존재
 - **Input Data**: ID=`admin`, PW=`WrongPW!`
 - **Steps**: 잘못된 비밀번호로 로그인 시도
@@ -55,7 +55,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-FUNC-LOGIN-04 ID 또는 PW 공백(미입력 포함) 시 로그인 실패 및 안내
 - **Level/Type/Priority**: System / Functional / Medium
-- **Execution**: Manual
+- **Execution**: Auto
 - **Pre-condition**: 로그인 화면
 - **Input Data(서브케이스)**
   - 4-1: ID=``, PW=`1111`
@@ -66,7 +66,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 - **Expected Result**
   - 로그인 실패
   - 필수 입력 안내 메시지 표시
-  - (가능하면) 서버 요청 미발생 또는 즉시 실패 처리
+  - 서버 요청 미발생 또는 즉시 실패 처리
 
 ---
 
@@ -74,7 +74,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-FUNC-STREAM-01 Server를 통해 Camera 영상 스트림 수신 및 화면 표시
 - **Level/Type/Priority**: Integration / Functional / High
-- **Execution**: Manual
+- **Execution**: Auto / Manual
 - **Pre-condition**
   - Camera(PNO-A9081R) 전원 ON 및 네트워크 연결
   - Server에서 Camera 스트림 수신 설정 완료
@@ -82,7 +82,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 - **Input Data**: 없음
 - **Steps**
   1. QT Client에서 스트리밍 표시 영역 확인
-  2. (필요 시) “Streaming Start/Connect” 기능 수행
+  2. “Streaming Start/Connect” 기능 수행
   3. 10초 이상 프레임 갱신 확인
 - **Expected Result**
   - 영상이 끊김 없이 표시
@@ -91,7 +91,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 ### TC-FUNC-STREAM-02 네트워크 단절/지연 등으로 스트리밍 불가 시 오류 상태 표시
 - **Level/Type/Priority**: Integration / Functional / Medium
 - **Execution**: Manual
-- **Pre-condition**: 스트리밍이 정상 표시 중(TC-FUNC-STREAM-01 통과 상태)
+- **Pre-condition**: 스트리밍이 정상 표시 중
 - **Input Data**: 네트워크 단절(스위치/케이블/방화벽 룰) 또는 지연/차단 시뮬레이션
 - **Steps**
   1. Camera↔Server 또는 Server↔Client 구간 네트워크 단절 유도
@@ -102,12 +102,12 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-FUNC-STREAM-03 네트워크 복구 후 스트리밍 자동 재연결/복구 확인
 - **Level/Type/Priority**: Integration / Functional / Medium
-- **Execution**: Manual
-- **Pre-condition**: TC-FUNC-STREAM-02로 스트리밍 장애 상태
+- **Execution**: Auto / Manual
+- **Pre-condition**: 스트리밍 장애 상태
 - **Input Data**: 네트워크 복구
 - **Steps**
   1. 네트워크를 정상 상태로 복구
-  2. 자동 재연결 발생 여부 확인(관찰 시간 예: 30~60초)
+  2. 자동 재연결 발생 여부 확인(10초 이내)
 - **Expected Result**
   - 자동 재연결 성공
   - 영상 표시가 정상으로 복구
