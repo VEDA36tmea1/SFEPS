@@ -3,6 +3,35 @@
 #include <iostream>
 #include <time.h>
 
+namespace {
+std::size_t find_in_range(const std::string& raw,
+                          const char* needle,
+                          std::size_t start_pos,
+                          std::size_t end_pos) {
+    const std::size_t pos = raw.find(needle, start_pos);
+    if (pos == std::string::npos || pos >= end_pos) return std::string::npos;
+    return pos;
+}
+
+bool parse_float_attr(const std::string& raw,
+                      std::size_t attr_pos,
+                      std::size_t value_offset,
+                      float& out_value) {
+    if (attr_pos == std::string::npos) return false;
+
+    const std::size_t value_start = attr_pos + value_offset;
+    const std::size_t value_end = raw.find("\"", value_start);
+    if (value_end == std::string::npos) return false;
+
+    try {
+        out_value = std::stof(raw.substr(value_start, value_end - value_start));
+    } catch (...) {
+        return false;
+    }
+    return true;
+}
+}
+
 std::string XMLParser::get_current_time_str() {
     time_t now = time(0);
     struct tm tstruct;
@@ -50,6 +79,7 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
             }
 
             float x = -1, y = -1, w = -1, h = -1;
+            float left = -1, right = -1, top = -1, bottom = -1;
             size_t x_pos = accumulated_xml.find("x=\"", obj_start);
             size_t y_pos = accumulated_xml.find("y=\"", obj_start);
             
@@ -74,10 +104,10 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
                 size_t end_top    = accumulated_xml.find("\"", top_pos + 5);
                 size_t end_bottom = accumulated_xml.find("\"", bottom_pos + 8);
                 
-                float left   = std::stof(accumulated_xml.substr(left_pos + 6, end_left - (left_pos + 6)));
-                float right  = std::stof(accumulated_xml.substr(right_pos + 7, end_right - (right_pos + 7)));
-                float top    = std::stof(accumulated_xml.substr(top_pos + 5, end_top - (top_pos + 5)));
-                float bottom = std::stof(accumulated_xml.substr(bottom_pos + 8, end_bottom - (bottom_pos + 8)));
+                left   = std::stof(accumulated_xml.substr(left_pos + 6, end_left - (left_pos + 6)));
+                right  = std::stof(accumulated_xml.substr(right_pos + 7, end_right - (right_pos + 7)));
+                top    = std::stof(accumulated_xml.substr(top_pos + 5, end_top - (top_pos + 5)));
+                bottom = std::stof(accumulated_xml.substr(bottom_pos + 8, end_bottom - (bottom_pos + 8)));
                 
                 w = right - left;
                 h = bottom - top;
@@ -146,7 +176,12 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
                 if (k_enable_object_log && (is_new_id || (last_timestamp - log_timer_map[real_id] > LOG_THROTTLE))) {
                     std::string prefix = is_new_id ? "✨ [NEW]" : "🎯 [OBJ]";
                     std::cout << prefix << " ID: " << real_id 
+                              << " | Type: " << obj_type
                               << " | Pos: (" << x << ", " << y << ")" 
+                              << " | BBox: (left=" << left
+                              << ", right=" << right
+                              << ", top=" << top
+                              << ", bottom=" << bottom << ")"
                               << " | Size: (" << w << "x" << h << ")" 
                               << " | TagTime: " << tag_time << std::endl;
                     log_timer_map[real_id] = last_timestamp;
@@ -233,4 +268,60 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
     } catch (...) {}
     
     return results; 
+}
+
+std::vector<ParsedMetadataObject> XMLParser::parseHumanObjectsForAnalytics(const std::string& xml) const {
+    std::vector<ParsedMetadataObject> results;
+    results.reserve(8);
+    std::size_t search_pos = 0;
+
+    while (true) {
+        const std::size_t obj_start = xml.find("<tt:Object", search_pos);
+        if (obj_start == std::string::npos) break;
+
+        const std::size_t next_obj = xml.find("<tt:Object", obj_start + 1);
+        const std::size_t obj_end = (next_obj == std::string::npos) ? xml.size() : next_obj;
+        ParsedMetadataObject object = {"", "", -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f};
+
+        const std::size_t id_pos = find_in_range(xml, "ObjectId=\"", obj_start, obj_end);
+        if (id_pos != std::string::npos) {
+            const std::size_t start = id_pos + 10;
+            const std::size_t end = xml.find("\"", start);
+            if (end != std::string::npos && end < obj_end) {
+                object.id = xml.substr(start, end - start);
+            }
+        }
+
+        const std::size_t type_pos = find_in_range(xml, "<tt:Type>", obj_start, obj_end);
+        if (type_pos != std::string::npos) {
+            const std::size_t start = type_pos + 9;
+            const std::size_t end = xml.find("</tt:Type>", start);
+            if (end != std::string::npos && end < obj_end) {
+                object.type = xml.substr(start, end - start);
+            }
+        }
+
+        const std::size_t x_pos = find_in_range(xml, "x=\"", obj_start, obj_end);
+        const std::size_t y_pos = find_in_range(xml, "y=\"", obj_start, obj_end);
+        const std::size_t left_pos = find_in_range(xml, "left=\"", obj_start, obj_end);
+        const std::size_t right_pos = find_in_range(xml, "right=\"", obj_start, obj_end);
+        const std::size_t top_pos = find_in_range(xml, "top=\"", obj_start, obj_end);
+        const std::size_t bottom_pos = find_in_range(xml, "bottom=\"", obj_start, obj_end);
+
+        const bool has_x = parse_float_attr(xml, x_pos, 3, object.x);
+        const bool has_y = parse_float_attr(xml, y_pos, 3, object.y);
+        const bool has_left = parse_float_attr(xml, left_pos, 6, object.left);
+        const bool has_right = parse_float_attr(xml, right_pos, 7, object.right);
+        const bool has_top = parse_float_attr(xml, top_pos, 5, object.top);
+        const bool has_bottom = parse_float_attr(xml, bottom_pos, 8, object.bottom);
+
+        if (!object.id.empty() && object.type == "Human" && has_x && has_y &&
+            has_left && has_right && has_top && has_bottom) {
+            results.push_back(object);
+        }
+
+        search_pos = obj_end;
+    }
+
+    return results;
 }

@@ -11,6 +11,17 @@ struct DetectedObject {
     float y;
 };
 
+struct ParsedMetadataObject {
+    std::string id;
+    std::string type;
+    float x;
+    float y;
+    float left;
+    float top;
+    float right;
+    float bottom;
+};
+
 struct Trajectory {
     std::string original_id;
     float last_x;
@@ -35,4 +46,5 @@ private:
 
 public:
     std::vector<DetectedObject> parseAndProcess(std::string& accumulated_xml, unsigned int last_timestamp);
+    std::vector<ParsedMetadataObject> parseHumanObjectsForAnalytics(const std::string& xml) const;
 };

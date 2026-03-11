@@ -10,8 +10,7 @@
 #include <string_view>
 #include <vector>
 
-#include <tinyxml2.h>
-
+#include "XMLParser.h"
 #include "alert.h"
 
 namespace {
@@ -50,127 +49,10 @@ std::string trim(const std::string& s) {
     return s.substr(a, b - a);
 }
 
-std::string to_lower_copy(std::string s) {
-    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-    return s;
-}
-
-bool has_local_name(const char* xml_name, const char* local_name) {
-    if (xml_name == nullptr || local_name == nullptr) return false;
-    const char* colon = std::strchr(xml_name, ':');
-    const char* normalized = (colon != nullptr) ? colon + 1 : xml_name;
-    return std::strcmp(normalized, local_name) == 0;
-}
-
-bool is_human_type_text(const char* text) {
-    if (text == nullptr) return false;
-    return to_lower_copy(trim(text)) == "human";
-}
-
-bool subtree_has_human_type(tinyxml2::XMLNode* node) {
-    for (tinyxml2::XMLNode* cur = node; cur != nullptr; cur = cur->NextSibling()) {
-        tinyxml2::XMLElement* element = cur->ToElement();
-        if (element != nullptr && has_local_name(element->Name(), "Type")) {
-            if (is_human_type_text(element->GetText())) {
-                return true;
-            }
-        }
-        if (subtree_has_human_type(cur->FirstChild())) {
-            return true;
-        }
-    }
-    return false;
-}
-
 struct CardAgeDecision {
     const char* canonical_text;
     bool is_fraud;
 };
-
-struct NormalizedBBox {
-    float left = -1.0f;
-    float top = -1.0f;
-    float right = -1.0f;
-    float bottom = -1.0f;
-
-    bool valid() const {
-        return left >= 0.0f && top >= 0.0f && right >= left && bottom >= top;
-    }
-};
-
-struct HumanObjectInfo {
-    std::string object_id;
-    NormalizedBBox bbox;
-};
-
-float to_pixel_axis(float raw, int full_scale);
-
-bool read_bbox_from_element(tinyxml2::XMLElement* element, int cam_w, int cam_h, NormalizedBBox& bbox) {
-    if (element == nullptr) return false;
-
-    const char* left_attr = element->Attribute("left");
-    const char* top_attr = element->Attribute("top");
-    const char* right_attr = element->Attribute("right");
-    const char* bottom_attr = element->Attribute("bottom");
-    if (left_attr == nullptr || top_attr == nullptr || right_attr == nullptr || bottom_attr == nullptr) {
-        return false;
-    }
-
-    bbox.left = to_pixel_axis(element->FloatAttribute("left"), cam_w);
-    bbox.top = to_pixel_axis(element->FloatAttribute("top"), cam_h);
-    bbox.right = to_pixel_axis(element->FloatAttribute("right"), cam_w);
-    bbox.bottom = to_pixel_axis(element->FloatAttribute("bottom"), cam_h);
-    return bbox.valid();
-}
-
-float to_pixel_axis(float raw, int full_scale) {
-    if (raw < 0.0f) return raw;
-    if (raw <= 1.0f && full_scale > 0) {
-        return raw * static_cast<float>(full_scale);
-    }
-    return raw;
-}
-
-bool find_explicit_bbox(tinyxml2::XMLNode* node, int cam_w, int cam_h, NormalizedBBox& bbox) {
-    for (tinyxml2::XMLNode* cur = node; cur != nullptr; cur = cur->NextSibling()) {
-        tinyxml2::XMLElement* element = cur->ToElement();
-        if (read_bbox_from_element(element, cam_w, cam_h, bbox)) {
-            return true;
-        }
-        if (find_explicit_bbox(cur->FirstChild(), cam_w, cam_h, bbox)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-NormalizedBBox extract_object_bbox(tinyxml2::XMLElement* object_element, int cam_w, int cam_h) {
-    NormalizedBBox bbox;
-    if (object_element != nullptr && find_explicit_bbox(object_element->FirstChild(), cam_w, cam_h, bbox)) {
-        return bbox;
-    }
-    return bbox;
-}
-
-void collect_human_object_infos(tinyxml2::XMLNode* node, int cam_w, int cam_h,
-                                std::vector<HumanObjectInfo>& out) {
-    for (tinyxml2::XMLNode* cur = node; cur != nullptr; cur = cur->NextSibling()) {
-        tinyxml2::XMLElement* element = cur->ToElement();
-        if (element != nullptr && has_local_name(element->Name(), "Object")) {
-            const char* object_id = element->Attribute("ObjectId");
-            if (object_id != nullptr && object_id[0] != '\0' &&
-                subtree_has_human_type(element->FirstChild())) {
-                HumanObjectInfo info;
-                info.object_id = object_id;
-                info.bbox = extract_object_bbox(element, cam_w, cam_h);
-                out.push_back(std::move(info));
-            }
-        }
-        collect_human_object_infos(cur->FirstChild(), cam_w, cam_h, out);
-    }
-}
 
 CardAgeDecision evaluate_card_age(std::string_view raw) {
     std::size_t begin = 0;
@@ -338,27 +220,16 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
 
     constexpr std::size_t kMaxObjectIdBytes = 128;
 
-    tinyxml2::XMLDocument doc;
-    const tinyxml2::XMLError parse_result = doc.Parse(raw.data(), raw.size());
-    if (parse_result != tinyxml2::XML_SUCCESS) {
-        const std::uint64_t dropped = ++dropped_invalid_xml_count;
-        if (should_sample(dropped, drop_log_interval)) {
-            std::cout << "[analytics.cpp] [Drop] invalid XML metadata payload: dropped_count="
-                      << dropped << ", parse_error=" << parse_result << std::endl;
-        }
-        return;
-    }
-
-    std::vector<HumanObjectInfo> human_objects;
-    collect_human_object_infos(doc.FirstChild(), cam_w, cam_h, human_objects);
+    const std::vector<ParsedMetadataObject> parsed_objects =
+        xml_parser.parseHumanObjectsForAnalytics(raw);
 
     const std::uint64_t parsed_ok = ++parsed_xml_ok_count;
     if (should_sample(parsed_ok, std::max<std::size_t>(1000, drop_log_interval))) {
         std::cout << "[analytics.cpp] [MetaXML] parsed_ok=" << parsed_ok
-                  << ", human_object_candidates=" << human_objects.size() << std::endl;
+                  << ", human_object_candidates=" << parsed_objects.size() << std::endl;
     }
 
-    if (human_objects.empty()) return;
+    if (parsed_objects.empty()) return;
 
     std::size_t accepted_count = 0;
     bool line_limit_hit = false;
@@ -368,13 +239,13 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
         std::lock_guard<std::mutex> lock(mtx);
         pruneExpiredPendingLocked(now);
 
-        for (const auto& human_object : human_objects) {
+        for (const auto& human_object : parsed_objects) {
             if (accepted_count >= max_lines_per_batch) {
                 line_limit_hit = true;
                 break;
             }
 
-            std::string object_id = trim(human_object.object_id);
+            std::string object_id = trim(human_object.id);
             if (object_id.empty()) continue;
             if (object_id.size() > kMaxObjectIdBytes) {
                 object_id.resize(kMaxObjectIdBytes);
@@ -401,10 +272,10 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
             pending.card_age_text = "0";
             pending.age_group = "20th";
             pending.is_fraud = false;
-            pending.bbox_left = human_object.bbox.left;
-            pending.bbox_top = human_object.bbox.top;
-            pending.bbox_right = human_object.bbox.right;
-            pending.bbox_bottom = human_object.bbox.bottom;
+            pending.bbox_left = human_object.left;
+            pending.bbox_top = human_object.top;
+            pending.bbox_right = human_object.right;
+            pending.bbox_bottom = human_object.bottom;
             pending.created_at = now;
 
             pending_queue.push_back(std::move(pending));

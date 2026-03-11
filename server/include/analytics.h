@@ -16,6 +16,8 @@
 
 #include <mysql/mysql.h>
 
+#include "XMLParser.h"
+
 class AnalyticsProcessor {
 public:
     struct FraudBBoxPayload {
@@ -106,6 +108,7 @@ private:
     std::atomic<std::uint64_t> dropped_pending_overflow_count;
     std::atomic<std::uint64_t> parsed_xml_ok_count;
     FraudBBoxCallback fraud_bbox_callback;
+    XMLParser xml_parser;
 };
 
 #endif
