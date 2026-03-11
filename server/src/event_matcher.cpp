@@ -4,6 +4,9 @@
 #include <cctype>
 #include <iostream>
 
+// Legacy module disabled on 2026-03-11.
+// Current fraud detection path uses AnalyticsProcessor, not EventMatcher.
+#if 0
 EventMatcher& EventMatcher::instance() {
     static EventMatcher inst;
     return inst;
@@ -160,3 +163,4 @@ bool EventMatcher::on_second(const std::string& gate, std::string& out_message) 
     std::cout << "[event_matcher.cpp] " << "[Matcher] MATCH for gate=" << gate << " (assigned:" << assigned_norm << " card:" << card_norm << ")" << std::endl;
     return false;
 }
+#endif
