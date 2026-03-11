@@ -114,36 +114,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ---
 
-## 3) Functional Test Cases — RFID
-
-### TC-FUNC-RFID-01 RFID 태그 데이터가 Raspberry Pi(Server)로 정상 수집됨
-- **Level/Type/Priority**: Integration / Functional / Medium
-- **Execution**: Manual
-- **Pre-condition**
-  - RFID 리더/장치가 Raspberry Pi에 연결되어 동작
-  - Server가 RFID 수집 서비스 실행 중
-- **Input Data**
-  - 정상 RFID 태그 1회 태깅(또는 모킹 API로 태그 이벤트 1회 주입)
-- **Steps**
-  1. RFID 태그를 리더에 태깅
-  2. Server 로그 또는 수집 엔드포인트에서 태그 수신 확인
-- **Expected Result**
-  - 태그 데이터(카드 ID 등)가 Server에 수신/기록됨
-
-### TC-FUNC-RFID-02 RFID 태그 데이터 수집 시각(타임스탬프)이 함께 기록됨
-- **Level/Type/Priority**: Integration / Functional / Medium
-- **Execution**: Auto
-- **Pre-condition**: TC-FUNC-RFID-01 수행 가능
-- **Input Data**: RFID 태그 1회 이상(또는 모킹 주입)
-- **Steps**
-  1. RFID 태그 데이터 주입
-  2. 기록된 태그 로그/DB 필드에서 타임스탬프 확인
-- **Expected Result**
-  - 각 RFID 태그 데이터에 수신 시각이 기록됨(누락 없음)
-
----
-
-## 4) Functional Test Cases — EVENT(의심 판정/이벤트 생성)
+## 3) Functional Test Cases — EVENT(의심 판정/이벤트 생성)
 ### TC-FUNC-EVENT-01 개찰구 2개 가상선 통과 시각이 정상 기록됨
 - **Level/Type/Priority**: Integration / Functional / High
 - **Execution**: Manual
@@ -301,7 +272,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ---
 
-## 5) Functional Test Cases — UI(이벤트 목록/상세 팝업)
+## 4) Functional Test Cases — UI(이벤트 목록/상세 팝업)
 
 ### TC-FUNC-UI-01 이벤트 로그 목록 조회/표시 가능
 - **Level/Type/Priority**: System / Functional / High
@@ -336,7 +307,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ---
 
-## 6) Functional Test Cases — TRACK(사이렌+레이저)
+## 5) Functional Test Cases — TRACK(사이렌+레이저)
 
 ### TC-FUNC-TRACK-01 관리자가 상세 팝업에서 Tracking 버튼 클릭 시에만 Tracking 수행
 - **Level/Type/Priority**: System / Functional / High
@@ -393,7 +364,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ---
 
-## 7) Non-Functional Test Cases — Performance
+## 6) Non-Functional Test Cases — Performance
 
 ### TC-NF-PERF-01 Tracking 버튼 클릭 → (오디오 ON + 레이저 ON) 시작/ACK 확인까지 1초 이내
 - **Level/Type/Priority**: System/Integration / Non-Functional(Performance) / High
@@ -441,7 +412,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ---
 
-## 8) Non-Functional Test Cases — Reliability
+## 7) Non-Functional Test Cases — Reliability
 
 ### TC-NF-RELI-01 Tracking(ON→OFF/종료) 20회 반복 시 오류/상태불일치/비정상 종료 없음
 - **Level/Type/Priority**: System/Integration / Non-Functional(Reliability) / High
@@ -463,7 +434,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ---
 
-## 9) Non-Functional Test Cases — Recoverability
+## 8) Non-Functional Test Cases — Recoverability
 
 ### TC-NF-REC-01 네트워크 단절 후 복구 시 시스템 정상 동작 상태로 복귀
 - **Level/Type/Priority**: Integration/System / Non-Functional(Recoverability) / Low
@@ -483,7 +454,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ---
 
-## 10) Scenario Test Cases (End-to-End)
+## 9) Scenario Test Cases (End-to-End)
 
 ### TC-SYS-01 로그인 → 스트리밍 → 의심 이벤트 수신/표시 → 상세 팝업 확인 → Tracking 수행(오디오+레이저)
 - **Level/Type/Priority**: System / Functional(Scenario) / High
