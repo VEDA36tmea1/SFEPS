@@ -25,6 +25,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional, TextIO, List, Tuple
 
+try:
+    import RPi.GPIO as GPIO  # type: ignore
+except Exception:  # pragma: no cover (Raspi 전용)
+    GPIO = None  # type: ignore
+
 # -----------------------------------------------------------------------------
 # 상수 (README 및 STM32 호스트와 맞춤)
 # -----------------------------------------------------------------------------
@@ -33,7 +38,7 @@ PWM_MIN_US = 800
 PWM_MAX_US = 2200
 INIT_X_US = 1530  # pwm0 (GPIO12) 초기값
 INIT_Y_US = 1300  # pwm1 (GPIO13) 초기값
-CONTROL_PERIOD_S = 0.02     # 50Hz = 20ms
+CONTROL_PERIOD_S = 0.02      # 50Hz = 20ms
 
 # Ubuntu 서버가 보내는 형식
 # EX=...,EY=...[,TU=...,TV=...[,GR=...,GC=...]]
@@ -44,6 +49,39 @@ EXEY_RE = re.compile(
 
 # 서버 LUT: 호스트가 PWM 값 요청
 REQUEST_PWM_RE = re.compile(r"REQUEST_PWM,GR=(\d+),GC=(\d+)")
+SET_PWM_RE = re.compile(r"SET_PWM,?PAN=([-\d.]+),TILT=([-\d.]+)")
+LASER_CMD_RE = re.compile(r"LASER,(ON|OFF|1|0)", re.IGNORECASE)
+
+
+class LaserEnable:
+    """A1015 PNP 구성 기준 레이저 Enable 제어.
+
+    - ON : GPIO를 OUT으로 두고 LOW 출력 (강하게 ON)
+    - OFF: GPIO를 IN(Hi-Z)로 전환 (가능한 한 OFF)
+    """
+
+    def __init__(self, pin_bcm: int) -> None:
+        if GPIO is None:
+            raise RuntimeError("RPi.GPIO not available")
+        self.pin = int(pin_bcm)
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(self.pin, GPIO.IN)  # default OFF
+
+    def on(self) -> None:
+        GPIO.setup(self.pin, GPIO.OUT)
+        GPIO.output(self.pin, GPIO.LOW)
+
+    def off(self) -> None:
+        GPIO.setup(self.pin, GPIO.IN)
+
+    def cleanup(self) -> None:
+        try:
+            self.off()
+        finally:
+            try:
+                GPIO.cleanup(self.pin)
+            except Exception:
+                pass
 
 # Linux sysfs PWM (pwmchip0 = bcm2835)
 SYSFS_PWM_CHIP = "/sys/class/pwm/pwmchip0"
@@ -402,9 +440,8 @@ class Kalman2D:
     - beta : 속도 보정 비율 (0~1, 클수록 속도도 빨리 따라감)
     """
 
-    alpha: float = 0.8
-    beta: float = 0.42
-    horizon: float = 2.0  # 몇 프레임 앞까지 예측할지 (1=한 스텝, 2=두 스텝)
+    alpha: float = 0.7
+    beta: float = 0.2
     x: float = 0.0
     y: float = 0.0
     vx: float = 0.0
@@ -443,10 +480,9 @@ class Kalman2D:
         self.vx = self.vx + (self.beta * rx) / dt
         self.vy = self.vy + (self.beta * ry) / dt
 
-        # horizon 배 만큼 앞 예측 (컨트롤용)
-        h = self.horizon if self.horizon > 0.0 else 1.0
-        x_next = self.x + self.vx * dt * h
-        y_next = self.y + self.vy * dt * h
+        # 한 스텝 앞 예측 (컨트롤용)
+        x_next = self.x + self.vx * dt
+        y_next = self.y + self.vy * dt
         return self.x, self.y, x_next, y_next
 
 
@@ -502,6 +538,12 @@ class SharedState:
     updated: bool = False
     last_ux_us: float = INIT_X_US
     last_uy_us: float = INIT_Y_US
+    # LUT check 등에서 PWM을 직접 지정할 때 사용 (PID/LUT-track 우회)
+    set_pwm_pending: bool = False
+    set_pan_us: float = INIT_X_US
+    set_tilt_us: float = INIT_Y_US
+    laser_pending: bool = False
+    laser_on: bool = False
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -531,6 +573,30 @@ def recv_loop(sock: socket.socket, shared: SharedState) -> None:
                         sys.stderr.write(f"[pid_pwm_agent] REQUEST_PWM → {resp.strip()}\n")
                     except OSError as e:
                         sys.stderr.write(f"[pid_pwm_agent] PWM 응답 전송 실패: {e}\n")
+                    continue
+                # SET_PWM: host가 LUT 포인트 PWM을 직접 지정 (LUT check용)
+                m_set = SET_PWM_RE.search(line)
+                if m_set:
+                    try:
+                        pan = float(m_set.group(1))
+                        tilt = float(m_set.group(2))
+                        with shared.lock:
+                            shared.set_pan_us = pan
+                            shared.set_tilt_us = tilt
+                            shared.set_pwm_pending = True
+                        sys.stderr.write(f"[pid_pwm_agent] SET_PWM pan={pan:.0f} tilt={tilt:.0f}\n")
+                    except ValueError:
+                        pass
+                    continue
+                # LASER: host가 레이저 on/off 직접 제어 (A1015 PNP: OUT+LOW=ON, IN=OFF)
+                m_laser = LASER_CMD_RE.search(line)
+                if m_laser:
+                    v = m_laser.group(1).upper()
+                    want_on = (v == "ON" or v == "1")
+                    with shared.lock:
+                        shared.laser_on = want_on
+                        shared.laser_pending = True
+                    sys.stderr.write(f"[pid_pwm_agent] LASER cmd -> {'ON' if want_on else 'OFF'}\n")
                     continue
                 m = EXEY_RE.search(line)
                 if m:
@@ -575,6 +641,14 @@ def main() -> None:
     parser.add_argument("--init-x-us", type=float, default=INIT_X_US, help="Initial PWM x (us)")
     parser.add_argument("--init-y-us", type=float, default=INIT_Y_US, help="Initial PWM y (us)")
     parser.add_argument("--no-pwm", action="store_true", help="Do not touch sysfs PWM (dry run)")
+    parser.add_argument(
+        "--lut-check",
+        action="store_true",
+        help="LUT 체크/디버그 모드: host의 SET_PWM/LASER 명령만 적용 (PID/LUT-track 비활성)",
+    )
+    parser.add_argument("--laser-pin", type=int, default=17, help="레이저 Enable GPIO BCM (기본: 17)")
+    parser.add_argument("--no-laser", action="store_true", help="레이저 GPIO 제어 비활성")
+    parser.add_argument("--laser-on-start", action="store_true", help="시작 시 레이저 ON")
     parser.add_argument(
         "--log-file",
         help="STM32 auto_tune_pid.py 와 호환되는 PIDLOG 포맷으로 로그를 남길 파일 경로",
@@ -693,6 +767,19 @@ def main() -> None:
     ux_us = args.init_x_us
     uy_us = args.init_y_us
 
+    laser: Optional[LaserEnable] = None
+    if not args.no_laser:
+        try:
+            laser = LaserEnable(args.laser_pin)
+            if args.laser_on_start:
+                laser.on()
+                sys.stderr.write(f"[pid_pwm_agent] Laser ON at start (GPIO{args.laser_pin})\n")
+            else:
+                laser.off()
+        except Exception as e:
+            sys.stderr.write(f"[pid_pwm_agent] Laser init failed (ignored): {e}\n")
+            laser = None
+
     try:
         while True:
             now = time.monotonic()
@@ -709,6 +796,40 @@ def main() -> None:
                     gc = shared.grid_c
                     had_update = shared.updated
                     shared.updated = False
+                    set_pwm = shared.set_pwm_pending
+                    set_pan = shared.set_pan_us
+                    set_tilt = shared.set_tilt_us
+                    shared.set_pwm_pending = False
+                    laser_pending = shared.laser_pending
+                    laser_on = shared.laser_on
+                    shared.laser_pending = False
+
+                # 레이저 on/off 적용
+                if laser is not None and laser_pending:
+                    try:
+                        if laser_on:
+                            laser.on()
+                        else:
+                            laser.off()
+                    except Exception as e:
+                        sys.stderr.write(f"[pid_pwm_agent] Laser control failed: {e}\n")
+
+                # LUT check 등: host에서 PWM을 직접 지정한 경우, PID/LUT-track보다 우선 적용
+                if set_pwm:
+                    ux_us = float(set_pan)
+                    uy_us = float(set_tilt)
+                    if not args.no_pwm:
+                        write_pwm_duty(0, us_to_ns(ux_us))
+                        write_pwm_duty(1, us_to_ns(uy_us))
+                    with shared.lock:
+                        shared.last_ux_us = ux_us
+                        shared.last_uy_us = uy_us
+                    # 이 틱에서는 다른 제어를 수행하지 않음
+                    continue
+
+                # lut-check 모드: SET_PWM/LASER 외에는 아무것도 하지 않음 (PID 덮어쓰기 방지)
+                if args.lut_check:
+                    continue
 
                 if args.lut_track and lut_table is not None:
                     # LUT 기반 2D 보간 추종: TU/TV → (pan_us, tilt_us)
@@ -859,7 +980,13 @@ def main() -> None:
         sock.close()
         if log_f is not None:
             log_f.close()
+        if laser is not None:
+            try:
+                laser.cleanup()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
     main()
+ 
