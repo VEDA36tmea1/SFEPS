@@ -19,7 +19,10 @@ public:
     Q_INVOKABLE void connectToServer(const QString &host = "192.168.0.97", int port = 5557);
 
 signals:
-    void fraudDetected(const QString &cardId, const QString &ageGroup, const QString &gateId, int estAge);
+    void fraudDetected(const QString &objectId,
+                       const QString &cardAgeText,
+                       const QString &ageGroup,
+                       bool isFraud);
 
 private slots:
     void onReadyRead();

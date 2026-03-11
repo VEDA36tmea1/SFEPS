@@ -1,4 +1,5 @@
 #include "alert.h"
+#include "tls_server.h"
 
 #include <arpa/inet.h>
 #include <cerrno>

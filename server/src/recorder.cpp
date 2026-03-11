@@ -1,4 +1,8 @@
 #include "recorder.h"
+
+#include "analytics.h"
+#include "log.h"
+
 #include <algorithm>
 #include <cerrno>
 #include <cstdint>
@@ -9,6 +13,12 @@
 #include <iostream>
 #include <limits>
 #include <unistd.h>
+
+extern "C" {
+#include <libavformat/avformat.h>
+#include <libavutil/opt.h>
+#include <libavutil/time.h>
+}
 
 namespace {
 constexpr const char* kRtspUrl = "rtsp://192.168.0.97:8554/cam1";
