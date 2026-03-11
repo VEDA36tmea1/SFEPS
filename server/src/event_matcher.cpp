@@ -1,5 +1,5 @@
-#include "../include/event_matcher.h"
-#include "../include/alert.h"
+#include "event_matcher.h"
+#include "alert.h"
 #include <utility>
 #include <cctype>
 #include <iostream>

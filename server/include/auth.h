@@ -24,10 +24,10 @@ public:
 private:
     MYSQL* conn;            // MariaDB 커넥션 객체
     MYSQL_STMT* authStmt;   // prepared statement handle
-    const char* host;       // DB 호스트 주소
-    const char* user;       // DB 사용자 ID
-    const char* pass;       // DB 비밀번호
-    const char* db_name;    // DB 이름
+    std::string host;       // DB 호스트 주소
+    std::string user;       // DB 사용자 ID
+    std::string pass;       // DB 비밀번호
+    std::string db_name;    // DB 이름
     std::mutex dbMutex;     // 멀티스레드 환경 보호용 뮤텍스
 };
 

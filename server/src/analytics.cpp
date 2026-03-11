@@ -10,7 +10,6 @@
 #include <string_view>
 #include <vector>
 
-#include "XMLParser.h"
 #include "alert.h"
 
 namespace {
@@ -75,15 +74,11 @@ std::string fraud_flag(bool is_fraud) {
 AnalyticsProcessor::AnalyticsProcessor(const char* h,
                                        const char* u,
                                        const char* p,
-                                       const char* d,
-                                       int cam_w_,
-                                       int cam_h_)
+                                       const char* d)
     : host(h ? h : ""),
       user(u ? u : ""),
       pass(p ? p : ""),
       db(d ? d : ""),
-      cam_w(cam_w_),
-      cam_h(cam_h_),
       conn(nullptr),
       analyticsInsertStmt(nullptr),
       running(false),
@@ -94,7 +89,6 @@ AnalyticsProcessor::AnalyticsProcessor(const char* h,
       drop_log_interval(load_env_size_t("SFEPS_DROP_LOG_INTERVAL", 100, 1)),
       dropped_line_limit_count(0),
       dropped_queue_count(0),
-      dropped_invalid_xml_count(0),
       dropped_pending_expired_count(0),
       dropped_pending_overflow_count(0),
       parsed_xml_ok_count(0) {}

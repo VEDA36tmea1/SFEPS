@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <string>
@@ -453,7 +454,7 @@ bool send_all_tls(const TlsClientConnection& client, const char* data, size_t le
 
 }  // namespace
 
-void run_audio_receiver(const SecurityRuntimeOptions sec_cfg) {
+void run_audio_receiver(const SecurityRuntimeOptions& sec_cfg) {
     constexpr std::size_t kBufferSize = 4096;
     const std::size_t ring_capacity_bytes =
         static_cast<std::size_t>(AUDIO_SAMPLE_RATE * AUDIO_FRAME_BYTES);
@@ -639,7 +640,7 @@ void run_audio_receiver(const SecurityRuntimeOptions sec_cfg) {
     std::cout << "[main.cpp] [Audio] receiver thread stopped." << std::endl;
 }
 
-void run_fraud_notifier(const SecurityRuntimeOptions sec_cfg) {
+void run_fraud_notifier(const SecurityRuntimeOptions& sec_cfg) {
     int plain_server_fd = -1;
     if (sec_cfg.app_plaintext_enable) {
         plain_server_fd = create_listen_socket(ALERT_PORT, "Alert", sec_cfg.app_bind_ip);
@@ -771,7 +772,7 @@ void run_fraud_notifier(const SecurityRuntimeOptions sec_cfg) {
     std::cout << "[main.cpp] [Alert] notifier thread stopped." << std::endl;
 }
 
-void run_login_auth(const RuntimeConfig cfg, const SecurityRuntimeOptions sec_cfg) {
+void run_login_auth(const RuntimeConfig& cfg, const SecurityRuntimeOptions& sec_cfg) {
     struct AttemptState {
         int fail_count = 0;
         std::chrono::steady_clock::time_point lock_until =
@@ -1126,7 +1127,7 @@ int main(int argc, char* argv[]) {
     }
 
     AnalyticsProcessor analytics(cfg.db_host.c_str(), cfg.db_user.c_str(), cfg.db_pass.c_str(),
-                                 cfg.db_name_analytics.c_str(), 3840, 2160);
+                                 cfg.db_name_analytics.c_str());
     if (!analytics.start()) {
         std::cerr << "[Fatal] AnalyticsProcessor startup failed (fail-closed)." << std::endl;
         return -1;
@@ -1166,9 +1167,9 @@ int main(int argc, char* argv[]) {
         }
     });
 
-    std::thread t_auth(run_login_auth, cfg, sec_cfg);
-    std::thread t_audio(run_audio_receiver, sec_cfg);
-    std::thread t_alert(run_fraud_notifier, sec_cfg);
+    std::thread t_auth(run_login_auth, std::cref(cfg), std::cref(sec_cfg));
+    std::thread t_audio(run_audio_receiver, std::cref(sec_cfg));
+    std::thread t_alert(run_fraud_notifier, std::cref(sec_cfg));
 
     RfidMonitor rfid_monitor(g_running, analytics);
     std::thread t_rfid(&RfidMonitor::start, &rfid_monitor);

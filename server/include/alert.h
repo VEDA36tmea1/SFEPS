@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <string>
 
-#include "tls_server.h"
+struct TlsClientConnection;
 
 bool add_alert_plain_client(int fd);
 bool add_alert_tls_client(TlsClientConnection&& client);

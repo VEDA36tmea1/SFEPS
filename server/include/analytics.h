@@ -35,9 +35,7 @@ public:
     AnalyticsProcessor(const char* host,
                        const char* user,
                        const char* pass,
-                       const char* db,
-                       int cam_w = 3840,
-                       int cam_h = 2160);
+                       const char* db);
     ~AnalyticsProcessor();
 
     bool start();
@@ -80,8 +78,6 @@ private:
     std::string user;
     std::string pass;
     std::string db;
-    int cam_w;
-    int cam_h;
 
     MYSQL* conn;
     MYSQL_STMT* analyticsInsertStmt;
@@ -103,7 +99,6 @@ private:
 
     std::atomic<std::uint64_t> dropped_line_limit_count;
     std::atomic<std::uint64_t> dropped_queue_count;
-    std::atomic<std::uint64_t> dropped_invalid_xml_count;
     std::atomic<std::uint64_t> dropped_pending_expired_count;
     std::atomic<std::uint64_t> dropped_pending_overflow_count;
     std::atomic<std::uint64_t> parsed_xml_ok_count;
