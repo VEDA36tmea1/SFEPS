@@ -272,7 +272,7 @@ def stream_fault_controller() -> Optional[StreamFaultController]:
             controller.close()
 
 
-def test_tc_func_stream_01_receive_stream_by_direct_rtsp_requests(stream_endpoint: RtspEndpoint):
+def test_tc_func_stream_01(stream_endpoint: RtspEndpoint):
     if not _is_stream_ready(stream_endpoint, timeout=3.0):
         pytest.skip(
             "TC-FUNC-STREAM-01 pre-condition 미충족: "
@@ -301,7 +301,7 @@ def test_tc_func_stream_01_receive_stream_by_direct_rtsp_requests(stream_endpoin
         time.sleep(1.0)
 
 
-def test_tc_func_stream_03_recover_stream_by_reconnecting_to_live_endpoint(
+def test_tc_func_stream_03(
     stream_endpoint: RtspEndpoint, stream_fault_controller: Optional[StreamFaultController]
 ):
     if not _is_stream_ready(stream_endpoint, timeout=3.0):

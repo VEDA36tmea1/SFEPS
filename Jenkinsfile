@@ -282,6 +282,39 @@ PY
                 '''
             }
         }
+
+        stage('Run Event Tests') {
+            steps {
+                sh '''
+                    set -eu
+                    export MYSQL_UNIX_PORT="$WORKSPACE/.ci-mariadb/mysqld.sock"
+                    mkdir -p reports
+                    python3 -m pytest -q tests/test_tc_func_event.py -r a --junitxml=reports/event-tests.xml
+
+                    python3 - <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+path = "reports/event-tests.xml"
+root = ET.parse(path).getroot()
+
+if root.tag == "testsuite":
+    tests = int(root.attrib.get("tests", "0"))
+    skipped = int(root.attrib.get("skipped", "0"))
+else:
+    tests = 0
+    skipped = 0
+    for suite in root.findall("testsuite"):
+        tests += int(suite.attrib.get("tests", "0"))
+        skipped += int(suite.attrib.get("skipped", "0"))
+
+if tests == 0 or skipped == tests:
+    print(f"All tests skipped ({skipped}/{tests}). Marking build as failed.")
+    sys.exit(2)
+PY
+                '''
+            }
+        }
     }
 
     post {
