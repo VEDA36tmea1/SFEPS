@@ -15,7 +15,7 @@
 
 namespace {
 constexpr const char* kAnalyticsInsertQuery =
-    "INSERT INTO analytics_logs (object_id, card_age_text, age_group, is_fraud, created_at) "
+    "INSERT INTO analytics_logs (object_id, card_age_text, age, is_fraud, created_at) "
     "VALUES (?, ?, ?, ?, NOW())";
 
 std::size_t load_env_size_t(const char* name, std::size_t default_value, std::size_t min_value) {
@@ -97,7 +97,7 @@ int extract_first_number(std::string_view raw) {
     return value;
 }
 
-int age_bucket_from_age_group(std::string_view raw) {
+int age_bucket_from_age(std::string_view raw) {
     const std::string lower = to_lower_copy(raw);
     if (lower.find("youth") != std::string::npos) return kAgeBucketYouth;
     if (lower.find("adult") != std::string::npos) return kAgeBucketAdult;
@@ -124,8 +124,8 @@ CardAgeDecision evaluate_card_age(std::string_view raw) {
     return {"0", kAgeBucketUnknown, false};
 }
 
-bool is_fraud_by_age_mismatch(const CardAgeDecision& card_age, std::string_view age_group) {
-    const int camera_bucket = age_bucket_from_age_group(age_group);
+bool is_fraud_by_age_mismatch(const CardAgeDecision& card_age, std::string_view age) {
+    const int camera_bucket = age_bucket_from_age(age);
     if (!card_age.known || camera_bucket == kAgeBucketUnknown) {
         return true;
     }
@@ -483,7 +483,7 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
                 PendingObject pending;
                 pending.object_id = object_id;
                 pending.card_age_text = "0";
-                pending.age_group = "20th";
+                pending.age = "20";
                 pending.enter_tag_time = event.tag_time;
                 pending.is_fraud = true;
                 pending.created_at = now;
@@ -529,7 +529,7 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
             if (!found) {
                 final_out.object_id = object_id;
                 final_out.card_age_text = "0";
-                final_out.age_group = "20th";
+                final_out.age = "20";
                 final_out.is_fraud = true;
                 final_out.created_at = now;
             }
@@ -549,12 +549,12 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
                 final_out.card_age_text = "0";
             }
             const CardAgeDecision card_age = evaluate_card_age(final_out.card_age_text);
-            final_out.is_fraud = is_fraud_by_age_mismatch(card_age, final_out.age_group);
+            final_out.is_fraud = is_fraud_by_age_mismatch(card_age, final_out.age);
 
             FraudRecord record;
             record.object_id = final_out.object_id;
             record.card_age_text = final_out.card_age_text;
-            record.age_group = final_out.age_group;
+            record.age = final_out.age;
             record.is_fraud = final_out.is_fraud;
 
             if (q.size() >= max_queue_size) {
@@ -573,7 +573,7 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
             const int n = std::snprintf(
                 merged_line, sizeof(merged_line),
                 "FRAUD|%s|%s|%s|%s|L=%.1f|T=%.1f|R=%.1f|B=%.1f|X=%.1f|Y=%.1f|TAG=%s\n",
-                record.object_id.c_str(), record.card_age_text.c_str(), record.age_group.c_str(),
+                record.object_id.c_str(), record.card_age_text.c_str(), record.age.c_str(),
                 fraud_yn.c_str(), final_out.bbox_left, final_out.bbox_top, final_out.bbox_right,
                 final_out.bbox_bottom, final_out.center_x, final_out.center_y,
                 final_out.outline_tag_time.c_str());
@@ -588,7 +588,7 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
                 FraudBBoxPayload bbox_payload;
                 bbox_payload.object_id = final_out.object_id;
                 bbox_payload.card_age_text = final_out.card_age_text;
-                bbox_payload.age_group = final_out.age_group;
+                bbox_payload.age = final_out.age;
                 bbox_payload.left = final_out.bbox_left;
                 bbox_payload.top = final_out.bbox_top;
                 bbox_payload.right = final_out.bbox_right;
@@ -646,7 +646,7 @@ void AnalyticsProcessor::onRfidRead(const std::string& card_age_text_raw) {
         pending_object_ids.erase(pending.object_id);
 
         pending.card_age_text = card_age.canonical_text;
-        pending.is_fraud = is_fraud_by_age_mismatch(card_age, pending.age_group);
+        pending.is_fraud = is_fraud_by_age_mismatch(card_age, pending.age);
         paired_object_id = pending.object_id;
         matched_objects[pending.object_id] = std::move(pending);
     }
@@ -674,7 +674,7 @@ bool AnalyticsProcessor::insertAnalyticsRow(const FraudRecord& record) {
 
     unsigned long object_id_len = static_cast<unsigned long>(record.object_id.size());
     unsigned long card_age_text_len = static_cast<unsigned long>(record.card_age_text.size());
-    unsigned long age_group_len = static_cast<unsigned long>(record.age_group.size());
+    unsigned long age_len = static_cast<unsigned long>(record.age.size());
     signed char fraud_value = record.is_fraud ? 1 : 0;
 
     params[0].buffer_type = MYSQL_TYPE_STRING;
@@ -688,9 +688,9 @@ bool AnalyticsProcessor::insertAnalyticsRow(const FraudRecord& record) {
     params[1].length = &card_age_text_len;
 
     params[2].buffer_type = MYSQL_TYPE_STRING;
-    params[2].buffer = const_cast<char*>(record.age_group.c_str());
-    params[2].buffer_length = age_group_len;
-    params[2].length = &age_group_len;
+    params[2].buffer = const_cast<char*>(record.age.c_str());
+    params[2].buffer_length = age_len;
+    params[2].length = &age_len;
 
     params[3].buffer_type = MYSQL_TYPE_TINY;
     params[3].buffer = &fraud_value;

@@ -35,7 +35,7 @@ namespace {
 bool parseFraudMessage(const QString &msg,
                        QString &objectId,
                        QString &cardAgeText,
-                       QString &ageGroup,
+                       QString &age,
                        bool &isFraud)
 {
     if (!msg.startsWith("FRAUD|")) {
@@ -50,7 +50,7 @@ bool parseFraudMessage(const QString &msg,
 
     objectId = parts[1].trimmed();
     cardAgeText = parts[2].trimmed();
-    ageGroup = parts[3].trimmed();
+    age = parts[3].trimmed();
 
     const QString fraudRaw = parts[4].trimmed().toLower();
     if (fraudRaw == "1" || fraudRaw == "true" || fraudRaw == "y" || fraudRaw == "yes") {
@@ -62,13 +62,13 @@ bool parseFraudMessage(const QString &msg,
         return false;
     }
 
-    if (objectId.isEmpty() || cardAgeText.isEmpty() || ageGroup.isEmpty()) {
+    if (objectId.isEmpty() || cardAgeText.isEmpty() || age.isEmpty()) {
         qWarning() << "[FraudManager] Ignore malformed message (invalid value):" << msg;
         return false;
     }
 
-    if (!ageGroup.isEmpty()) {
-        ageGroup[0] = ageGroup[0].toUpper();
+    if (!age.isEmpty()) {
+        age[0] = age[0].toUpper();
     }
     return true;
 }
@@ -223,10 +223,10 @@ void FraudManager::onReadyRead()
 
         QString objectId;
         QString cardAgeText;
-        QString ageGroup;
+        QString age;
         bool isFraud = false;
-        if (parseFraudMessage(msg, objectId, cardAgeText, ageGroup, isFraud)) {
-            emit fraudDetected(objectId, cardAgeText, ageGroup, isFraud);
+        if (parseFraudMessage(msg, objectId, cardAgeText, age, isFraud)) {
+            emit fraudDetected(objectId, cardAgeText, age, isFraud);
         }
     }
 
@@ -235,11 +235,11 @@ void FraudManager::onReadyRead()
         QString s = QString::fromUtf8(recvBuffer).trimmed();
         QString objectId;
         QString cardAgeText;
-        QString ageGroup;
+        QString age;
         bool isFraud = false;
-        if (!s.isEmpty() && parseFraudMessage(s, objectId, cardAgeText, ageGroup, isFraud)) {
+        if (!s.isEmpty() && parseFraudMessage(s, objectId, cardAgeText, age, isFraud)) {
             qDebug() << "[FraudManager] Received (no-nl fallback):" << s;
-            emit fraudDetected(objectId, cardAgeText, ageGroup, isFraud);
+            emit fraudDetected(objectId, cardAgeText, age, isFraud);
             recvBuffer.clear();
         }
 
