@@ -4,32 +4,49 @@
 #include <time.h>
 
 namespace {
-std::size_t find_in_range(const std::string& raw,
-                          const char* needle,
-                          std::size_t start_pos,
-                          std::size_t end_pos) {
-    const std::size_t pos = raw.find(needle, start_pos);
-    if (pos == std::string::npos || pos >= end_pos) return std::string::npos;
-    return pos;
-}
-
-bool parse_float_attr(const std::string& raw,
-                      std::size_t attr_pos,
-                      std::size_t value_offset,
-                      float& out_value) {
-    if (attr_pos == std::string::npos) return false;
-
-    const std::size_t value_start = attr_pos + value_offset;
-    const std::size_t value_end = raw.find("\"", value_start);
-    if (value_end == std::string::npos) return false;
-
-    try {
-        out_value = std::stof(raw.substr(value_start, value_end - value_start));
-    } catch (...) {
-        return false;
+    std::size_t find_in_range(const std::string& raw,
+                              const char* needle,
+                              std::size_t start_pos,
+                              std::size_t end_pos) {
+        const std::size_t pos = raw.find(needle, start_pos);
+        if (pos == std::string::npos || pos >= end_pos) return std::string::npos;
+        return pos;
     }
-    return true;
-}
+
+    bool parse_float_attr(const std::string& raw,
+                          std::size_t attr_pos,
+                          std::size_t value_offset,
+                          float& out_value) {
+        if (attr_pos == std::string::npos) return false;
+
+        const std::size_t value_start = attr_pos + value_offset;
+        const std::size_t value_end = raw.find("\"", value_start);
+        if (value_end == std::string::npos) return false;
+
+        try {
+            out_value = std::stof(raw.substr(value_start, value_end - value_start));
+        } catch (...) {
+            return false;
+        }
+        return true;
+    }
+
+    // 🌟 면적 기반 추적을 위한 IoU 계산 함수 추가
+    float calculate_iou(float l1, float t1, float r1, float b1,
+                        float l2, float t2, float r2, float b2) {
+        float xA = std::max(l1, l2);
+        float yA = std::max(t1, t2);
+        float xB = std::min(r1, r2);
+        float yB = std::min(b1, b2);
+
+        float interArea = std::max(0.0f, xB - xA) * std::max(0.0f, yB - yA);
+        if (interArea == 0.0f) return 0.0f;
+
+        float box1Area = (r1 - l1) * (b1 - t1);
+        float box2Area = (r2 - l2) * (b2 - t2);
+
+        return interArea / (box1Area + box2Area - interArea);
+    }
 }
 
 std::string XMLParser::get_current_time_str() {
@@ -42,10 +59,16 @@ std::string XMLParser::get_current_time_str() {
 }
 
 std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_xml, unsigned int last_timestamp) {
+    // 🌟 필요하다면 아래 주석을 풀어 원본 XML 출력을 확인하세요
+    /*
+    std::cout << "\n\n==================== [RAW XML DATA START] ====================\n";
+    std::cout << accumulated_xml << "\n";
+    std::cout << "===================== [RAW XML DATA END] =====================\n\n";
+    */
+    
     std::vector<DetectedObject> results;
 
     try {
-        // 🌟 태그 시간(UtcTime) 파싱
         std::string tag_time = "Unknown";
         size_t utc_pos = accumulated_xml.find("UtcTime=\"");
         if (utc_pos != std::string::npos) {
@@ -76,6 +99,18 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
                 size_t start = type_pos + 9;
                 size_t end = accumulated_xml.find("</tt:Type>", start);
                 obj_type = accumulated_xml.substr(start, end - start);
+            }
+
+            // 🌟 1. 신뢰도(Likelihood) 파싱 추가
+            float likelihood = 1.0f; 
+            size_t likelihood_pos = accumulated_xml.find("<tt:Likelihood>", obj_start);
+            if (likelihood_pos != std::string::npos && (next_obj == std::string::npos || likelihood_pos < next_obj)) {
+                size_t start = likelihood_pos + 15;
+                size_t end = accumulated_xml.find("</tt:Likelihood>", start);
+                if (end != std::string::npos) {
+                    try { likelihood = std::stof(accumulated_xml.substr(start, end - start)); } 
+                    catch (...) { likelihood = 1.0f; }
+                }
             }
 
             float x = -1, y = -1, w = -1, h = -1;
@@ -114,14 +149,14 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
             }
 
             // =========================================================
-            // 🌟 Vector(속도/관성) 기반 객체 추적 및 ID 복구 알고리즘
+            // 🌟 [SORT-Lite] IoU 기반 객체 추적 및 ID 복구 알고리즘
             // =========================================================
             std::string real_id = obj_id; 
 
             if (x != -1 && y != -1 && obj_type == "Human") {
                 if (tracking_map.find(obj_id) == tracking_map.end()) {
                     std::string matched_old_id = "";
-                    float min_error = 99999.0f;
+                    float max_iou = 0.05f; // 매칭을 허용할 최소 교집합 (5%)
 
                     for (auto& pair : tracking_map) {
                         const std::string& old_id = pair.first;
@@ -130,15 +165,28 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
                         unsigned int dt = last_timestamp - track.last_rtp;
 
                         if (dt > 0 && dt < 225000) {
+                            // 1. 과거 속도를 기반으로 현재 예상 중심점 계산
                             float expected_x = track.last_x + (track.vx * dt);
                             float expected_y = track.last_y + (track.vy * dt);
 
-                            float err_x = std::abs(expected_x - x);
-                            float err_y = std::abs(expected_y - y);
-                            float error_dist = std::sqrt((err_x * err_x) + (err_y * err_y));
+                            // 2. 가벽 치기 (Clamping): 예측 위치가 우주로 날아가는 것 방지 (장외 홈런 방어)
+                            expected_x = std::max(0.0f, std::min(expected_x, SENSOR_WIDTH));
+                            expected_y = std::max(0.0f, std::min(expected_y, SENSOR_HEIGHT));
 
-                            if (error_dist < 200.0f && error_dist < min_error) {
-                                min_error = error_dist;
+                            // 3. 예측된 위치에 과거 크기(w, h)를 씌워서 가상의 Bounding Box 생성
+                            float pred_l = expected_x - (track.last_w / 2.0f);
+                            float pred_r = expected_x + (track.last_w / 2.0f);
+                            float pred_t = expected_y - (track.last_h / 2.0f);
+                            float pred_b = expected_y + (track.last_h / 2.0f);
+
+                            // 4. 면적 교집합(IoU) 계산
+                            float iou = calculate_iou(left, top, right, bottom, pred_l, pred_t, pred_r, pred_b);
+
+                            // 5. Likelihood 가림(Occlusion) 필터링: 점수가 낮으면(가려지면) 기준을 대폭 완화
+                            float threshold = (likelihood < 0.5f) ? 0.01f : 0.05f;
+
+                            if (iou > threshold && iou > max_iou) {
+                                max_iou = iou;
                                 matched_old_id = old_id;
                             }
                         }
@@ -148,9 +196,16 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
                         tracking_map[obj_id] = tracking_map[matched_old_id]; 
                         tracking_map.erase(matched_old_id); 
                         real_id = tracking_map[obj_id].original_id; 
-                        std::cout << "🔗 [ID 복구 성공] 카메라 ID: " << obj_id << " -> 오리지널 ID: " << real_id << " 매칭됨!" << std::endl;
+                        
+                        // ID 복구 시 크기도 최신화
+                        tracking_map[obj_id].last_w = w;
+                        tracking_map[obj_id].last_h = h;
+
+                        std::cout << "🔗 [ID 복구] 카메라 ID: " << obj_id << " -> 오리지널 ID: " << real_id 
+                                  << " (IoU 매칭률: " << (int)(max_iou * 100) << "%)" << std::endl;
                     } else {
-                        tracking_map[obj_id] = {obj_id, x, y, 0.0f, 0.0f, last_timestamp};
+                        // 완전히 새로운 객체 등록 (w, h 포함)
+                        tracking_map[obj_id] = {obj_id, x, y, w, h, 0.0f, 0.0f, last_timestamp};
                     }
                 } else {
                     auto& track = tracking_map[obj_id];
@@ -164,13 +219,15 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
                     }
                     track.last_x = x;
                     track.last_y = y;
+                    track.last_w = w; // 매 프레임 크기 업데이트
+                    track.last_h = h;
                     track.last_rtp = last_timestamp;
                     real_id = track.original_id; 
                 }
 
-                results.push_back({real_id, obj_type, x, y});
+                // 🌟 구조체 포맷에 맞게 likelihood, w, h 모두 푸시!
+                results.push_back({real_id, obj_type, x, y, likelihood, w, h});
 
-                // 🌟 출력 스위치 무조건 ON
                 constexpr bool k_enable_object_log = true;
                 bool is_new_id = (log_timer_map.find(real_id) == log_timer_map.end());
                 if (k_enable_object_log && (is_new_id || (last_timestamp - log_timer_map[real_id] > LOG_THROTTLE))) {
@@ -178,11 +235,8 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
                     std::cout << prefix << " ID: " << real_id 
                               << " | Type: " << obj_type
                               << " | Pos: (" << x << ", " << y << ")" 
-                              << " | BBox: (left=" << left
-                              << ", right=" << right
-                              << ", top=" << top
-                              << ", bottom=" << bottom << ")"
                               << " | Size: (" << w << "x" << h << ")" 
+                              << " | Lkhd: " << likelihood
                               << " | TagTime: " << tag_time << std::endl;
                     log_timer_map[real_id] = last_timestamp;
                 }
