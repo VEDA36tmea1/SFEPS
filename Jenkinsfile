@@ -101,14 +101,18 @@ CREATE TABLE IF NOT EXISTS recordings (
 
 CREATE TABLE IF NOT EXISTS analytics_logs (
   id bigint(20) NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  object_id varchar(128) NOT NULL,
+  card_age_text varchar(32) NOT NULL DEFAULT '',
+  age varchar(32) NOT NULL DEFAULT '',
+  is_fraud tinyint(1) NOT NULL DEFAULT 0,
   frame_time varchar(32) DEFAULT NULL,
   object_type varchar(64) DEFAULT NULL,
-  created_at timestamp NOT NULL DEFAULT current_timestamp(),
   estimated_age int(11) DEFAULT 0,
   photo_path varchar(255) DEFAULT '',
   x double DEFAULT 0,
   y double DEFAULT 0,
-  event varchar(128) DEFAULT ''
+  event varchar(128) DEFAULT '',
+  created_at timestamp NOT NULL DEFAULT current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 INSERT INTO users (id, password, name)
