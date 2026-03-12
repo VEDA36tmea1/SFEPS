@@ -118,7 +118,7 @@ bool EspManager::publishFraudBbox(const FraudBboxPayload& payload) {
     const int line_len = std::snprintf(
         line, sizeof(line),
         "FRAUD_BBOX|%s|%s|%s|CX=%.0f|CY=%.0f|W=%.0f|H=%.0f\n",
-        payload.object_id.c_str(), payload.card_age_text.c_str(), payload.age_group.c_str(),
+        payload.object_id.c_str(), payload.card_age_text.c_str(), payload.age.c_str(),
         cx, cy, width, height);
     if (line_len <= 0 || line_len >= static_cast<int>(sizeof(line))) {
         return false;

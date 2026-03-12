@@ -415,7 +415,7 @@ int main(int argc, char* argv[]) {
         EspManager::FraudBboxPayload esp_payload;
         esp_payload.object_id = payload.object_id;
         esp_payload.card_age_text = payload.card_age_text;
-        esp_payload.age_group = payload.age_group;
+        esp_payload.age = payload.age;
         esp_payload.left = payload.left;
         esp_payload.top = payload.top;
         esp_payload.right = payload.right;

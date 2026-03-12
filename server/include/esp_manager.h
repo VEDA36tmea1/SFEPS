@@ -22,7 +22,7 @@ public:
     struct FraudBboxPayload {
         std::string object_id;
         std::string card_age_text;
-        std::string age_group;
+        std::string age;
         float left = -1.0f;
         float top = -1.0f;
         float right = -1.0f;

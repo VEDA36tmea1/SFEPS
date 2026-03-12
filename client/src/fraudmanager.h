@@ -21,7 +21,7 @@ public:
 signals:
     void fraudDetected(const QString &objectId,
                        const QString &cardAgeText,
-                       const QString &ageGroup,
+                       const QString &age,
                        bool isFraud);
 
 private slots:

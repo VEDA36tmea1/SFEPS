@@ -36,7 +36,7 @@ public:
     struct FraudBBoxPayload {
         std::string object_id;
         std::string card_age_text;
-        std::string age_group;
+        std::string age;
         float left = -1.0f;
         float top = -1.0f;
         float right = -1.0f;
@@ -67,7 +67,7 @@ private:
     struct PendingObject {
         std::string object_id;
         std::string card_age_text;
-        std::string age_group;
+        std::string age;
         std::string enter_tag_time;
         std::string outline_tag_time;
         bool is_fraud = false;
@@ -83,7 +83,7 @@ private:
     struct FraudRecord {
         std::string object_id;
         std::string card_age_text;
-        std::string age_group;
+        std::string age;
         bool is_fraud = false;
     };
 
