@@ -52,5 +52,8 @@ private:
 
 public:
     std::vector<DetectedObject> parseAndProcess(std::string& accumulated_xml, unsigned int last_timestamp);
-    std::vector<ParsedMetadataObject> parseHumanObjectsForAnalytics(const std::string& xml) const;
+    // detect_all=true 이면 Human 이외 타입도 모두 반환 (좌표가 유효한 경우)
+    // detect_all=false 이면 type == "Human" 인 객체만 반환 (기본 동작)
+    std::vector<ParsedMetadataObject> parseHumanObjectsForAnalytics(const std::string& xml,
+                                                                    bool detect_all = false) const;
 };
