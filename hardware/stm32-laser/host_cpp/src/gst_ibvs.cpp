@@ -10,7 +10,7 @@
 #include <iostream>
 
 // GstSample → cv::Mat 변환 (BGR 또는 GRAY 가정)
-static bool sampleToMat(GstSample* sample, cv::Mat& outMat)
+bool gst_sample_to_mat(GstSample* sample, cv::Mat& outMat)
 {
     if (!sample)
         return false;
@@ -66,7 +66,7 @@ bool process_gst_frame(GstSample* sample,
                        StmInterface& stm)
 {
     cv::Mat frame;
-    if (!sampleToMat(sample, frame))
+    if (!gst_sample_to_mat(sample, frame))
     {
         std::cerr << "process_gst_frame: failed to convert sample to cv::Mat\n";
         return false;
