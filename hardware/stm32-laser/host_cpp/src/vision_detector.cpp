@@ -26,7 +26,7 @@ DetectionResult VisionDetector::detectTarget(const cv::Mat& frame)
     return result;
 }
 
-DetectionResult VisionDetector::detectLaser(const cv::Mat& frame)
+DetectionResult VisionDetector::detectLaser(const cv::Mat& frame, cv::Mat* out_mask)
 {
     DetectionResult result;
     if (frame.empty())
@@ -70,6 +70,9 @@ DetectionResult VisionDetector::detectLaser(const cv::Mat& frame)
     cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel);
     cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel);
 
+    if (out_mask)
+        mask.copyTo(*out_mask);
+
     // 4) 디버그용: 빨간색 마스크 영상 직접 보기
     //    - 밝은 영역이 레이저로 마스킹된 부분
     //cv::imshow("laser_mask", mask);
@@ -112,4 +115,3 @@ DetectionResult VisionDetector::detectLaser(const cv::Mat& frame)
 
     return result;
 }
-

@@ -33,7 +33,7 @@ PWM_MIN_US = 800
 PWM_MAX_US = 2200
 INIT_X_US = 1530  # pwm0 (GPIO12) 초기값
 INIT_Y_US = 1300  # pwm1 (GPIO13) 초기값
-CONTROL_PERIOD_S = 0.02     # 50Hz = 20ms
+CONTROL_PERIOD_S = 0.02      # 50Hz = 20ms
 
 # Ubuntu 서버가 보내는 형식
 # EX=...,EY=...[,TU=...,TV=...[,GR=...,GC=...]]
@@ -44,6 +44,7 @@ EXEY_RE = re.compile(
 
 # 서버 LUT: 호스트가 PWM 값 요청
 REQUEST_PWM_RE = re.compile(r"REQUEST_PWM,GR=(\d+),GC=(\d+)")
+SET_PWM_RE = re.compile(r"SET_PWM,?PAN=([-\d.]+),TILT=([-\d.]+)")
 
 # Linux sysfs PWM (pwmchip0 = bcm2835)
 SYSFS_PWM_CHIP = "/sys/class/pwm/pwmchip0"
@@ -393,6 +394,61 @@ class LutTable:
         return pan_us, tilt_us, True
 
 
+@dataclass
+class Kalman2D:
+    """2D 상수 속도 모델용 칼만 필터(α-β 필터 형태 근사).
+
+    state: [x, y, vx, vy]
+    - alpha: 위치 보정 비율 (0~1, 클수록 측정값에 민감)
+    - beta : 속도 보정 비율 (0~1, 클수록 속도도 빨리 따라감)
+    """
+
+    alpha: float = 0.7
+    beta: float = 0.2
+    x: float = 0.0
+    y: float = 0.0
+    vx: float = 0.0
+    vy: float = 0.0
+    initialized: bool = False
+
+    def update(self, zx: float, zy: float, dt: float) -> Tuple[float, float, float, float]:
+        """측정 (zx, zy)와 dt 로 상태 갱신 후,
+        (현재 추정 위치, 다음 스텝 예측 위치)를 반환.
+        반환: (x_est, y_est, x_pred_next, y_pred_next)
+        """
+        if dt <= 0:
+            dt = CONTROL_PERIOD_S
+
+        if not self.initialized:
+            self.x = zx
+            self.y = zy
+            self.vx = 0.0
+            self.vy = 0.0
+            self.initialized = True
+            return self.x, self.y, self.x, self.y
+
+        # 예측 단계 (constant velocity)
+        x_pred = self.x + self.vx * dt
+        y_pred = self.y + self.vy * dt
+
+        # 잔차
+        rx = zx - x_pred
+        ry = zy - y_pred
+
+        # 위치 업데이트
+        self.x = x_pred + self.alpha * rx
+        self.y = y_pred + self.alpha * ry
+
+        # 속도 업데이트
+        self.vx = self.vx + (self.beta * rx) / dt
+        self.vy = self.vy + (self.beta * ry) / dt
+
+        # 한 스텝 앞 예측 (컨트롤용)
+        x_next = self.x + self.vx * dt
+        y_next = self.y + self.vy * dt
+        return self.x, self.y, x_next, y_next
+
+
 def us_to_ns(us: float) -> int:
     return int(round(us * 1000.0))
 
@@ -445,6 +501,10 @@ class SharedState:
     updated: bool = False
     last_ux_us: float = INIT_X_US
     last_uy_us: float = INIT_Y_US
+    # LUT check 등에서 PWM을 직접 지정할 때 사용 (PID/LUT-track 우회)
+    set_pwm_pending: bool = False
+    set_pan_us: float = INIT_X_US
+    set_tilt_us: float = INIT_Y_US
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -474,6 +534,20 @@ def recv_loop(sock: socket.socket, shared: SharedState) -> None:
                         sys.stderr.write(f"[pid_pwm_agent] REQUEST_PWM → {resp.strip()}\n")
                     except OSError as e:
                         sys.stderr.write(f"[pid_pwm_agent] PWM 응답 전송 실패: {e}\n")
+                    continue
+                # SET_PWM: host가 LUT 포인트 PWM을 직접 지정 (LUT check용)
+                m_set = SET_PWM_RE.search(line)
+                if m_set:
+                    try:
+                        pan = float(m_set.group(1))
+                        tilt = float(m_set.group(2))
+                        with shared.lock:
+                            shared.set_pan_us = pan
+                            shared.set_tilt_us = tilt
+                            shared.set_pwm_pending = True
+                        sys.stderr.write(f"[pid_pwm_agent] SET_PWM pan={pan:.0f} tilt={tilt:.0f}\n")
+                    except ValueError:
+                        pass
                     continue
                 m = EXEY_RE.search(line)
                 if m:
@@ -577,6 +651,7 @@ def main() -> None:
         sys.stderr.write("[pid_pwm_agent] [LUT] 수집 모드 ON\n")
 
     lut_table: Optional[LutTable] = None
+    kf2d: Optional[Kalman2D] = None
     if args.lut_track:
         try:
             lut_table = LutTable.from_json(args.lut_out)
@@ -584,6 +659,11 @@ def main() -> None:
                 f"[pid_pwm_agent] LUT-track 모드: {args.lut_out} 로드 완료 "
                 f"(rows={lut_table.rows}, cols={lut_table.cols})\n"
             )
+            if args.kf_track:
+                kf2d = Kalman2D()
+                sys.stderr.write(
+                    f"[pid_pwm_agent] Kalman 2D 예측 활성화 (alpha={kf2d.alpha}, beta={kf2d.beta})\n"
+                )
         except Exception as e:
             sys.stderr.write(f"[pid_pwm_agent] LUT-track: LUT 파일 로드 실패: {e}\n")
             sys.exit(1)
@@ -646,12 +726,36 @@ def main() -> None:
                     gc = shared.grid_c
                     had_update = shared.updated
                     shared.updated = False
+                    set_pwm = shared.set_pwm_pending
+                    set_pan = shared.set_pan_us
+                    set_tilt = shared.set_tilt_us
+                    shared.set_pwm_pending = False
+
+                # LUT check 등: host에서 PWM을 직접 지정한 경우, PID/LUT-track보다 우선 적용
+                if set_pwm:
+                    ux_us = float(set_pan)
+                    uy_us = float(set_tilt)
+                    if not args.no_pwm:
+                        write_pwm_duty(0, us_to_ns(ux_us))
+                        write_pwm_duty(1, us_to_ns(uy_us))
+                    with shared.lock:
+                        shared.last_ux_us = ux_us
+                        shared.last_uy_us = uy_us
+                    # 이 틱에서는 다른 제어를 수행하지 않음
+                    continue
 
                 if args.lut_track and lut_table is not None:
                     # LUT 기반 2D 보간 추종: TU/TV → (pan_us, tilt_us)
                     if had_update:
+                        # 칼만 필터로 다음 위치 예측 (옵션)
+                        if args.kf_track and kf2d is not None:
+                            _, _, tu_pred, tv_pred = kf2d.update(tu, tv, CONTROL_PERIOD_S)
+                            use_u, use_v = tu_pred, tv_pred
+                        else:
+                            use_u, use_v = tu, tv
+
                         pan_us, tilt_us, ok = lut_table.interpolate(
-                            tu, tv, args.frame_w, args.frame_h
+                            use_u, use_v, args.frame_w, args.frame_h
                         )
                         if ok:
                             ux_us = float(pan_us)
@@ -793,3 +897,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+ 
