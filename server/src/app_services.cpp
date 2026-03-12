@@ -23,6 +23,7 @@
 #include "audio_playback.h"
 #include "audio_ring_buffer.h"
 #include "auth.h"
+#include "esp_manager.h"
 #include "log.h"
 #include "net_utils.h"
 #include "tls_server.h"
@@ -414,7 +415,8 @@ void run_fraud_notifier(std::atomic<bool>& running, const SecurityRuntimeOptions
 
 void run_position_stream_service(std::atomic<bool>& running,
                                  const SecurityRuntimeOptions& sec_cfg,
-                                 AnalyticsProcessor& analytics) {
+                                 AnalyticsProcessor& analytics,
+                                 EspManager& esp_manager) {
     struct PlainClientState {
         int fd = -1;
         std::string recv_buffer;
@@ -493,9 +495,30 @@ void run_position_stream_service(std::atomic<bool>& running,
 
     std::vector<PlainClientState> plain_clients;
     std::vector<TlsClientState> tls_clients;
+    std::string esp_active_object_id;
+    bool esp_has_last_sent = false;
+    AnalyticsProcessor::ObjectPositionSnapshot esp_last_sent;
     constexpr std::size_t kMaxRecvBuffer = 16 * 1024;
     constexpr std::size_t kReadBufferSize = 4096;
     char read_buffer[kReadBufferSize];
+    const auto switch_esp_track_target = [&](const std::string& requested_id) {
+        if (requested_id.empty()) return;
+        if (!esp_active_object_id.empty() && esp_active_object_id != requested_id) {
+            esp_manager.publishTrackEnd(esp_active_object_id, "SWITCH");
+        }
+        if (esp_active_object_id != requested_id) {
+            esp_active_object_id = requested_id;
+            esp_has_last_sent = false;
+        }
+    };
+    const auto clear_esp_track_target = [&](const std::string& requested_id, const char* reason) {
+        if (requested_id.empty()) return;
+        if (esp_active_object_id == requested_id) {
+            esp_manager.publishTrackEnd(esp_active_object_id, reason ? reason : "UNSUB");
+            esp_active_object_id.clear();
+            esp_has_last_sent = false;
+        }
+    };
 
     while (running.load()) {
         std::vector<pollfd> pfds;
@@ -670,6 +693,7 @@ void run_position_stream_service(std::atomic<bool>& running,
 
                             client.active_object_id = requested_id;
                             client.has_last_sent = false;
+                            switch_esp_track_target(requested_id);
                             continue;
                         }
 
@@ -685,6 +709,7 @@ void run_position_stream_service(std::atomic<bool>& running,
                                 }
                                 client.active_object_id.clear();
                                 client.has_last_sent = false;
+                                clear_esp_track_target(requested_id, "UNSUB");
                             }
                             continue;
                         }
@@ -742,6 +767,7 @@ void run_position_stream_service(std::atomic<bool>& running,
 
                             client.active_object_id = requested_id;
                             client.has_last_sent = false;
+                            switch_esp_track_target(requested_id);
                             continue;
                         }
 
@@ -757,6 +783,7 @@ void run_position_stream_service(std::atomic<bool>& running,
                                 }
                                 client.active_object_id.clear();
                                 client.has_last_sent = false;
+                                clear_esp_track_target(requested_id, "UNSUB");
                             }
                             continue;
                         }
@@ -792,6 +819,34 @@ void run_position_stream_service(std::atomic<bool>& running,
         const auto now = std::chrono::steady_clock::now();
         const auto stale_limit =
             std::chrono::seconds(static_cast<long long>(sec_cfg.position_stale_seconds));
+
+        if (!esp_active_object_id.empty()) {
+            AnalyticsProcessor::ObjectPositionSnapshot snapshot;
+            const bool has_snapshot =
+                analytics.getObjectPositionSnapshot(esp_active_object_id, snapshot);
+            const bool is_stale =
+                (!has_snapshot) || ((now - snapshot.updated_at) > stale_limit);
+
+            if (is_stale) {
+                esp_manager.publishTrackEnd(esp_active_object_id, "STALE");
+                esp_active_object_id.clear();
+                esp_has_last_sent = false;
+            } else if (!esp_has_last_sent || !snapshots_equal(esp_last_sent, snapshot)) {
+                EspManager::TrackPosPayload payload;
+                payload.object_id = snapshot.object_id;
+                payload.left = snapshot.left;
+                payload.top = snapshot.top;
+                payload.right = snapshot.right;
+                payload.bottom = snapshot.bottom;
+                payload.x = snapshot.x;
+                payload.y = snapshot.y;
+                payload.tag_time = snapshot.tag_time;
+                if (esp_manager.publishTrackPos(payload)) {
+                    esp_last_sent = snapshot;
+                    esp_has_last_sent = true;
+                }
+            }
+        }
 
         for (std::size_t idx = 0; idx < plain_clients.size(); ++idx) {
             auto& client = plain_clients[idx];

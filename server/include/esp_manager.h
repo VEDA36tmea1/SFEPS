@@ -29,12 +29,25 @@ public:
         float bottom = -1.0f;
     };
 
+    struct TrackPosPayload {
+        std::string object_id;
+        float left = -1.0f;
+        float top = -1.0f;
+        float right = -1.0f;
+        float bottom = -1.0f;
+        float x = -1.0f;
+        float y = -1.0f;
+        std::string tag_time;
+    };
+
     explicit EspManager(Config config);
     ~EspManager();
 
     bool start(std::atomic<bool>& app_running_flag);
     void stop();
     bool publishFraudBbox(const FraudBboxPayload& payload);
+    bool publishTrackPos(const TrackPosPayload& payload);
+    bool publishTrackEnd(const std::string& object_id, const std::string& reason);
 
 private:
     void acceptLoop();

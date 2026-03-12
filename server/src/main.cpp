@@ -332,7 +332,7 @@ void signal_handler(int signum) {
     g_running = false;
 }
 
-int main(int argc, char* argv[]) {
+int main() {
     RuntimeConfig cfg;
     std::string cfg_err;
     if (!load_runtime_config(cfg, cfg_err)) {
@@ -369,14 +369,6 @@ int main(int argc, char* argv[]) {
               << ", position_tick_ms=" << sec_cfg.position_stream_tick_ms
               << ", position_stale_sec=" << sec_cfg.position_stale_seconds
               << ", socket_read_timeout_ms=" << sec_cfg.socket_read_timeout_ms << std::endl;
-
-    bool send_test_ping = false;
-    for (int i = 1; i < argc; ++i) {
-        const std::string arg = argv[i];
-        if (arg == "--ping-2s" || arg == "--test-ping") {
-            send_test_ping = true;
-        }
-    }
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
@@ -442,23 +434,10 @@ int main(int argc, char* argv[]) {
     std::thread t_audio(run_audio_receiver, std::ref(g_running), std::cref(sec_cfg));
     std::thread t_alert(run_fraud_notifier, std::ref(g_running), std::cref(sec_cfg));
     std::thread t_position(run_position_stream_service, std::ref(g_running), std::cref(sec_cfg),
-                           std::ref(analytics));
+                           std::ref(analytics), std::ref(esp_manager));
 
     RfidMonitor rfid_monitor(g_running, analytics);
     std::thread t_rfid(&RfidMonitor::start, &rfid_monitor);
-
-    std::thread t_test_ping;
-    if (send_test_ping) {
-        t_test_ping = std::thread([&]() {
-            int seq = 0;
-            while (g_running.load()) {
-                send_test_alert_to_clients("TEST|PING|" + std::to_string(seq++));
-                if (!sleep_interruptible(g_running, std::chrono::seconds(2))) break;
-            }
-            std::cout << "[main.cpp] [Alert] test ping thread stopped." << std::endl;
-        });
-        std::cout << "[main.cpp] [System] Test ping enabled (--test-ping)." << std::endl;
-    }
 
     RTSPRecorder recorder(logger, g_running, analytics);
     recorder.run();
@@ -468,7 +447,6 @@ int main(int argc, char* argv[]) {
     close_alert_client_connections();
     esp_manager.stop();
 
-    if (t_test_ping.joinable()) t_test_ping.join();
     if (t_rfid.joinable()) t_rfid.join();
     if (t_position.joinable()) t_position.join();
     if (t_alert.joinable()) t_alert.join();

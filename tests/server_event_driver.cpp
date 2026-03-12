@@ -269,10 +269,6 @@ void send_alert_to_clients(const std::string& msg) {
     g_alert_messages.push_back(msg);
 }
 
-void send_test_alert_to_clients(const std::string& msg) {
-    g_alert_messages.push_back(msg);
-}
-
 int main(int argc, char** argv) {
     if (argc < 2) {
         std::cerr << "usage: server_event_driver <run-case|run-db-case|parse-rfid> [args...]" << std::endl;
