@@ -126,10 +126,3 @@ void send_alert_to_clients(const std::string& msg) {
                   << ", fail=" << fail_cnt << ", payload='" << msg << "'" << std::endl;
     }
 }
-
-void send_test_alert_to_clients(const std::string& msg) {
-    std::string out = msg;
-    if (out.empty()) return;
-    if (out.back() != '\n') out.push_back('\n');
-    send_alert_to_clients(out);
-}

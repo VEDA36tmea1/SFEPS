@@ -14,7 +14,7 @@ constexpr int kDefaultAuthTlsPort = 6555;
 constexpr int kDefaultAuthPlainPort = 5555;
 constexpr bool kDefaultAuthTlsEnable = true;
 constexpr bool kDefaultPlainFallbackEnable = false;
-constexpr const char* kDefaultAuthHost = "192.168.0.80";
+constexpr const char* kDefaultAuthHost = "192.168.0.92";
 constexpr const char* kResourceCaPath = ":/certs/auth_ca.pem";
 
 QString maskUserId(const QString& userId)
@@ -74,7 +74,9 @@ void AuthManager::login(const QString &id, const QString &pw)
     }
 
     const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    const QString authHost = env.value("AUTH_SERVER_HOST", QString::fromUtf8(kDefaultAuthHost));
+    const QString authHost =
+        env.value("AUTH_SERVER_HOST",
+                  env.value("FRAUD_SERVER_HOST", QString::fromUtf8(kDefaultAuthHost)));
     const int authTlsPort = parseEnvPort(env, "AUTH_TLS_PORT", kDefaultAuthTlsPort);
     const int authPlainPort = parseEnvPort(env, "AUTH_PLAINTEXT_PORT", kDefaultAuthPlainPort);
     // Force plaintext auth transport: disable TLS regardless of environment.

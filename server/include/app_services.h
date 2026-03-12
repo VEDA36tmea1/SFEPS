@@ -9,6 +9,7 @@
 #include "runtime_config.h"
 
 class AnalyticsProcessor;
+class EspManager;
 
 struct SecurityRuntimeOptions {
     std::unordered_set<std::string> auth_allow_ips;
@@ -44,7 +45,8 @@ void run_audio_receiver(std::atomic<bool>& running, const SecurityRuntimeOptions
 void run_fraud_notifier(std::atomic<bool>& running, const SecurityRuntimeOptions& sec_cfg);
 void run_position_stream_service(std::atomic<bool>& running,
                                  const SecurityRuntimeOptions& sec_cfg,
-                                 AnalyticsProcessor& analytics);
+                                 AnalyticsProcessor& analytics,
+                                 EspManager& esp_manager);
 void run_login_auth(std::atomic<bool>& running,
                     const RuntimeConfig& cfg,
                     const SecurityRuntimeOptions& sec_cfg);
