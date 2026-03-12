@@ -1,16 +1,20 @@
 # Tests README
 
-`tests/` 자동 테스트는 현재 아래 2개 축으로 운영됩니다.
+`tests/` 자동 테스트는 현재 아래 3개 축으로 운영됩니다.
 
 - 로그인 기능: `tests/test_tc_func_login.py`
 - 스트리밍 기능: `tests/test_tc_func_stream.py`
+- 이벤트 판정 기능: `tests/test_tc_func_event.py`
 
 `tests/conftest.py`는 세션 시작 시 `server/build/smart_server*` 바이너리로 실서버를 준비합니다.
+단, EVENT 테스트(`test_tc_func_event.py`)는 파일 내부 fixture override로 실서버 기동 없이 실행됩니다.
 
 ## 현재 사용 파일
 
 - `tests/test_tc_func_login.py`: 로그인 PASS/FAIL 및 클라이언트 소스 가드 검증
 - `tests/test_tc_func_stream.py`: RTSP 직접 요청 기반 스트림 검증(TC01, TC03)
+- `tests/test_tc_func_event.py`: 서버 실제 판정 로직 기반 EVENT TC-FUNC-EVENT-01~06 검증
+- `tests/server_event_driver.cpp`: `analytics.cpp`/`rfid_monitor.cpp`를 링크해 판정 로직을 호출하는 테스트 드라이버
 - `tests/conftest.py`: 실서버 자동 기동/종료 및 포트(127.0.0.1:5555) 준비
 - `tests/real_server.log`: 테스트 중 실서버 로그 출력 파일
 
@@ -24,7 +28,7 @@ pip install --upgrade pip
 pip install pytest
 ```
 
-## 2) 실서버 기동 조건 (공통)
+## 2) 실서버 기동 조건 (로그인/스트림 공통)
 
 아래 조건이 충족되어야 테스트가 실서버 기준으로 실행됩니다.
 
@@ -36,7 +40,21 @@ pip install pytest
 
 환경변수는 쉘 export 또는 `server/.env.local`에서 제공합니다.
 
-## 3) 스트림 테스트 동작 요약
+## 3) EVENT 테스트 동작 요약
+
+- 테스트 대상: `TC-FUNC-EVENT-01` ~ `TC-FUNC-EVENT-06`
+- 실행 방식:
+  - `tests/server_event_driver.cpp`를 테스트 시점에 컴파일
+  - 드라이버가 `server/src/analytics.cpp`, `server/src/rfid_monitor.cpp` 실제 코드를 직접 호출
+  - 모드: `run-case`, `parse-rfid`
+- 실서버(`smart_server`) 기동 불필요:
+  - `test_tc_func_event.py` 내부 `real_auth_server` fixture로 `conftest.py` autouse를 override
+- 빌드 의존성:
+  - `g++`
+  - `pkg-config`
+  - `mariadb` pkg-config 항목(`pkg-config --cflags --libs mariadb`)
+
+## 4) 스트림 테스트 동작 요약
 
 - 테스트 대상: `TC-FUNC-STREAM-01`, `TC-FUNC-STREAM-03`
 - `TC-FUNC-STREAM-02`는 현재 스크립트에서 제거됨
@@ -47,7 +65,7 @@ pip install pytest
   - down 명령 실행 후 스트림 중단 감지
   - up 명령 실행 후 제한 시간 내 스트림 복구 확인
 
-## 4) 스트림 관련 환경변수
+## 5) 스트림 관련 환경변수
 
 기본값을 코드에 내장해 두었고, 필요 시 아래 변수로 override 할 수 있습니다.
 
@@ -72,7 +90,7 @@ pip install pytest
 - `SFEPS_STREAM_MTX_CONFIG`
   - 기본: `/home/iam/SFEPS/mediamtx/mediamtx.yml`
 
-## 5) 테스트 실행
+## 6) 테스트 실행
 
 로그인 테스트만:
 
@@ -90,6 +108,14 @@ source .venv/bin/activate
 python -m pytest -q tests/test_tc_func_stream.py -r a
 ```
 
+이벤트 테스트만:
+
+```bash
+cd /home/iam/SFEPS
+source .venv/bin/activate
+python -m pytest -q tests/test_tc_func_event.py -r a
+```
+
 전체:
 
 ```bash
@@ -98,7 +124,7 @@ source .venv/bin/activate
 python -m pytest -q tests -r a
 ```
 
-## 6) 로그 확인
+## 7) 로그 확인
 
 실서버 로그:
 
@@ -112,7 +138,9 @@ tail -f /home/iam/SFEPS/tests/real_server.log
 tail -f /tmp/sfeps-mediamtx-test.log
 ```
 
-## 7) 주의사항
+EVENT 테스트는 실서버 로그 대신 pytest 출력/driver stderr를 확인합니다.
+
+## 8) 주의사항
 
 - 스트림 테스트는 실제 장애 유도를 위해 `mediamtx`를 중단/재기동할 수 있습니다.
 - 운영 장비에서 실행 시 서비스 영향이 있을 수 있으므로 테스트 환경에서 실행하세요.
