@@ -116,22 +116,18 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ## 3) Functional Test Cases — EVENT(의심 판정/이벤트 생성)
 
-### TC-FUNC-EVENT-01 입구 가상선에서 특정된 객체가 출구 가상선 통과 시 RFID 태그가 없으면 무임승차 의심 판정됨
+### TC-FUNC-EVENT-01 무태그 입력 시 서버 판정로직이 의심으로 판정됨
 - **Level/Type/Priority**: Unit / Functional / High
 - **Execution**: Auto
 - **Pre-condition**
-  - 입구/출구 가상선 통과 이벤트 생성 가능
-  - 사람 얼굴 인식 시 객체 ID 부여 및 추정 나이값 업데이트 가능
+  - 서버 판정로직 호출 가능한 테스트 드라이버/테스트 훅 준비
 - **Input Data**
-  - 얼굴 인식 객체 1명, RFID 태그 0회
+  - age=30, card_text=""
 - **Steps**
-  1. 카메라에서 사람 얼굴 인식 후 객체 ID 부여 및 추정 나이값 업데이트
-  2. 입구 가상선에서 객체 특정
-  3. RFID 태그 없이 해당 객체가 출구 가상선 통과
-  4. 판정 결과 확인
+  1. 서버 판정로직에 age=30, card_text="" 입력
+  2. 판정 결과 확인
 - **Expected Result**
-  - 판정=의심
-  - Client로 부정승차 알림 전송
+  - fraud=true(의심)
 
 ### TC-FUNC-EVENT-02 청소년 우대카드 경계값(19/20) 판정 일관성 검증
 - **Level/Type/Priority**: Unit / Functional / Medium
@@ -140,16 +136,13 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   - A: CardType=청소년, age=19 → 정상
   - B: CardType=청소년, age=20 → 의심
 - **Steps**
-  1. A(age=19) 서브케이스 시작: 카메라 얼굴 인식으로 객체 ID 부여 및 추정 나이값을 19로 업데이트
-  2. A(age=19): 입구 가상선에서 동일 객체를 특정
-  3. A(age=19): 청소년 카드 태그를 주입하여 특정된 객체 ID에 카드 데이터 업데이트
-  4. A(age=19): 해당 객체가 출구 가상선을 통과하도록 입력 후 판정 결과 확인
-  5. B(age=20) 서브케이스 시작: 카메라 얼굴 인식으로 객체 ID 부여 및 추정 나이값을 20으로 업데이트
-  6. B(age=20): 입구 가상선에서 동일 객체를 특정
-  7. B(age=20): 청소년 카드 태그를 주입하여 특정된 객체 ID에 카드 데이터 업데이트
-  8. B(age=20): 해당 객체가 출구 가상선을 통과하도록 입력 후 판정 결과 확인
+  1. A(age=19): 서버 판정로직에 age=19, card_text=youth 입력
+  2. A(age=19): 판정 결과 확인
+  3. B(age=20): 서버 판정로직에 age=20, card_text=youth 입력
+  4. B(age=20): 판정 결과 확인
 - **Expected Result**
-  - 경계값에서 규칙대로 일관된 판정
+  - A: fraud=false(정상)
+  - B: fraud=true(의심)
 
 ### TC-FUNC-EVENT-03 노인 우대카드 경계값(59/60) 판정 일관성 검증
 - **Level/Type/Priority**: Unit / Functional / Medium
@@ -158,18 +151,15 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   - A: CardType=노인, age=59 → 의심
   - B: CardType=노인, age=60 → 정상
 - **Steps**
-  1. A(age=59) 서브케이스 시작: 카메라 얼굴 인식으로 객체 ID 부여 및 추정 나이값을 59로 업데이트
-  2. A(age=59): 입구 가상선에서 동일 객체를 특정
-  3. A(age=59): 노인 카드 태그를 주입하여 특정된 객체 ID에 카드 데이터 업데이트
-  4. A(age=59): 해당 객체가 출구 가상선을 통과하도록 입력 후 판정 결과 확인
-  5. B(age=60) 서브케이스 시작: 카메라 얼굴 인식으로 객체 ID 부여 및 추정 나이값을 60으로 업데이트
-  6. B(age=60): 입구 가상선에서 동일 객체를 특정
-  7. B(age=60): 노인 카드 태그를 주입하여 특정된 객체 ID에 카드 데이터 업데이트
-  8. B(age=60): 해당 객체가 출구 가상선을 통과하도록 입력 후 판정 결과 확인
+  1. A(age=59): 서버 판정로직에 age=59, card_text=senior 입력
+  2. A(age=59): 판정 결과 확인
+  3. B(age=60): 서버 판정로직에 age=60, card_text=senior 입력
+  4. B(age=60): 판정 결과 확인
 - **Expected Result**
-  - 경계값에서 규칙대로 일관된 판정
+  - A: fraud=true(의심)
+  - B: fraud=false(정상)
 
-### TC-FUNC-EVENT-04 의심 판정 시 의심 이벤트 로그가 생성됨
+### TC-FUNC-EVENT-04 의심 판정 시 의심 이벤트가 생성됨
 - **Level/Type/Priority**: Unit / Functional / High
 - **Execution**: Auto
 - **Pre-condition**: 의심 판정 유도 가능(TC-FUNC-EVENT-06/07 중 하나)
@@ -180,7 +170,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 - **Expected Result**
   - 이벤트 ID 포함 의심 이벤트 생성됨
 
-  ### TC-FUNC-EVENT-05 정상 판정 시 의심 이벤트가 생성되지 않음
+### TC-FUNC-EVENT-05 정상 판정 시 의심 이벤트가 생성되지 않음
 - **Level/Type/Priority**: Unit / Functional / High
 - **Execution**: Auto
 - **Input Data**: 정상 판정 케이스(예: 청소년 age=19 또는 노인 age=60)
@@ -260,9 +250,9 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ---
 
-## 5) Functional Test Cases — TRACK(사이렌+레이저)
+## 5) Functional Test Cases — TRACKING
 
-### TC-FUNC-TRACK-01 관리자가 상세 팝업에서 Tracking 버튼 클릭 시에만 Tracking 수행
+### TC-FUNC-TRACK-01 관리자가 상세 팝업에서 Tracking 버튼 클릭 시 Laser Tracking 수행
 - **Level/Type/Priority**: System / Functional / High
 - **Execution**: Manual
 - **Pre-condition**
@@ -271,41 +261,11 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 - **Steps**
   1. 상세 팝업에서 Tracking 버튼 클릭
 - **Expected Result**
-  - Tracking 절차가 시작됨(서버로 제어 요청)
-  - (관찰/로그 기준) 오디오 ON 및 레이저 ON 제어가 트리거됨
-
-### TC-FUNC-TRACK-02 Tracking 시작 시 Server가 오디오(사이렌) ON, 종료 시 OFF 제어
-- **Level/Type/Priority**: Integration/System / Functional / High
-- **Execution**: Manual
-- **Pre-condition**
-  - 오디오(사이렌) 디바이스가 Raspberry Pi에 연결되어 제어 가능
-  - 상세 팝업에서 Tracking 수행 가능
-- **Steps**
-  1. Tracking 버튼 클릭하여 시작
-  2. 오디오 ON 여부 확인(실제 소리 또는 서버 로그/상태)
-  3. Tracking 종료(팝업 내 종료 버튼/토글 정책에 따라)
-  4. 오디오 OFF 여부 확인
-- **Expected Result**
-  - 시작 시 오디오 ON
-  - 종료 시 오디오 OFF
-  - 상태/로그가 일치
-
-### TC-FUNC-TRACK-03 Tracking 시작 시 Server→STM32로 레이저 트래킹 ON, 종료 시 OFF 제어
-- **Level/Type/Priority**: Integration/System / Functional / High
-- **Execution**: Manual
-- **Pre-condition**
-  - STM32가 Server와 연결되어 레이저 제어 가능
-- **Steps**
-  1. Tracking 시작
-  2. 레이저 ON/트래킹 동작 확인(실물 관찰 또는 STM32 ACK/로그)
-  3. Tracking 종료
-  4. 레이저 OFF 확인
-- **Expected Result**
+  - Laser Tracking이 시작됨(서버로 제어 요청)
   - 시작 시 레이저 ON
   - 종료 시 레이저 OFF
-  - ACK/로그가 일치
 
-### TC-FUNC-TRACK-04 QT Client에서 Tracking ON/OFF 상태가 UI에 표시됨
+### TC-FUNC-TRACK-02 QT Client에서 Tracking ON/OFF 상태가 UI에 표시됨
 - **Level/Type/Priority**: System / Functional / Medium
 - **Execution**: Manual
 - **Pre-condition**: Tracking 제어 가능 상태
@@ -319,17 +279,16 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ## 6) Non-Functional Test Cases — Performance
 
-### TC-NF-PERF-01 Tracking 버튼 클릭 → (오디오 ON + 레이저 ON) 시작/ACK 확인까지 1초 이내
+### TC-NF-PERF-01 Tracking 버튼 클릭 → Tracking 시작/ACK 확인까지 1초 이내
 - **Level/Type/Priority**: System/Integration / Non-Functional(Performance) / High
 - **Execution**: Manual
 - **Pre-condition**
   - 의심 이벤트 존재 및 상세 팝업 표시
-  - 오디오 제어 가능(Server)
   - 레이저 제어 가능(STM32)
   - 시간 측정용 로그/계측 가능
 - **Measurement**
   - Start: QT Client Tracking 버튼 클릭 시각
-  - End: 오디오 ON 처리완료 확인 시각과 레이저 ON ACK(또는 처리완료) 시각 중 더 늦은 시각
+  - End: 레이저 ON ACK 시각
 - **Steps**
   1. 계측/로그 수집 시작
   2. Tracking 버튼 클릭
@@ -372,7 +331,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 - **Execution**: Manual
 - **Pre-condition**
   - 의심 이벤트 존재(또는 반복 생성 가능)
-  - 오디오/레이저 제어 정상
+  - 레이저 제어 정상
 - **Steps**
   1. 이벤트 상세 팝업 진입
   2. 아래를 20회 반복
@@ -383,7 +342,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   4. 각 반복에서 UI 상태와 실제 장치 동작 일치 여부 확인
 - **Expected Result**
   - 20회 수행 동안 비정상 종료/오류 없음
-  - UI 표시와 오디오/레이저 동작이 일치
+  - UI 표시와 레이저 동작이 일치
 
 ---
 
@@ -394,7 +353,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 - **Execution**: Manual
 - **Pre-condition**
   - QT Client와 Server 정상 연결
-  - (가능하면) 스트리밍 및 이벤트 수신 가능한 상태
+  - 스트리밍 및 이벤트 수신 가능한 상태
 - **Steps**
   1. 정상 동작 상태 확인(연결 상태/스트리밍 등)
   2. 네트워크 단절 유도(10초)
@@ -409,14 +368,14 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ## 9) Scenario Test Cases (End-to-End)
 
-### TC-SYS-01 로그인 → 스트리밍 → 의심 이벤트 수신/표시 → 상세 팝업 확인 → Tracking 수행(오디오+레이저)
+### TC-SYS-01 로그인 → 스트리밍 → 의심 이벤트 수신/표시 → 상세 팝업 확인 → Tracking 수행
 - **Level/Type/Priority**: System / Functional(Scenario) / High
 - **Execution**: Manual
 - **Pre-condition**
   - 유효 계정 존재(`admin / 1111`)
   - 스트리밍 가능
   - 의심 이벤트 생성 가능(시뮬레이션/모킹 포함)
-  - 오디오/레이저 제어 가능
+  - 레이저 제어 가능
 - **Steps**
   1. 로그인 성공
   2. 스트리밍 영상 표시 확인
@@ -425,9 +384,9 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   5. 해당 이벤트 클릭 → 상세 팝업 표시
   6. 팝업에서 스크린샷/카드정보/추정나이/시간/게이트ID 확인
   7. Tracking 버튼 클릭
-  8. 오디오 ON 및 레이저 ON 확인
-  9. Tracking 종료 후 오디오 OFF 및 레이저 OFF 확인
+  8. 레이저 ON 확인
+  9. Tracking 종료 후 레이저 OFF 확인
 - **Expected Result**
   - 전체 흐름이 끊김 없이 수행됨
   - 이벤트 정보 표시가 정확함
-  - Tracking 동작(오디오/레이저)이 정상 수행됨
+  - Tracking 동작이 정상 수행됨
