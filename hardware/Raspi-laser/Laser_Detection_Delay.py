@@ -17,6 +17,16 @@ Ubuntu 호스트 파이프라인(ubuntu_tcp_server → pid_pwm_agent.py 와 동�
   sudo python3 Laser_Detection_Delay.py --host 192.168.0.44 --port 5555 \\
       --pin 23 --trials 10
 
+  # 호스트: rtsp_laser_demo(레이저 탐지) → 파이프 → ubuntu_tcp_server
+  ./rtsp_laser_demo --nolut --gst | ../../tmp_server/ubuntu_server/ubuntu_tcp_server
+
+  # 라즈베리: TCP로 서버에 연결 후 Enter 로 레이저 ON/OFF 하며 지연 측정
+  sudo python3 Laser_Detection_Delay.py --host 192.168.0.44 --port 5555 \\
+      --pin 23 --trials 10
+
+  --nolut 모드에서는 박스 없이 레이저만 감지돼도 EX/EY 라인이 전송되므로
+  지연 측정 시 호스트에서 별도 타겟 박스를 그리지 않아도 된다.
+
 """
 
 from __future__ import annotations

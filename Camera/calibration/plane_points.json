@@ -1,0 +1,18 @@
+{
+  "image": "75.png",
+  "image_path": "/home/ros2man/Desktop/SFEPS/Camera/calibration/75.png",
+  "pixel_points": [
+    { "x": 1675, "y": 914 },
+    { "x": 366,  "y": 528 },
+    { "x": 1042, "y": 277 },
+    { "x": 1647, "y": 372 }
+  ],
+  "world_points": [
+    { "X": 0.0,     "Y": 0.0 },
+    { "X": -5780.0, "Y": 0.0 },
+    { "X": -5780.0, "Y": 7740.0 },
+    { "X": 0.0,   "Y": 7740.0 }
+  ],
+  "note": "world_points 단위는 mm 입니다 (cm -> mm로 10배 변경)."
+}
+

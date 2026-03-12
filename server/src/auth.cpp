@@ -8,42 +8,49 @@ constexpr const char* kAuthQuery = "SELECT 1 FROM users WHERE id = ? AND passwor
 } // namespace
 
 Authenticator::Authenticator(const char* h, const char* u, const char* p, const char* db)
-    : conn(NULL), authStmt(NULL), host(h), user(u), pass(p), db_name(db) {}
+    : conn(nullptr),
+      authStmt(nullptr),
+      host(h ? h : ""),
+      user(u ? u : ""),
+      pass(p ? p : ""),
+      db_name(db ? db : "") {}
 
 Authenticator::~Authenticator() {
-    if (authStmt != NULL) {
+    if (authStmt != nullptr) {
         mysql_stmt_close(authStmt);
     }
-    if (conn != NULL) {
+    if (conn != nullptr) {
         mysql_close(conn);
     }
 }
 
 bool Authenticator::connect() {
-    conn = mysql_init(NULL);
-    if (conn == NULL) return false;
+    conn = mysql_init(nullptr);
+    if (conn == nullptr) return false;
 
-    if (mysql_real_connect(conn, host, user, pass, db_name, 3306, NULL, 0) == NULL) {
+    if (mysql_real_connect(
+            conn, host.c_str(), user.c_str(), pass.c_str(), db_name.c_str(), 3306, nullptr, 0) ==
+        nullptr) {
         std::cerr << "[Auth DB Error] " << mysql_error(conn) << std::endl;
         mysql_close(conn);
-        conn = NULL;
+        conn = nullptr;
         return false;
     }
 
     authStmt = mysql_stmt_init(conn);
-    if (authStmt == NULL) {
+    if (authStmt == nullptr) {
         std::cerr << "[Auth DB Error] mysql_stmt_init() failed" << std::endl;
         mysql_close(conn);
-        conn = NULL;
+        conn = nullptr;
         return false;
     }
 
     if (mysql_stmt_prepare(authStmt, kAuthQuery, std::strlen(kAuthQuery)) != 0) {
         std::cerr << "[Auth DB Error] prepare failed: " << mysql_stmt_error(authStmt) << std::endl;
         mysql_stmt_close(authStmt);
-        authStmt = NULL;
+        authStmt = nullptr;
         mysql_close(conn);
-        conn = NULL;
+        conn = nullptr;
         return false;
     }
 
@@ -51,7 +58,7 @@ bool Authenticator::connect() {
 }
 
 bool Authenticator::authenticate(const std::string& id, const std::string& pw) {
-    if (conn == NULL || authStmt == NULL) return false;
+    if (conn == nullptr || authStmt == nullptr) return false;
 
     std::lock_guard<std::mutex> dbLock(dbMutex);
 
@@ -69,13 +76,13 @@ bool Authenticator::authenticate(const std::string& id, const std::string& pw) {
     params[0].buffer_type = MYSQL_TYPE_STRING;
     params[0].buffer = (void*)id.c_str();
     params[0].buffer_length = static_cast<unsigned long>(id.size());
-    params[0].is_null = NULL;
+    params[0].is_null = nullptr;
     params[0].length = &id_len;
 
     params[1].buffer_type = MYSQL_TYPE_STRING;
     params[1].buffer = (void*)pw.c_str();
     params[1].buffer_length = static_cast<unsigned long>(pw.size());
-    params[1].is_null = NULL;
+    params[1].is_null = nullptr;
     params[1].length = &pw_len;
 
     if (mysql_stmt_bind_param(authStmt, params) != 0) {

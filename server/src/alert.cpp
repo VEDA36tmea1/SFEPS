@@ -1,4 +1,6 @@
 #include "alert.h"
+#include "net_utils.h"
+#include "tls_server.h"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -14,38 +16,6 @@ namespace {
 std::vector<int> g_plain_clients;
 std::vector<TlsClientConnection> g_tls_clients;
 std::mutex g_alert_clients_mutex;
-
-bool send_all_plain(int fd, const char* data, size_t len) {
-    size_t sent = 0;
-    while (sent < len) {
-        const ssize_t n = send(fd, data + sent, len - sent, MSG_NOSIGNAL);
-        if (n > 0) {
-            sent += static_cast<size_t>(n);
-            continue;
-        }
-        if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
-            continue;
-        }
-        return false;
-    }
-    return true;
-}
-
-bool send_all_tls(const TlsClientConnection& client, const char* data, size_t len) {
-    size_t sent = 0;
-    while (sent < len) {
-        const ssize_t n = tls_write(client, data + sent, len - sent);
-        if (n > 0) {
-            sent += static_cast<size_t>(n);
-            continue;
-        }
-        if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
-            continue;
-        }
-        return false;
-    }
-    return true;
-}
 
 std::string describe_plain_peer(int fd) {
     sockaddr_in addr {};
@@ -155,11 +125,4 @@ void send_alert_to_clients(const std::string& msg) {
         std::cout << "[alert.cpp] [Alert] Sent to clients: success=" << sent_cnt
                   << ", fail=" << fail_cnt << ", payload='" << msg << "'" << std::endl;
     }
-}
-
-void send_test_alert_to_clients(const std::string& msg) {
-    std::string out = msg;
-    if (out.empty()) return;
-    if (out.back() != '\n') out.push_back('\n');
-    send_alert_to_clients(out);
 }
