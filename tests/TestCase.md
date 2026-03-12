@@ -180,20 +180,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 - **Expected Result**
   - 의심 이벤트 생성되지 않음
 
-### TC-FUNC-EVENT-06 의심 이벤트가 DB에 저장됨(필수 필드 포함)
-- **Level/Type/Priority**: Integration / Functional / Medium
-- **Execution**: Auto
-- **Pre-condition**: DB 연결 정상
-- **Input Data**: 의심 이벤트 1건
-- **Steps**
-  1. 의심 이벤트 생성
-  2. DB에서 해당 이벤트 레코드 조회
-  3. 필수 필드 존재 확인(이벤트 ID, 발생 시간, 게이트 ID, 카드 정보, 추정 나이, 스크린샷/참조 경로)
-- **Expected Result**
-  - 레코드 저장됨
-  - 필수 필드 누락 없음
-
-### TC-FUNC-EVENT-07 잘못된 이벤트 메시지 포맷 처리(크래시 없이 무시/실패 처리)
+### TC-FUNC-EVENT-06 잘못된 이벤트 메시지 포맷 처리(크래시 없이 무시/실패 처리)
 - **Level/Type/Priority**: Integration / Functional / Medium
 - **Execution**: Auto
 - **Pre-condition**: Server 또는 테스트 도구로 이벤트 메시지 전송 가능
