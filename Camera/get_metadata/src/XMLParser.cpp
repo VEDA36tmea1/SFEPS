@@ -9,7 +9,7 @@ namespace {
                               std::size_t start_pos,
                               std::size_t end_pos) {
         const std::size_t pos = raw.find(needle, start_pos);
-        if (pos == std::string::npos || pos >= end_pos) return std::string::npos;
+        if (pos == std::string::npos || pos >= end_pos) return std::string::npos; 
         return pos;
     }
 
@@ -324,7 +324,8 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
     return results; 
 }
 
-std::vector<ParsedMetadataObject> XMLParser::parseHumanObjectsForAnalytics(const std::string& xml) const {
+std::vector<ParsedMetadataObject> XMLParser::parseHumanObjectsForAnalytics(const std::string& xml,
+                                                                           bool detect_all) const {
     std::vector<ParsedMetadataObject> results;
     results.reserve(8);
     std::size_t search_pos = 0;
@@ -369,9 +370,24 @@ std::vector<ParsedMetadataObject> XMLParser::parseHumanObjectsForAnalytics(const
         const bool has_top = parse_float_attr(xml, top_pos, 5, object.top);
         const bool has_bottom = parse_float_attr(xml, bottom_pos, 8, object.bottom);
 
-        if (!object.id.empty() && object.type == "Human" && has_x && has_y &&
+        const bool type_ok = detect_all || (object.type == "Human");
+        if (!object.id.empty() && type_ok && has_x && has_y &&
             has_left && has_right && has_top && has_bottom) {
             results.push_back(object);
+
+            // 디버그용: 파싱된 메타데이터 객체를 전부 로그로 확인하고 싶을 때 사용
+            constexpr bool k_enable_meta_log = true;
+            if (k_enable_meta_log) {
+                std::cout << "[META] id=" << object.id
+                          << " type=" << object.type
+                          << " x=" << object.x
+                          << " y=" << object.y
+                          << " left=" << object.left
+                          << " right=" << object.right
+                          << " top=" << object.top
+                          << " bottom=" << object.bottom
+                          << std::endl;
+            }
         }
 
         search_pos = obj_end;
