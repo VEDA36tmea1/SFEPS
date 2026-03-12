@@ -14,7 +14,7 @@ constexpr int kDefaultAuthTlsPort = 6555;
 constexpr int kDefaultAuthPlainPort = 5555;
 constexpr bool kDefaultAuthTlsEnable = true;
 constexpr bool kDefaultPlainFallbackEnable = false;
-constexpr const char* kDefaultAuthHost = "192.168.0.97";
+constexpr const char* kDefaultAuthHost = "192.168.0.80";
 constexpr const char* kResourceCaPath = ":/certs/auth_ca.pem";
 
 QString maskUserId(const QString& userId)
