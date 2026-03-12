@@ -183,3 +183,37 @@ sudo python3 pid_pwm_agent.py --host 10.42.0.1 --port 5555
 
 초기 PWM은 위 “PWM 초기값 (고정)” (x=1530µs, y=1300µs)을 사용하며, `--kp-x`, `--kp-y` 등으로 게인을 바로 바꿔가며 실시간 튜닝할 수 있습니다.
 
+---
+
+## 7) 수동 테스트: 키보드 화살표로 PWM 조절
+
+`GPIO12(pwm0)` / `GPIO13(pwm1)` 을 키보드 화살표로 직접 올리고 내리며 테스트합니다.
+
+```bash
+sudo systemctl enable --now pigpiod
+python3 keyboard_pwm_control.py
+```
+
+- `←/→`: PWM0(GPIO12) 감소/증가
+- `↑/↓`: PWM1(GPIO13) 증가/감소
+- `m`: 커플링 상쇄 모드 토글(NORMAL ↔ DECOUPLE)
+- `q`: 종료 (pigpio: pulsewidth=0, sysfs: enable=0)
+
+커플링 상쇄 모드로 시작(사용자 실측값 기반 기본 \(J\) 포함):
+
+```bash
+python3 keyboard_pwm_control.py --decouple
+```
+
+sysfs 백엔드로 강제하려면(기존 방식):
+
+```bash
+sudo python3 keyboard_pwm_control.py --backend sysfs
+```
+
+---
+
+## 8) 축 커플링 보정(디커플링) 수식
+
+- **[DECOUPLING_CALIBRATION.md](DECOUPLING_CALIBRATION.md)** — \(J\) 추정(유한차분)과 \(\Delta u=-\alpha J^{-1}e\) 제어식 정리
+
