@@ -14,6 +14,9 @@ Ubuntu 호스트 파이프라인(ubuntu_tcp_server → pid_pwm_agent.py 와 동�
 
 실행 예:
 
+  sudo python3 Laser_Detection_Delay.py --host 192.168.0.44 --port 5555 \\
+      --pin 23 --trials 10
+
   # 호스트: rtsp_laser_demo(레이저 탐지) → 파이프 → ubuntu_tcp_server
   ./rtsp_laser_demo --nolut --gst | ../../tmp_server/ubuntu_server/ubuntu_tcp_server
 
@@ -36,7 +39,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional, Tuple
 
 try:
     import RPi.GPIO as GPIO
@@ -150,11 +153,47 @@ def recv_loop(sock: socket.socket, shared: SharedState) -> None:
     sys.stderr.write("[delay] recv_loop ended.\n")
 
 
+def udp_recv_loop(sock: socket.socket, shared: SharedState) -> None:
+    """UDP로 들어오는 EX/EY 라인을 감지해 시각 기록.
+    UDP는 datagram 단위로 오므로, payload 내부를 줄 단위로 split한다.
+    """
+    while True:
+        try:
+            data, _addr = sock.recvfrom(2048)
+            if not data:
+                continue
+            text = data.decode("utf-8", errors="ignore")
+            for raw in text.splitlines():
+                line = raw.strip()
+                if not line:
+                    continue
+                m = EXEY_RE.search(line)
+                if m:
+                    now = time.monotonic()
+                    try:
+                        ex = float(m.group(1))
+                        ey = float(m.group(2))
+                    except ValueError:
+                        ex = ey = 0.0
+                    with shared.lock:
+                        shared.last_t = now
+                        shared.count += 1
+                    sys.stderr.write(
+                        f"[delay] RX(UDP) EX={ex:.1f} EY={ey:.1f} (count={shared.count})\n"
+                    )
+        except socket.timeout:
+            continue
+        except (ConnectionResetError, BrokenPipeError, OSError):
+            break
+    sys.stderr.write("[delay] udp_recv_loop ended.\n")
+
+
 def measure_delays(
     host: str,
     port: int,
     pin: int,
     timeout_s: float,
+    udp: bool,
 ) -> None:
     if GPIO is None:
         sys.stderr.write("[delay] RPi.GPIO 모듈을 불러올 수 없습니다. 라즈베리 파이에서 sudo 로 실행하세요.\n")
@@ -175,19 +214,32 @@ def measure_delays(
     GPIO.setmode(GPIO.BCM)
     GPIO.setup(pin, GPIO.IN)  # 시작 시 OFF
 
-    # TCP 연결
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(10.0)
-    try:
-        sock.connect((host, port))
-    except (socket.error, OSError) as e:
-        sys.stderr.write(f"[delay] TCP connect 실패: {e}\n")
-        GPIO.cleanup()
-        sys.exit(1)
-    sock.settimeout(0.5)
+    # TCP/UDP 연결
+    if udp:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(0.5)
+        # 서버(ubuntu_tcp_server udp ...)가 peer를 학습할 수 있도록 HELLO 1회 송신
+        try:
+            sock.sendto(b"HELLO\n", (host, port))
+            sys.stderr.write(f"[delay] UDP HELLO sent to {host}:{port}\n")
+        except OSError as e:
+            sys.stderr.write(f"[delay] UDP HELLO 실패: {e}\n")
+            GPIO.cleanup()
+            sys.exit(1)
+    else:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(10.0)
+        try:
+            sock.connect((host, port))
+        except (socket.error, OSError) as e:
+            sys.stderr.write(f"[delay] TCP connect 실패: {e}\n")
+            GPIO.cleanup()
+            sys.exit(1)
+        sock.settimeout(0.5)
 
     shared = SharedState()
-    th = threading.Thread(target=recv_loop, args=(sock, shared), daemon=True)
+    th_target = udp_recv_loop if udp else recv_loop
+    th = threading.Thread(target=th_target, args=(sock, shared), daemon=True)
     th.start()
 
     delays: List[float] = []
@@ -271,6 +323,11 @@ def main() -> None:
     parser.add_argument("--host", default="10.42.0.1", help="Ubuntu TCP 서버 IP")
     parser.add_argument("--port", type=int, default=5555, help="Ubuntu TCP 서버 포트")
     parser.add_argument(
+        "--udp",
+        action="store_true",
+        help="TCP 대신 UDP로 수신 (ubuntu_tcp_server udp 모드와 함께 사용)",
+    )
+    parser.add_argument(
         "--pin",
         type=int,
         default=17,
@@ -289,6 +346,7 @@ def main() -> None:
         port=args.port,
         pin=args.pin,
         timeout_s=args.timeout,
+        udp=args.udp,
     )
 
 
