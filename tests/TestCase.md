@@ -115,122 +115,82 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 ---
 
 ## 3) Functional Test Cases — EVENT(의심 판정/이벤트 생성)
-### TC-FUNC-EVENT-01 개찰구 2개 가상선 통과 시각이 정상 기록됨
-- **Level/Type/Priority**: Integration / Functional / High
-- **Execution**: Manual
-- **Pre-condition**
-  - 가상선 통과 이벤트를 생성할 수 있는 환경
-- **Input Data**
-  - Line1 통과 시각 t1, Line2 통과 시각 t2(t2>t1)
-- **Steps**
-  1. 객체가 Line1을 통과하도록 이벤트/시뮬레이션 발생
-  2. 객체가 Line2를 통과하도록 이벤트/시뮬레이션 발생
-  3. 서버 로그/판정 모듈에서 t1, t2 기록 확인
-- **Expected Result**
-  - t1, t2가 정상 저장/참조 가능
 
-### TC-FUNC-EVENT-02 두 타임스탬프 사이 RFID 태그가 없으면 의심 판정됨
+### TC-FUNC-EVENT-01 입구 가상선에서 특정된 객체가 출구 가상선 통과 시 RFID 태그가 없으면 무임승차 의심 판정됨
 - **Level/Type/Priority**: Unit / Functional / High
 - **Execution**: Auto
 - **Pre-condition**
-  - t1, t2 생성 가능
-  - t1~t2 사이 RFID 입력이 “없음”으로 처리되도록 구성
+  - 입구/출구 가상선 통과 이벤트 생성 가능
+  - 사람 얼굴 인식 시 객체 ID 부여 및 추정 나이값 업데이트 가능
 - **Input Data**
-  - t1~t2 구간 RFID 태그 0회
+  - 얼굴 인식 객체 1명, RFID 태그 0회
 - **Steps**
-  1. t1 발생
-  2. RFID 태그 없이 t2 발생
-  3. 판정 결과 확인
+  1. 카메라에서 사람 얼굴 인식 후 객체 ID 부여 및 추정 나이값 업데이트
+  2. 입구 가상선에서 객체 특정
+  3. RFID 태그 없이 해당 객체가 출구 가상선 통과
+  4. 판정 결과 확인
 - **Expected Result**
   - 판정=의심
-  - 의심 이벤트 생성 조건 충족
+  - Client로 부정승차 알림 전송
 
-### TC-FUNC-EVENT-03 청소년 우대카드 + age<20 → 정상 판정
+### TC-FUNC-EVENT-02 청소년 우대카드 경계값(19/20) 판정 일관성 검증
 - **Level/Type/Priority**: Unit / Functional / Medium
 - **Execution**: Auto
-- **Pre-condition**: 우대카드(청소년) 태그 데이터 주입 가능, Mock age 주입 가능
 - **Input Data**
-  - CardType=청소년, age=19, t1~t2 사이 태그 존재
-- **Steps**
-  1. t1 발생
-  2. t1~t2 사이 청소년 카드 태그 주입
-  3. Mock age=19 입력/생성
-  4. t2 발생 후 판정 확인
-- **Expected Result**
-  - 판정=정상
-  - 의심 이벤트 미생성
-
-### TC-FUNC-EVENT-04 청소년 우대카드 + age≥20 → 의심 판정
-- **Level/Type/Priority**: Unit / Functional / Medium
-- **Execution**: Auto
-- **Input Data**: CardType=청소년, age=20
-- **Steps**: TC-FUNC-EVENT-03과 동일 흐름
-- **Expected Result**
-  - 판정=의심
-  - 의심 이벤트 생성 조건 충족
-
-### TC-FUNC-EVENT-05 노인 우대카드 + age>60 → 정상 판정
-- **Level/Type/Priority**: Unit / Functional / Medium
-- **Execution**: Auto
-- **Input Data**: CardType=노인, age=61
-- **Expected Result**
-  - 판정=정상
-  - 의심 이벤트 미생성
-
-### TC-FUNC-EVENT-06 노인 우대카드 + age≤60 → 의심 판정
-- **Level/Type/Priority**: Unit / Functional / Medium
-- **Execution**: Auto
-- **Input Data**: CardType=노인, age=60
-- **Expected Result**
-  - 판정=의심
-  - 의심 이벤트 생성 조건 충족
-
-### TC-FUNC-EVENT-07 청소년 우대카드 경계값(19/20) 판정 일관성 검증
-- **Level/Type/Priority**: Unit / Functional / Medium
-- **Execution**: Auto
-- **Input Data(서브케이스)**
   - A: CardType=청소년, age=19 → 정상
   - B: CardType=청소년, age=20 → 의심
 - **Steps**
-  1. A 수행 후 판정 확인
-  2. B 수행 후 판정 확인
+  1. A(age=19) 서브케이스 시작: 카메라 얼굴 인식으로 객체 ID 부여 및 추정 나이값을 19로 업데이트
+  2. A(age=19): 입구 가상선에서 동일 객체를 특정
+  3. A(age=19): 청소년 카드 태그를 주입하여 특정된 객체 ID에 카드 데이터 업데이트
+  4. A(age=19): 해당 객체가 출구 가상선을 통과하도록 입력 후 판정 결과 확인
+  5. B(age=20) 서브케이스 시작: 카메라 얼굴 인식으로 객체 ID 부여 및 추정 나이값을 20으로 업데이트
+  6. B(age=20): 입구 가상선에서 동일 객체를 특정
+  7. B(age=20): 청소년 카드 태그를 주입하여 특정된 객체 ID에 카드 데이터 업데이트
+  8. B(age=20): 해당 객체가 출구 가상선을 통과하도록 입력 후 판정 결과 확인
 - **Expected Result**
   - 경계값에서 규칙대로 일관된 판정
 
-### TC-FUNC-EVENT-08 노인 우대카드 경계값(60/61) 판정 일관성 검증
+### TC-FUNC-EVENT-03 노인 우대카드 경계값(59/60) 판정 일관성 검증
 - **Level/Type/Priority**: Unit / Functional / Medium
 - **Execution**: Auto
-- **Input Data(서브케이스)**
-  - A: CardType=노인, age=60 → 의심
-  - B: CardType=노인, age=61 → 정상
+- **Input Data**
+  - A: CardType=노인, age=59 → 의심
+  - B: CardType=노인, age=60 → 정상
+- **Steps**
+  1. A(age=59) 서브케이스 시작: 카메라 얼굴 인식으로 객체 ID 부여 및 추정 나이값을 59로 업데이트
+  2. A(age=59): 입구 가상선에서 동일 객체를 특정
+  3. A(age=59): 노인 카드 태그를 주입하여 특정된 객체 ID에 카드 데이터 업데이트
+  4. A(age=59): 해당 객체가 출구 가상선을 통과하도록 입력 후 판정 결과 확인
+  5. B(age=60) 서브케이스 시작: 카메라 얼굴 인식으로 객체 ID 부여 및 추정 나이값을 60으로 업데이트
+  6. B(age=60): 입구 가상선에서 동일 객체를 특정
+  7. B(age=60): 노인 카드 태그를 주입하여 특정된 객체 ID에 카드 데이터 업데이트
+  8. B(age=60): 해당 객체가 출구 가상선을 통과하도록 입력 후 판정 결과 확인
 - **Expected Result**
   - 경계값에서 규칙대로 일관된 판정
 
-### TC-FUNC-EVENT-09 의심 판정 시 의심 이벤트 로그가 생성됨
+### TC-FUNC-EVENT-04 의심 판정 시 의심 이벤트 로그가 생성됨
 - **Level/Type/Priority**: Unit / Functional / High
 - **Execution**: Auto
-- **Pre-condition**: 의심 판정 유도 가능(TC-FUNC-EVENT-02/04/06 중 하나)
+- **Pre-condition**: 의심 판정 유도 가능(TC-FUNC-EVENT-06/07 중 하나)
 - **Input Data**: 의심 판정 케이스 1개
 - **Steps**
-  1. 의심 판정 발생
+  1. 출구 가상선 통과 시 의심 판정 발생
   2. 이벤트 생성 여부 확인(서버/DB/이벤트 큐)
 - **Expected Result**
   - 이벤트 ID 포함 의심 이벤트 생성됨
 
-### TC-FUNC-EVENT-10 생성된 의심 이벤트가 QT Client에 전달되어 목록에 표시됨
-- **Level/Type/Priority**: System / Functional / High
-- **Execution**: Manual
-- **Pre-condition**
-  - QT Client 로그인 후 메인 화면
-  - 의심 이벤트 생성 가능
-- **Input Data**: 의심 이벤트 1건
+  ### TC-FUNC-EVENT-05 정상 판정 시 의심 이벤트가 생성되지 않음
+- **Level/Type/Priority**: Unit / Functional / High
+- **Execution**: Auto
+- **Input Data**: 정상 판정 케이스(예: 청소년 age=19 또는 노인 age=60)
 - **Steps**
-  1. 의심 이벤트 생성
-  2. QT Client 이벤트 목록 갱신/수신 확인
+  1. 정상 판정 입력 수행
+  2. 이벤트 생성 여부 확인
 - **Expected Result**
-  - 이벤트 목록에 신규 이벤트가 표시됨(이벤트 ID/시간 등)
+  - 의심 이벤트 생성되지 않음
 
-### TC-FUNC-EVENT-11 의심 이벤트가 DB에 저장됨(필수 필드 포함)
+### TC-FUNC-EVENT-06 의심 이벤트가 DB에 저장됨(필수 필드 포함)
 - **Level/Type/Priority**: Integration / Functional / Medium
 - **Execution**: Auto
 - **Pre-condition**: DB 연결 정상
@@ -243,17 +203,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   - 레코드 저장됨
   - 필수 필드 누락 없음
 
-### TC-FUNC-EVENT-12 정상 판정 시 의심 이벤트가 생성되지 않음
-- **Level/Type/Priority**: Unit / Functional / High
-- **Execution**: Auto
-- **Input Data**: 정상 판정 케이스(예: 청소년 age=19 또는 노인 age=61)
-- **Steps**
-  1. 정상 판정 입력 수행
-  2. 이벤트 생성 여부 확인
-- **Expected Result**
-  - 의심 이벤트 생성되지 않음
-
-### TC-FUNC-EVENT-13 잘못된 이벤트 메시지 포맷 처리(크래시 없이 무시/실패 처리)
+### TC-FUNC-EVENT-07 잘못된 이벤트 메시지 포맷 처리(크래시 없이 무시/실패 처리)
 - **Level/Type/Priority**: Integration / Functional / Medium
 - **Execution**: Auto
 - **Pre-condition**: Server 또는 테스트 도구로 이벤트 메시지 전송 가능
@@ -274,15 +224,18 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ## 4) Functional Test Cases — UI(이벤트 목록/상세 팝업)
 
-### TC-FUNC-UI-01 이벤트 로그 목록 조회/표시 가능
+### TC-FUNC-UI-01 생성된 의심 이벤트가 QT Client에 전달되어 목록에 표시됨
 - **Level/Type/Priority**: System / Functional / High
 - **Execution**: Manual
-- **Pre-condition**: QT Client 로그인 완료, 의심 이벤트 1건 이상 존재
+- **Pre-condition**
+  - QT Client 로그인 후 메인 화면
+  - 의심 이벤트 생성 가능
+- **Input Data**: 의심 이벤트 1건
 - **Steps**
-  1. 이벤트 로그 목록 영역 확인
-  2. 목록 새로고침(있다면) 수행
+  1. 의심 이벤트 생성
+  2. QT Client 이벤트 목록 갱신/수신 확인
 - **Expected Result**
-  - 이벤트 목록이 표시되고 항목 식별 가능
+  - 이벤트 목록에 신규 이벤트가 표시됨(이벤트 ID/시간 등)
 
 ### TC-FUNC-UI-02 이벤트 선택 시 상세 팝업 표시
 - **Level/Type/Priority**: System / Functional / High
@@ -467,7 +420,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 - **Steps**
   1. 로그인 성공
   2. 스트리밍 영상 표시 확인
-  3. 의심 이벤트 1건 발생(무태그 또는 우대카드 규칙 위반 등)
+  3. 얼굴 인식→입구 가상선 객체 특정→카드 미태그 또는 우대카드 규칙 위반→출구 가상선 통과로 의심 이벤트 1건 발생
   4. QT Client 이벤트 목록에 표시되는지 확인
   5. 해당 이벤트 클릭 → 상세 팝업 표시
   6. 팝업에서 스크린샷/카드정보/추정나이/시간/게이트ID 확인
