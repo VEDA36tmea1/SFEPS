@@ -485,7 +485,7 @@ else:
     html_parts.extend(["</tbody>", "</table>"])
 
 html_parts.extend(["</body>", "</html>"])
-out_path.write_text("\n".join(html_parts), encoding="utf-8")
+out_path.write_text("\\n".join(html_parts), encoding="utf-8")
 print(f"Wrote {out_path}")
 PY
             '''
