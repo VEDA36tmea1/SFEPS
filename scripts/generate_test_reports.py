@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import html
+import shutil
+import subprocess
 import textwrap
 import xml.etree.ElementTree as ET
 import zipfile
@@ -117,10 +119,10 @@ def parse_junit_reports(xml_paths: Iterable[Path]) -> tuple[dict[str, float], li
 
 def render_html(summary: dict[str, float], rows: list[TestCaseRow], output_path: Path) -> None:
     status_class_map = {
-        "passed": "status-pass",
-        "failure": "status-fail",
-        "error": "status-error",
-        "skipped": "status-skip",
+        "passed": "badge-pass",
+        "failure": "badge-fail",
+        "error": "badge-error",
+        "skipped": "badge-skip",
     }
     generated_at = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
@@ -141,8 +143,12 @@ def render_html(summary: dict[str, float], rows: list[TestCaseRow], output_path:
         ".kpi { background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px 12px; }",
         ".kpi .label { display: block; color: #6b7280; font-size: 12px; }",
         ".kpi .value { display: block; margin-top: 4px; font-size: 20px; font-weight: 700; }",
+        ".toolbar { display: grid; grid-template-columns: minmax(240px, 1.4fr) minmax(130px, 0.6fr) minmax(170px, 0.7fr) auto; gap: 10px; align-items: center; padding: 10px 20px 4px 20px; }",
+        ".control { height: 38px; border: 1px solid #cbd5e1; border-radius: 10px; padding: 0 12px; font-size: 14px; color: #0f172a; background: #ffffff; outline: none; }",
+        ".control:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15); }",
+        ".result-count { justify-self: end; font-size: 13px; color: #475569; font-weight: 600; }",
         ".table-wrap { padding: 12px 20px 24px 20px; overflow-x: auto; }",
-        "table { width: 100%; border-collapse: collapse; table-layout: fixed; min-width: 1200px; }",
+        "table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: auto; min-width: 1100px; }",
         "col.suite { width: 16%; }",
         "col.classname { width: 16%; }",
         "col.case { width: 26%; }",
@@ -150,13 +156,15 @@ def render_html(summary: dict[str, float], rows: list[TestCaseRow], output_path:
         "col.time { width: 8%; }",
         "col.detail { width: 26%; }",
         "thead th { position: sticky; top: 0; z-index: 1; background: #eff6ff; color: #1e3a8a; border-bottom: 2px solid #bfdbfe; font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; }",
-        "th, td { border: 1px solid #e5e7eb; padding: 10px; text-align: left; vertical-align: top; font-size: 13px; }",
+        "th, td { border: 1px solid #e5e7eb; padding: 12px 10px; text-align: left; vertical-align: top; font-size: 13px; }",
         "tbody tr:nth-child(even) { background: #f9fafb; }",
-        ".cell { white-space: normal; word-break: break-word; overflow-wrap: anywhere; line-height: 1.35; }",
-        ".status-pass { color: #166534; font-weight: 700; }",
-        ".status-fail { color: #991b1b; font-weight: 700; }",
-        ".status-error { color: #b91c1c; font-weight: 700; }",
-        ".status-skip { color: #92400e; font-weight: 700; }",
+        ".cell { white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; line-height: 1.45; }",
+        ".status-col { text-align: center; }",
+        ".badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; letter-spacing: 0.02em; line-height: 1.4; border: 1px solid transparent; }",
+        ".badge-pass { color: #14532d; background: #dcfce7; border-color: #86efac; }",
+        ".badge-fail { color: #7f1d1d; background: #fee2e2; border-color: #fca5a5; }",
+        ".badge-error { color: #7f1d1d; background: #fecaca; border-color: #f87171; }",
+        ".badge-skip { color: #78350f; background: #fef3c7; border-color: #fcd34d; }",
         ".empty { padding: 20px; border: 1px dashed #cbd5e1; border-radius: 12px; background: #f8fafc; color: #475569; }",
         "</style>",
         "</head>",
@@ -173,6 +181,24 @@ def render_html(summary: dict[str, float], rows: list[TestCaseRow], output_path:
         f"<div class='kpi'><span class='label'>Skipped</span><span class='value'>{int(summary['skipped'])}</span></div>",
         f"<div class='kpi'><span class='label'>Duration</span><span class='value'>{summary['time']:.2f}s</span></div>",
         "</div>",
+        "<div class='toolbar'>",
+        "<input id='searchInput' class='control' type='search' placeholder='Search suite, class, case, detail...'>",
+        "<select id='statusFilter' class='control'>"
+        "<option value='all'>All Status</option>"
+        "<option value='failure'>Failure</option>"
+        "<option value='error'>Error</option>"
+        "<option value='skipped'>Skipped</option>"
+        "<option value='passed'>Passed</option>"
+        "</select>",
+        "<select id='sortSelect' class='control'>"
+        "<option value='status'>Sort: Status</option>"
+        "<option value='time-desc'>Sort: Time desc</option>"
+        "<option value='time-asc'>Sort: Time asc</option>"
+        "<option value='suite'>Sort: Suite</option>"
+        "<option value='name'>Sort: Name</option>"
+        "</select>",
+        "<div id='resultCount' class='result-count'></div>",
+        "</div>",
         "<div class='table-wrap'>",
     ]
 
@@ -184,24 +210,86 @@ def render_html(summary: dict[str, float], rows: list[TestCaseRow], output_path:
                 "<table>",
                 "<colgroup><col class='suite'><col class='classname'><col class='case'><col class='status'><col class='time'><col class='detail'></colgroup>",
                 "<thead><tr><th>Suite</th><th>Class</th><th>Test Case</th><th>Status</th><th>Time (s)</th><th>Detail</th></tr></thead>",
-                "<tbody>",
+                "<tbody id='casesBody'>",
             ]
         )
         for row in rows:
             css = status_class_map.get(row.status, "")
+            status_label = row.status.upper()
+            badge = f"<span class='badge {css}'>{html.escape(status_label)}</span>"
+            suite_safe = html.escape(row.suite, quote=True)
+            class_safe = html.escape(row.classname, quote=True)
+            name_safe = html.escape(row.name, quote=True)
+            detail_safe = html.escape(row.detail, quote=True)
+            status_safe = html.escape(row.status, quote=True)
+            search_blob = html.escape(
+                f"{row.suite} {row.classname} {row.name} {row.detail} {row.status}".lower(),
+                quote=True,
+            )
             html_parts.append(
-                "<tr>"
-                f"<td><div class='cell'>{html.escape(row.suite)}</div></td>"
-                f"<td><div class='cell'>{html.escape(row.classname)}</div></td>"
-                f"<td><div class='cell'>{html.escape(row.name)}</div></td>"
-                f"<td><div class='cell {css}'>{html.escape(row.status)}</div></td>"
+                f"<tr data-status='{status_safe}' data-time='{row.elapsed_sec:.6f}' "
+                f"data-suite='{suite_safe.lower()}' data-name='{name_safe.lower()}' "
+                f"data-search='{search_blob}'>"
+                f"<td><div class='cell'>{suite_safe}</div></td>"
+                f"<td><div class='cell'>{class_safe}</div></td>"
+                f"<td><div class='cell'>{name_safe}</div></td>"
+                f"<td class='status-col'>{badge}</td>"
                 f"<td><div class='cell'>{row.elapsed_sec:.3f}</div></td>"
-                f"<td><div class='cell'>{html.escape(row.detail)}</div></td>"
+                f"<td><div class='cell'>{detail_safe}</div></td>"
                 "</tr>"
             )
         html_parts.extend(["</tbody>", "</table>"])
 
-    html_parts.extend(["</div>", "</div>", "</body>", "</html>"])
+    html_parts.extend(
+        [
+            "</div>",
+            "</div>",
+            "<script>",
+            "(function () {",
+            "  const tbody = document.getElementById('casesBody');",
+            "  const searchInput = document.getElementById('searchInput');",
+            "  const statusFilter = document.getElementById('statusFilter');",
+            "  const sortSelect = document.getElementById('sortSelect');",
+            "  const resultCount = document.getElementById('resultCount');",
+            "  if (!tbody || !searchInput || !statusFilter || !sortSelect || !resultCount) return;",
+            "  const allRows = Array.from(tbody.querySelectorAll('tr'));",
+            "  const statusRank = { failure: 0, error: 1, skipped: 2, passed: 3 };",
+            "  const sortRows = (rows, sortValue) => {",
+            "    if (sortValue === 'time-desc') return rows.sort((a, b) => parseFloat(b.dataset.time) - parseFloat(a.dataset.time));",
+            "    if (sortValue === 'time-asc') return rows.sort((a, b) => parseFloat(a.dataset.time) - parseFloat(b.dataset.time));",
+            "    if (sortValue === 'suite') return rows.sort((a, b) => a.dataset.suite.localeCompare(b.dataset.suite));",
+            "    if (sortValue === 'name') return rows.sort((a, b) => a.dataset.name.localeCompare(b.dataset.name));",
+            "    return rows.sort((a, b) => {",
+            "      const ra = statusRank[a.dataset.status] ?? 99;",
+            "      const rb = statusRank[b.dataset.status] ?? 99;",
+            "      if (ra !== rb) return ra - rb;",
+            "      return parseFloat(b.dataset.time) - parseFloat(a.dataset.time);",
+            "    });",
+            "  };",
+            "  const applyFilters = () => {",
+            "    const q = searchInput.value.trim().toLowerCase();",
+            "    const status = statusFilter.value;",
+            "    const sortValue = sortSelect.value;",
+            "    const filtered = allRows.filter((row) => {",
+            "      const byStatus = (status === 'all') || (row.dataset.status === status);",
+            "      const byText = (!q) || row.dataset.search.includes(q);",
+            "      return byStatus && byText;",
+            "    });",
+            "    const sorted = sortRows(filtered, sortValue);",
+            "    tbody.innerHTML = '';",
+            "    sorted.forEach((row) => tbody.appendChild(row));",
+            "    resultCount.textContent = `${sorted.length} / ${allRows.length} cases`;",
+            "  };",
+            "  searchInput.addEventListener('input', applyFilters);",
+            "  statusFilter.addEventListener('change', applyFilters);",
+            "  sortSelect.addEventListener('change', applyFilters);",
+            "  applyFilters();",
+            "})();",
+            "</script>",
+            "</body>",
+            "</html>",
+        ]
+    )
     output_path.write_text("\n".join(html_parts), encoding="utf-8")
 
 
@@ -211,6 +299,7 @@ def excel_cell(value: str, value_type: str = "String", style: str | None = None)
 
 
 def render_excel_xls(summary: dict[str, float], rows: list[TestCaseRow], output_path: Path) -> None:
+    row_count = max(2, len(rows) + 1)
     lines: list[str] = []
     lines.append('<?xml version="1.0"?>')
     lines.append('<?mso-application progid="Excel.Sheet"?>')
@@ -240,10 +329,12 @@ def render_excel_xls(summary: dict[str, float], rows: list[TestCaseRow], output_
     lines.append("<Row>" + excel_cell("Errors") + excel_cell(str(int(summary["errors"])), value_type="Number") + "</Row>")
     lines.append("<Row>" + excel_cell("Skipped") + excel_cell(str(int(summary["skipped"])), value_type="Number") + "</Row>")
     lines.append("<Row>" + excel_cell("Duration(sec)") + excel_cell(f"{summary['time']:.3f}", value_type="Number") + "</Row>")
-    lines.append("</Table></Worksheet>")
+    lines.append("</Table>")
+    lines.append('<WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"></WorksheetOptions>')
+    lines.append("</Worksheet>")
 
     lines.append('<Worksheet ss:Name="TestCases"><Table>')
-    for width in ("120", "140", "220", "75", "70", "320"):
+    for width in ("180", "220", "340", "95", "95", "540"):
         lines.append(f'<Column ss:Width="{width}"/>')
     lines.append("<Row>")
     lines.append(excel_cell("Suite", style="Header"))
@@ -270,7 +361,21 @@ def render_excel_xls(summary: dict[str, float], rows: list[TestCaseRow], output_
         lines.append(excel_cell(row.detail, style="Wrap"))
         lines.append("</Row>")
 
-    lines.append("</Table></Worksheet>")
+    lines.append("</Table>")
+    lines.append(
+        f'<AutoFilter x:Range="R1C1:R{row_count}C6" xmlns="urn:schemas-microsoft-com:office:excel"></AutoFilter>'
+    )
+    lines.append(
+        '<WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel">'
+        "<FreezePanes/>"
+        "<FrozenNoSplit/>"
+        "<SplitHorizontal>1</SplitHorizontal>"
+        "<TopRowBottomPane>1</TopRowBottomPane>"
+        "<ActivePane>2</ActivePane>"
+        "<Panes><Pane><Number>2</Number><ActiveRow>1</ActiveRow></Pane></Panes>"
+        "</WorksheetOptions>"
+    )
+    lines.append("</Worksheet>")
     lines.append("</Workbook>")
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -342,6 +447,24 @@ def build_xlsx_styles_xml() -> str:
   <cellStyles count="1">
     <cellStyle name="Normal" xfId="0" builtinId="0"/>
   </cellStyles>
+  <dxfs count="4">
+    <dxf>
+      <font><color rgb="FF7F1D1D"/></font>
+      <fill><patternFill patternType="solid"><fgColor rgb="FFFEE2E2"/><bgColor indexed="64"/></patternFill></fill>
+    </dxf>
+    <dxf>
+      <font><color rgb="FF7F1D1D"/></font>
+      <fill><patternFill patternType="solid"><fgColor rgb="FFFECACA"/><bgColor indexed="64"/></patternFill></fill>
+    </dxf>
+    <dxf>
+      <font><color rgb="FF78350F"/></font>
+      <fill><patternFill patternType="solid"><fgColor rgb="FFFEF3C7"/><bgColor indexed="64"/></patternFill></fill>
+    </dxf>
+    <dxf>
+      <font><color rgb="FF14532D"/></font>
+      <fill><patternFill patternType="solid"><fgColor rgb="FFDCFCE7"/><bgColor indexed="64"/></patternFill></fill>
+    </dxf>
+  </dxfs>
 </styleSheet>
 """
 
@@ -385,6 +508,7 @@ def build_xlsx_summary_sheet_xml(summary: dict[str, float]) -> str:
 
 
 def build_xlsx_testcases_sheet_xml(rows: list[TestCaseRow]) -> str:
+    row_count = max(2, len(rows) + 1)
     status_style_map = {
         "passed": 3,
         "failure": 4,
@@ -417,19 +541,43 @@ def build_xlsx_testcases_sheet_xml(rows: list[TestCaseRow]) -> str:
         )
 
     sheet_data = "".join(xml_rows)
+    conditional_formatting = ""
+    if len(rows) > 0:
+        status_range = f"D2:D{len(rows) + 1}"
+        conditional_formatting = (
+            f'<conditionalFormatting sqref="{status_range}">'
+            '<cfRule type="containsText" dxfId="0" priority="1" operator="containsText" text="failure">'
+            '<formula>NOT(ISERROR(SEARCH("failure",LOWER(D2))))</formula>'
+            "</cfRule>"
+            '<cfRule type="containsText" dxfId="1" priority="2" operator="containsText" text="error">'
+            '<formula>NOT(ISERROR(SEARCH("error",LOWER(D2))))</formula>'
+            "</cfRule>"
+            '<cfRule type="containsText" dxfId="2" priority="3" operator="containsText" text="skipped">'
+            '<formula>NOT(ISERROR(SEARCH("skipped",LOWER(D2))))</formula>'
+            "</cfRule>"
+            '<cfRule type="containsText" dxfId="3" priority="4" operator="containsText" text="passed">'
+            '<formula>NOT(ISERROR(SEARCH("passed",LOWER(D2))))</formula>'
+            "</cfRule>"
+            "</conditionalFormatting>"
+        )
+
     return (
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
         "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
-        "<sheetViews><sheetView workbookViewId=\"0\"/></sheetViews>"
+        "<sheetViews><sheetView workbookViewId=\"0\">"
+        "<pane ySplit=\"1\" topLeftCell=\"A2\" activePane=\"bottomLeft\" state=\"frozen\"/>"
+        "</sheetView></sheetViews>"
         "<cols>"
-        "<col min=\"1\" max=\"1\" width=\"20\" customWidth=\"1\"/>"
-        "<col min=\"2\" max=\"2\" width=\"24\" customWidth=\"1\"/>"
-        "<col min=\"3\" max=\"3\" width=\"34\" customWidth=\"1\"/>"
-        "<col min=\"4\" max=\"4\" width=\"12\" customWidth=\"1\"/>"
+        "<col min=\"1\" max=\"1\" width=\"26\" customWidth=\"1\"/>"
+        "<col min=\"2\" max=\"2\" width=\"32\" customWidth=\"1\"/>"
+        "<col min=\"3\" max=\"3\" width=\"48\" customWidth=\"1\"/>"
+        "<col min=\"4\" max=\"4\" width=\"14\" customWidth=\"1\"/>"
         "<col min=\"5\" max=\"5\" width=\"12\" customWidth=\"1\"/>"
-        "<col min=\"6\" max=\"6\" width=\"50\" customWidth=\"1\"/>"
+        "<col min=\"6\" max=\"6\" width=\"80\" customWidth=\"1\"/>"
         "</cols>"
         f"<sheetData>{sheet_data}</sheetData>"
+        f"<autoFilter ref=\"A1:F{row_count}\"/>"
+        f"{conditional_formatting}"
         "</worksheet>"
     )
 
@@ -481,16 +629,31 @@ def pdf_escape(text: str) -> str:
     return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
 
-def fit_text(text: str, width: int) -> str:
+def wrap_pdf_text(text: str, width: int) -> list[str]:
     text = squash_spaces(text)
-    if len(text) <= width:
-        return text.ljust(width)
-    if width <= 1:
-        return text[:width]
-    return (text[: width - 1] + "~")
+    if not text:
+        return [""]
+    return textwrap.wrap(text, width=width, break_long_words=True, break_on_hyphens=False)
+
+
+def build_pdf_row_lines(values: list[str], widths: list[int]) -> list[str]:
+    wrapped_columns = [wrap_pdf_text(value, width) for value, width in zip(values, widths)]
+    height = max(len(column) for column in wrapped_columns)
+    lines: list[str] = []
+    for line_idx in range(height):
+        cells = []
+        for col_idx, width in enumerate(widths):
+            chunk = wrapped_columns[col_idx][line_idx] if line_idx < len(wrapped_columns[col_idx]) else ""
+            cells.append(chunk.ljust(width))
+        lines.append(" | ".join(cells))
+    return lines
 
 
 def build_pdf_lines(summary: dict[str, float], rows: list[TestCaseRow]) -> list[str]:
+    col_titles = ["SUITE", "CLASS", "TEST CASE", "STATUS", "TIME", "DETAIL"]
+    col_widths = [12, 12, 20, 8, 8, 28]
+    separator = "-+-".join("-" * width for width in col_widths)
+
     lines = []
     lines.append("SFEPS Automated Test Report")
     lines.append("")
@@ -504,33 +667,28 @@ def build_pdf_lines(summary: dict[str, float], rows: list[TestCaseRow]) -> list[
         )
     )
     lines.append("")
-    header = "SUITE      CLASS      TEST CASE          STATUS   TIME   DETAIL"
-    lines.append(header)
-    lines.append("-" * len(header))
+    lines.append(" | ".join(title.ljust(width) for title, width in zip(col_titles, col_widths)))
+    lines.append(separator)
 
     if not rows:
         lines.append("No testcases found in reports/*.xml")
         return lines
 
     for row in rows:
-        detail_chunks = textwrap.wrap(squash_spaces(row.detail), width=24) or [""]
-        first_line = (
-            f"{fit_text(row.suite, 10)} "
-            f"{fit_text(row.classname, 10)} "
-            f"{fit_text(row.name, 18)} "
-            f"{fit_text(row.status, 8)} "
-            f"{fit_text(f'{row.elapsed_sec:.3f}', 6)} "
-            f"{fit_text(detail_chunks[0], 24)}"
-        )
-        lines.append(first_line)
-        for chunk in detail_chunks[1:3]:
-            lines.append(
-                f"{' ' * 10} {' ' * 10} {' ' * 18} {' ' * 8} {' ' * 6} {fit_text(chunk, 24)}"
-            )
+        values = [
+            row.suite,
+            row.classname,
+            row.name,
+            row.status,
+            f"{row.elapsed_sec:.3f}",
+            row.detail,
+        ]
+        lines.extend(build_pdf_row_lines(values, col_widths))
+        lines.append(separator)
     return lines
 
 
-def render_pdf(summary: dict[str, float], rows: list[TestCaseRow], output_path: Path) -> None:
+def render_pdf_plaintext_fallback(summary: dict[str, float], rows: list[TestCaseRow], output_path: Path) -> None:
     lines = build_pdf_lines(summary, rows)
     max_lines_per_page = 58
     pages = [lines[i : i + max_lines_per_page] for i in range(0, len(lines), max_lines_per_page)] or [[]]
@@ -597,6 +755,79 @@ def render_pdf(summary: dict[str, float], rows: list[TestCaseRow], output_path: 
     output_path.write_bytes(bytes(pdf))
 
 
+def render_pdf_from_html(html_path: Path, output_path: Path) -> str:
+    html_uri = html_path.resolve().as_uri()
+    out_pdf = str(output_path.resolve())
+    html_file = str(html_path.resolve())
+    renderer_cmds: list[tuple[str, list[str]]] = []
+
+    wkhtml = shutil.which("wkhtmltopdf")
+    if wkhtml:
+        renderer_cmds.append(
+            (
+                "wkhtmltopdf",
+                [
+                    wkhtml,
+                    "--quiet",
+                    "--enable-local-file-access",
+                    "--encoding",
+                    "utf-8",
+                    "--page-size",
+                    "A4",
+                    "--margin-top",
+                    "10mm",
+                    "--margin-right",
+                    "8mm",
+                    "--margin-bottom",
+                    "10mm",
+                    "--margin-left",
+                    "8mm",
+                    html_file,
+                    out_pdf,
+                ],
+            )
+        )
+
+    for name in ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable"):
+        binary = shutil.which(name)
+        if binary:
+            renderer_cmds.append(
+                (
+                    name,
+                    [
+                        binary,
+                        "--headless",
+                        "--disable-gpu",
+                        "--no-sandbox",
+                        "--allow-file-access-from-files",
+                        "--print-to-pdf-no-header",
+                        f"--print-to-pdf={out_pdf}",
+                        html_uri,
+                    ],
+                )
+            )
+
+    for renderer_name, cmd in renderer_cmds:
+        try:
+            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=150)
+            if output_path.exists() and output_path.stat().st_size > 0:
+                return renderer_name
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+            continue
+
+    return ""
+
+
+def render_pdf(summary: dict[str, float], rows: list[TestCaseRow], output_path: Path, html_path: Path) -> None:
+    renderer = render_pdf_from_html(html_path, output_path)
+    if renderer:
+        print(f"PDF renderer: {renderer}")
+        return
+
+    render_pdf_plaintext_fallback(summary, rows, output_path)
+    print("PDF renderer: internal-fallback")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate HTML/Excel/PDF reports from JUnit XML.")
     parser.add_argument("--input", default="reports", help="Directory containing junit xml files")
@@ -618,7 +849,7 @@ def main() -> int:
     render_html(summary, rows, html_path)
     render_excel_xls(summary, rows, xls_path)
     render_excel_xlsx(summary, rows, xlsx_path)
-    render_pdf(summary, rows, pdf_path)
+    render_pdf(summary, rows, pdf_path, html_path)
 
     print(f"Generated: {html_path}")
     print(f"Generated: {xls_path}")
