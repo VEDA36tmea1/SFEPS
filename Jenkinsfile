@@ -71,7 +71,7 @@ pipeline {
                     if (!branch || branch == 'HEAD') {
                         branch = sh(
                             returnStdout: true,
-                            script: "git branch -r --contains HEAD | sed 's#^ *origin/##' | grep -v '^HEAD ->' | grep -v '^HEAD$' | head -n1 || true"
+                            script: '''git branch -r --contains HEAD | sed 's#^ *origin/##' | grep -v '^HEAD ->' | grep -v '^HEAD$' | head -n1 || true'''
                         ).trim()
                     }
                     if (!branch || branch == 'null' || branch == 'HEAD') {
