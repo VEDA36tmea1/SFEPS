@@ -38,11 +38,6 @@ pipeline {
         SFEPS_VIDEO_DIR = "${env.SFEPS_VIDEO_DIR ?: '/home/iam/SFEPS/videos'}"
         SFEPS_HEALTH_PORT = "${env.SFEPS_HEALTH_PORT ?: '5555'}"
 
-        // runtime metadata (filled in Resolve CI Metadata stage)
-        SFEPS_CI_BRANCH = ""
-        SFEPS_GIT_SHA_SHORT = ""
-        SFEPS_IMAGE_REF = ""
-        SFEPS_IMAGE_LATEST_REF = ""
     }
 
     stages {
