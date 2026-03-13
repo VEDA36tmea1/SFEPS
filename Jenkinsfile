@@ -344,153 +344,17 @@ PY
                 pkill -f 'ffmpeg.*rtsp://127.0.0.1:8554/cam1' 2>/dev/null || true
             '''
             sh '''
-                set -eu
+                set +e
                 mkdir -p reports
-                python3 - <<'PY'
-import glob
-import html
-from pathlib import Path
-import xml.etree.ElementTree as ET
-
-
-def parse_int(value):
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
-
-
-def parse_float(value):
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-report_dir = Path("reports")
-xml_files = sorted(glob.glob(str(report_dir / "*.xml")))
-out_path = report_dir / "test-report.html"
-
-summary = {
-    "tests": 0,
-    "failures": 0,
-    "errors": 0,
-    "skipped": 0,
-    "time": 0.0,
-}
-rows = []
-
-for xml_path in xml_files:
-    root = ET.parse(xml_path).getroot()
-    if root.tag == "testsuite":
-        suites = [root]
-    else:
-        suites = root.findall(".//testsuite")
-
-    for suite in suites:
-        summary["tests"] += parse_int(suite.attrib.get("tests"))
-        summary["failures"] += parse_int(suite.attrib.get("failures"))
-        summary["errors"] += parse_int(suite.attrib.get("errors"))
-        summary["skipped"] += parse_int(suite.attrib.get("skipped"))
-        summary["time"] += parse_float(suite.attrib.get("time"))
-
-        suite_name = suite.attrib.get("name") or Path(xml_path).name
-        for tc in suite.findall("testcase"):
-            classname = tc.attrib.get("classname", "")
-            case_name = tc.attrib.get("name", "")
-            duration = parse_float(tc.attrib.get("time"))
-            status = "passed"
-            detail = ""
-
-            for child in tc:
-                if child.tag in ("failure", "error", "skipped"):
-                    status = child.tag
-                    detail = (child.attrib.get("message") or child.text or "").strip()
-                    detail = " ".join(detail.split())[:300]
-                    break
-
-            rows.append(
-                {
-                    "suite": suite_name,
-                    "classname": classname,
-                    "name": case_name,
-                    "status": status,
-                    "time": duration,
-                    "detail": detail,
-                }
-            )
-
-
-status_class_map = {
-    "passed": "ok",
-    "failure": "fail",
-    "error": "err",
-    "skipped": "skip",
-}
-
-html_parts = [
-    "<!doctype html>",
-    "<html lang='en'>",
-    "<head>",
-    "<meta charset='utf-8'>",
-    "<meta name='viewport' content='width=device-width, initial-scale=1'>",
-    "<title>SFEPS Test Report</title>",
-    "<style>",
-    "body { font-family: Arial, sans-serif; margin: 24px; color: #1f2937; }",
-    "h1 { margin: 0 0 12px 0; }",
-    ".meta { margin-bottom: 18px; }",
-    ".kpi { display: inline-block; margin-right: 14px; padding: 8px 10px; border-radius: 8px; background: #f3f4f6; }",
-    "table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }",
-    "th, td { border: 1px solid #e5e7eb; padding: 8px; text-align: left; vertical-align: top; }",
-    "th { background: #f9fafb; }",
-    ".ok { color: #166534; font-weight: 600; }",
-    ".fail, .err { color: #991b1b; font-weight: 700; }",
-    ".skip { color: #92400e; font-weight: 600; }",
-    ".small { color: #6b7280; font-size: 12px; }",
-    "</style>",
-    "</head>",
-    "<body>",
-    "<h1>SFEPS Jenkins Test Report</h1>",
-    "<div class='meta'>",
-    f"<span class='kpi'>Tests: {summary['tests']}</span>",
-    f"<span class='kpi'>Failures: {summary['failures']}</span>",
-    f"<span class='kpi'>Errors: {summary['errors']}</span>",
-    f"<span class='kpi'>Skipped: {summary['skipped']}</span>",
-    f"<span class='kpi'>Time: {summary['time']:.2f}s</span>",
-    "</div>",
-]
-
-if not rows:
-    html_parts.append("<p>No testcases found in reports/*.xml</p>")
-else:
-    html_parts.extend(
-        [
-            "<table>",
-            "<thead><tr><th>Suite</th><th>Class</th><th>Test Case</th><th>Status</th><th>Time(s)</th><th>Detail</th></tr></thead>",
-            "<tbody>",
-        ]
-    )
-    for row in rows:
-        css = status_class_map.get(row["status"], "")
-        html_parts.append(
-            "<tr>"
-            f"<td>{html.escape(row['suite'])}</td>"
-            f"<td>{html.escape(row['classname'])}</td>"
-            f"<td>{html.escape(row['name'])}</td>"
-            f"<td class='{css}'>{html.escape(row['status'])}</td>"
-            f"<td>{row['time']:.3f}</td>"
-            f"<td class='small'>{html.escape(row['detail'])}</td>"
-            "</tr>"
-        )
-    html_parts.extend(["</tbody>", "</table>"])
-
-html_parts.extend(["</body>", "</html>"])
-out_path.write_text("\\n".join(html_parts), encoding="utf-8")
-print(f"Wrote {out_path}")
-PY
+                python3 scripts/generate_test_reports.py --input reports --output reports
+                rc=$?
+                if [ "$rc" -ne 0 ]; then
+                  echo "test report generation failed (non-fatal), exit=$rc"
+                fi
+                exit 0
             '''
             junit testResults: 'reports/*.xml', allowEmptyResults: true
-            archiveArtifacts artifacts: 'reports/*.xml,reports/test-report.html,tests/real_server.log,.ci-mediamtx.log,.ci-ffmpeg-publisher.log', allowEmptyArchive: true
+            archiveArtifacts artifacts: 'reports/*.xml,reports/test-report.html,reports/test-report.pdf,reports/test-report.xls,tests/real_server.log,.ci-mediamtx.log,.ci-ffmpeg-publisher.log', allowEmptyArchive: true
         }
     }
 }
