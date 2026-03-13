@@ -7,6 +7,8 @@
 #include <QMutex>
 #include <QTimer>
 #include <opencv2/opencv.hpp>
+#include <QVariant>
+#include <QVariantList>
 
 // 프레임 캡처를 위한 워커 스레드
 class VideoCaptureWorker : public QThread {
@@ -58,6 +60,10 @@ class MainWindow : public QQuickPaintedItem
     Q_PROPERTY(QRectF zoomRect READ zoomRect WRITE setZoomRect NOTIFY zoomRectChanged)
     Q_PROPERTY(QString streamStatus READ streamStatus NOTIFY streamStatusChanged)
     Q_PROPERTY(bool streamConnected READ streamConnected NOTIFY streamConnectedChanged)
+    Q_PROPERTY(QVariantList detections READ detections NOTIFY detectionsChanged)
+    Q_PROPERTY(QString selectedDetection READ selectedDetection NOTIFY selectedDetectionChanged)
+    Q_PROPERTY(int imageWidth READ imageWidth NOTIFY imageSizeChanged)
+    Q_PROPERTY(int imageHeight READ imageHeight NOTIFY imageSizeChanged)
 
 public:
     explicit MainWindow(QQuickItem *parent = nullptr);
@@ -78,6 +84,15 @@ public:
 
     Q_INVOKABLE void resetZoom();
     Q_INVOKABLE void setZoomFromItem(const QRectF &itemRect, const QSizeF &itemSize);
+    Q_INVOKABLE void setDetections(const QVariantList &list);
+    Q_INVOKABLE QString detectionAt(qreal x, qreal y);
+    Q_INVOKABLE void clearDetections();
+    Q_INVOKABLE void setSelectedDetection(const QString &id);
+
+    QVariantList detections() const { return m_detections; }
+    QString selectedDetection() const { return m_selectedDetectionId; }
+    int imageWidth() const;
+    int imageHeight() const;
 
 signals:
     void runningChanged();
@@ -91,6 +106,11 @@ private slots:
     void onReadFailed();
     void attemptReconnect();
 
+signals:
+    void detectionsChanged();
+    void selectedDetectionChanged();
+    void imageSizeChanged();
+
 private:
     bool openStream();
     void ensureWorkerRunning();
@@ -100,7 +120,7 @@ private:
     VideoCaptureWorker *worker;
     cv::Mat currentFrame;
     QImage m_image;
-    QMutex m_mutex;
+    mutable QMutex m_mutex;
     QTimer *m_reconnectTimer;
 
     bool m_running;
@@ -108,6 +128,8 @@ private:
     QRectF m_zoomRect;
     QString m_streamStatus;
     bool m_streamConnected;
+    QVariantList m_detections;
+    QString m_selectedDetectionId;
 };
 
 #endif // MAINWINDOW_H

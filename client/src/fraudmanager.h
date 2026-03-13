@@ -8,6 +8,7 @@
 #include <QStringList>
 #include <QTimer>
 #include <QByteArray>
+#include <QVariant>
 
 class FraudManager : public QObject
 {
@@ -23,6 +24,7 @@ signals:
                        const QString &cardAgeText,
                        const QString &age,
                        bool isFraud);
+    
 
 private slots:
     void onReadyRead();
@@ -42,6 +44,7 @@ private:
     int lastPort;
     QByteArray recvBuffer; // 누적 수신 버퍼 (부분 수신 처리용)
     bool m_alertTlsEnabled = false;
+    
 };
 
 #endif // FRAUDMANAGER_H
