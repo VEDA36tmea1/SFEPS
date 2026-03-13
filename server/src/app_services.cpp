@@ -12,8 +12,10 @@
 #include <cstring>
 #include <iostream>
 #include <algorithm>
+#include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -56,6 +58,30 @@ std::string normalize_login_key(const std::string& user) {
     return normalized;
 }
 
+struct AuthenticatedIpSessions {
+    std::mutex mtx;
+    std::unordered_set<std::string> ips;
+};
+
+AuthenticatedIpSessions& authenticated_ip_sessions() {
+    static AuthenticatedIpSessions sessions;
+    return sessions;
+}
+
+void mark_ip_authenticated(const std::string& ip) {
+    if (ip.empty()) return;
+    auto& sessions = authenticated_ip_sessions();
+    std::lock_guard<std::mutex> lock(sessions.mtx);
+    sessions.ips.insert(ip);
+}
+
+bool is_ip_authenticated(const std::string& ip) {
+    if (ip.empty()) return false;
+    auto& sessions = authenticated_ip_sessions();
+    std::lock_guard<std::mutex> lock(sessions.mtx);
+    return sessions.ips.find(ip) != sessions.ips.end();
+}
+
 bool snapshots_equal(const AnalyticsProcessor::ObjectPositionSnapshot& lhs,
                      const AnalyticsProcessor::ObjectPositionSnapshot& rhs) {
     return lhs.object_id == rhs.object_id &&
@@ -68,19 +94,20 @@ bool snapshots_equal(const AnalyticsProcessor::ObjectPositionSnapshot& lhs,
            lhs.tag_time == rhs.tag_time;
 }
 
-std::string format_pos_line(const AnalyticsProcessor::ObjectPositionSnapshot& snapshot) {
+std::string format_obj_pos_line(const AnalyticsProcessor::ObjectPositionSnapshot& snapshot) {
     char line[512];
     const int n = std::snprintf(
         line, sizeof(line),
-        "POS|%s|L=%.1f|T=%.1f|R=%.1f|B=%.1f|X=%.1f|Y=%.1f|TAG=%s\n",
+        "OBJ_POS|%s|L=%.1f|T=%.1f|R=%.1f|B=%.1f|X=%.1f|Y=%.1f|FRAUD=%s|TAG=%s\n",
         snapshot.object_id.c_str(), snapshot.left, snapshot.top, snapshot.right, snapshot.bottom,
-        snapshot.x, snapshot.y, snapshot.tag_time.c_str());
+        snapshot.x, snapshot.y, snapshot.is_fraud ? "Y" : "N", snapshot.tag_time.c_str());
     if (n <= 0 || n >= static_cast<int>(sizeof(line))) return "";
     return std::string(line, static_cast<std::size_t>(n));
 }
 
-std::string format_pos_end_line(const std::string& object_id, const char* reason) {
-    std::string line = "POS_END|" + object_id + "|REASON=" + (reason ? std::string(reason) : "UNKNOWN");
+std::string format_obj_end_line(const std::string& object_id, const char* reason) {
+    std::string line =
+        "OBJ_END|" + object_id + "|REASON=" + (reason ? std::string(reason) : "UNKNOWN");
     line.push_back('\n');
     return line;
 }
@@ -421,16 +448,12 @@ void run_position_stream_service(std::atomic<bool>& running,
         int fd = -1;
         std::string recv_buffer;
         std::string active_object_id;
-        bool has_last_sent = false;
-        AnalyticsProcessor::ObjectPositionSnapshot last_sent;
     };
 
     struct TlsClientState {
         TlsClientConnection conn {};
         std::string recv_buffer;
         std::string active_object_id;
-        bool has_last_sent = false;
-        AnalyticsProcessor::ObjectPositionSnapshot last_sent;
     };
 
     struct PollTarget {
@@ -498,6 +521,13 @@ void run_position_stream_service(std::atomic<bool>& running,
     std::string esp_active_object_id;
     bool esp_has_last_sent = false;
     AnalyticsProcessor::ObjectPositionSnapshot esp_last_sent;
+    struct ObjLastSentState {
+        std::chrono::steady_clock::time_point updated_at;
+        bool is_fraud = false;
+    };
+    std::unordered_map<std::string, ObjLastSentState> obj_last_sent;
+    std::vector<AnalyticsProcessor::ObjectPositionSnapshot> obj_snapshots;
+    std::unordered_set<std::string> obj_ids_this_tick;
     constexpr std::size_t kMaxRecvBuffer = 16 * 1024;
     constexpr std::size_t kReadBufferSize = 4096;
     char read_buffer[kReadBufferSize];
@@ -589,6 +619,13 @@ void run_position_stream_service(std::atomic<bool>& running,
                         close(client_fd);
                         continue;
                     }
+                    if (!is_ip_authenticated(client_ip)) {
+                        std::cout
+                            << "[main.cpp] [Position] Plain connection rejected: unauthenticated ip="
+                            << client_ip << std::endl;
+                        close(client_fd);
+                        continue;
+                    }
 
                     apply_socket_read_timeout(client_fd, sec_cfg.socket_read_timeout_ms);
 
@@ -626,6 +663,13 @@ void run_position_stream_service(std::atomic<bool>& running,
                     if (!is_ip_allowed(sec_cfg.alert_allow_ips, client_ip)) {
                         std::cout << "[main.cpp] [Position] TLS connection rejected by allowlist: ip="
                                   << client_ip << std::endl;
+                        close_tls_client(client);
+                        continue;
+                    }
+                    if (!is_ip_authenticated(client_ip)) {
+                        std::cout
+                            << "[main.cpp] [Position] TLS connection rejected: unauthenticated ip="
+                            << client_ip << std::endl;
                         close_tls_client(client);
                         continue;
                     }
@@ -681,18 +725,7 @@ void run_position_stream_service(std::atomic<bool>& running,
                             const std::string requested_id = normalize_object_id_token(line.substr(8));
                             if (requested_id.empty()) continue;
 
-                            if (!client.active_object_id.empty() &&
-                                client.active_object_id != requested_id) {
-                                const std::string end_line =
-                                    format_pos_end_line(client.active_object_id, "SWITCH");
-                                if (!send_line_plain(client.fd, end_line)) {
-                                    mark_remove(remove_plain, target.index);
-                                    break;
-                                }
-                            }
-
                             client.active_object_id = requested_id;
-                            client.has_last_sent = false;
                             switch_esp_track_target(requested_id);
                             continue;
                         }
@@ -701,14 +734,7 @@ void run_position_stream_service(std::atomic<bool>& running,
                             const std::string requested_id = normalize_object_id_token(line.substr(10));
                             if (requested_id.empty()) continue;
                             if (client.active_object_id == requested_id) {
-                                const std::string end_line =
-                                    format_pos_end_line(client.active_object_id, "UNSUB");
-                                if (!send_line_plain(client.fd, end_line)) {
-                                    mark_remove(remove_plain, target.index);
-                                    break;
-                                }
                                 client.active_object_id.clear();
-                                client.has_last_sent = false;
                                 clear_esp_track_target(requested_id, "UNSUB");
                             }
                             continue;
@@ -755,18 +781,7 @@ void run_position_stream_service(std::atomic<bool>& running,
                             const std::string requested_id = normalize_object_id_token(line.substr(8));
                             if (requested_id.empty()) continue;
 
-                            if (!client.active_object_id.empty() &&
-                                client.active_object_id != requested_id) {
-                                const std::string end_line =
-                                    format_pos_end_line(client.active_object_id, "SWITCH");
-                                if (!send_line_tls(client.conn, end_line)) {
-                                    mark_remove(remove_tls, target.index);
-                                    break;
-                                }
-                            }
-
                             client.active_object_id = requested_id;
-                            client.has_last_sent = false;
                             switch_esp_track_target(requested_id);
                             continue;
                         }
@@ -775,14 +790,7 @@ void run_position_stream_service(std::atomic<bool>& running,
                             const std::string requested_id = normalize_object_id_token(line.substr(10));
                             if (requested_id.empty()) continue;
                             if (client.active_object_id == requested_id) {
-                                const std::string end_line =
-                                    format_pos_end_line(client.active_object_id, "UNSUB");
-                                if (!send_line_tls(client.conn, end_line)) {
-                                    mark_remove(remove_tls, target.index);
-                                    break;
-                                }
                                 client.active_object_id.clear();
-                                client.has_last_sent = false;
                                 clear_esp_track_target(requested_id, "UNSUB");
                             }
                             continue;
@@ -817,15 +825,16 @@ void run_position_stream_service(std::atomic<bool>& running,
         erase_removed_clients();
 
         const auto now = std::chrono::steady_clock::now();
-        const auto stale_limit =
+        const auto esp_stale_limit =
             std::chrono::seconds(static_cast<long long>(sec_cfg.position_stale_seconds));
+        const auto obj_stale_limit = std::chrono::seconds(1);
 
         if (!esp_active_object_id.empty()) {
             AnalyticsProcessor::ObjectPositionSnapshot snapshot;
             const bool has_snapshot =
                 analytics.getObjectPositionSnapshot(esp_active_object_id, snapshot);
             const bool is_stale =
-                (!has_snapshot) || ((now - snapshot.updated_at) > stale_limit);
+                (!has_snapshot) || ((now - snapshot.updated_at) > esp_stale_limit);
 
             if (is_stale) {
                 esp_manager.publishTrackEnd(esp_active_object_id, "STALE");
@@ -848,74 +857,72 @@ void run_position_stream_service(std::atomic<bool>& running,
             }
         }
 
-        for (std::size_t idx = 0; idx < plain_clients.size(); ++idx) {
-            auto& client = plain_clients[idx];
-            if (client.active_object_id.empty()) continue;
+        const auto broadcast_obj_line = [&](const std::string& line) -> bool {
+            if (line.empty()) return true;
 
-            AnalyticsProcessor::ObjectPositionSnapshot snapshot;
-            const bool has_snapshot =
-                analytics.getObjectPositionSnapshot(client.active_object_id, snapshot);
-            const bool is_stale =
-                (!has_snapshot) || ((now - snapshot.updated_at) > stale_limit);
-
-            if (is_stale) {
-                const std::string end_line =
-                    format_pos_end_line(client.active_object_id, "STALE");
-                if (!send_line_plain(client.fd, end_line)) {
+            bool delivered = false;
+            for (std::size_t idx = 0; idx < plain_clients.size(); ++idx) {
+                if (!send_line_plain(plain_clients[idx].fd, line)) {
                     mark_remove(remove_plain, idx);
                     continue;
                 }
-                client.active_object_id.clear();
-                client.has_last_sent = false;
-                continue;
+                delivered = true;
             }
-
-            if (client.has_last_sent && snapshots_equal(client.last_sent, snapshot)) {
-                continue;
-            }
-
-            const std::string pos_line = format_pos_line(snapshot);
-            if (!send_line_plain(client.fd, pos_line)) {
-                mark_remove(remove_plain, idx);
-                continue;
-            }
-            client.last_sent = snapshot;
-            client.has_last_sent = true;
-        }
-
-        for (std::size_t idx = 0; idx < tls_clients.size(); ++idx) {
-            auto& client = tls_clients[idx];
-            if (client.active_object_id.empty()) continue;
-
-            AnalyticsProcessor::ObjectPositionSnapshot snapshot;
-            const bool has_snapshot =
-                analytics.getObjectPositionSnapshot(client.active_object_id, snapshot);
-            const bool is_stale =
-                (!has_snapshot) || ((now - snapshot.updated_at) > stale_limit);
-
-            if (is_stale) {
-                const std::string end_line =
-                    format_pos_end_line(client.active_object_id, "STALE");
-                if (!send_line_tls(client.conn, end_line)) {
+            for (std::size_t idx = 0; idx < tls_clients.size(); ++idx) {
+                if (!send_line_tls(tls_clients[idx].conn, line)) {
                     mark_remove(remove_tls, idx);
                     continue;
                 }
-                client.active_object_id.clear();
-                client.has_last_sent = false;
+                delivered = true;
+            }
+            return delivered;
+        };
+
+        analytics.getAllObjectSnapshots(obj_snapshots);
+        obj_ids_this_tick.clear();
+        obj_ids_this_tick.reserve(obj_snapshots.size());
+
+        for (const auto& snapshot : obj_snapshots) {
+            const std::string& object_id = snapshot.object_id;
+            if (object_id.empty()) continue;
+
+            obj_ids_this_tick.insert(object_id);
+            const bool is_stale = (now - snapshot.updated_at) > obj_stale_limit;
+
+            if (is_stale) {
+                const auto sent_it = obj_last_sent.find(object_id);
+                if (sent_it == obj_last_sent.end()) continue;
+
+                const std::string end_line = format_obj_end_line(object_id, "STALE");
+                broadcast_obj_line(end_line);
+                obj_last_sent.erase(object_id);
                 continue;
             }
 
-            if (client.has_last_sent && snapshots_equal(client.last_sent, snapshot)) {
+            const auto sent_it = obj_last_sent.find(object_id);
+            if (sent_it != obj_last_sent.end() &&
+                sent_it->second.updated_at == snapshot.updated_at &&
+                sent_it->second.is_fraud == snapshot.is_fraud) {
                 continue;
             }
 
-            const std::string pos_line = format_pos_line(snapshot);
-            if (!send_line_tls(client.conn, pos_line)) {
-                mark_remove(remove_tls, idx);
-                continue;
+            const std::string obj_line = format_obj_pos_line(snapshot);
+            if (broadcast_obj_line(obj_line)) {
+                ObjLastSentState sent_state;
+                sent_state.updated_at = snapshot.updated_at;
+                sent_state.is_fraud = snapshot.is_fraud;
+                obj_last_sent[object_id] = sent_state;
             }
-            client.last_sent = snapshot;
-            client.has_last_sent = true;
+        }
+
+        for (auto it = obj_last_sent.begin(); it != obj_last_sent.end();) {
+            if (obj_ids_this_tick.find(it->first) == obj_ids_this_tick.end()) {
+                const std::string end_line = format_obj_end_line(it->first, "STALE");
+                broadcast_obj_line(end_line);
+                it = obj_last_sent.erase(it);
+            } else {
+                ++it;
+            }
         }
 
         erase_removed_clients();
@@ -1142,6 +1149,9 @@ void run_login_auth(std::atomic<bool>& running,
                 send_all_plain(client_fd, resp, 4);
 
                 if (success) {
+                    mark_ip_authenticated(client_ip);
+                    std::cout << "[main.cpp] [Auth] Plain login session registered: ip="
+                              << client_ip << ", user=" << user << std::endl;
                     send_alert_to_clients("TEST|LOGIN_OK|" + user + "\n");
                 }
                 auth_logger.enqueueLogin(user, client_ip, success);
@@ -1206,6 +1216,9 @@ void run_login_auth(std::atomic<bool>& running,
                 send_all_tls(client, resp, 4);
 
                 if (success) {
+                    mark_ip_authenticated(client_ip);
+                    std::cout << "[main.cpp] [Auth] TLS login session registered: ip="
+                              << client_ip << ", user=" << user << std::endl;
                     send_alert_to_clients("TEST|LOGIN_OK|" + user + "\n");
                 }
                 auth_logger.enqueueLogin(user, client_ip, success);

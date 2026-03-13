@@ -246,6 +246,7 @@ void AnalyticsProcessor::stop() {
         pending_object_ids.clear();
         matched_objects.clear();
         latest_objects.clear();
+        object_fraud_flags.clear();
         while (!q.empty()) q.pop();
     }
 
@@ -281,9 +282,35 @@ bool AnalyticsProcessor::getObjectPositionSnapshot(const std::string& object_id,
     out.bottom = it->second.bottom;
     out.x = it->second.x;
     out.y = it->second.y;
+    const auto fraud_it = object_fraud_flags.find(key);
+    out.is_fraud = (fraud_it != object_fraud_flags.end()) ? fraud_it->second : false;
     out.tag_time = it->second.tag_time;
     out.updated_at = it->second.updated_at;
     return true;
+}
+
+void AnalyticsProcessor::getAllObjectSnapshots(std::vector<ObjectPositionSnapshot>& out) const {
+    std::lock_guard<std::mutex> lock(mtx);
+    out.clear();
+    out.reserve(latest_objects.size());
+    for (const auto& entry : latest_objects) {
+        const std::string& object_id = entry.first;
+        const LatestObjectInfo& info = entry.second;
+
+        ObjectPositionSnapshot snapshot;
+        snapshot.object_id = object_id;
+        snapshot.left = info.left;
+        snapshot.top = info.top;
+        snapshot.right = info.right;
+        snapshot.bottom = info.bottom;
+        snapshot.x = info.x;
+        snapshot.y = info.y;
+        const auto fraud_it = object_fraud_flags.find(object_id);
+        snapshot.is_fraud = (fraud_it != object_fraud_flags.end()) ? fraud_it->second : false;
+        snapshot.tag_time = info.tag_time;
+        snapshot.updated_at = info.updated_at;
+        out.push_back(std::move(snapshot));
+    }
 }
 
 void AnalyticsProcessor::pruneExpiredPendingLocked(std::chrono::steady_clock::time_point now) {
@@ -321,6 +348,7 @@ void AnalyticsProcessor::pruneExpiredStateLocked(std::chrono::steady_clock::time
 
     for (auto it = latest_objects.begin(); it != latest_objects.end();) {
         if ((now - it->second.updated_at) > ttl) {
+            object_fraud_flags.erase(it->first);
             it = latest_objects.erase(it);
         } else {
             ++it;
@@ -448,6 +476,9 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
             info.tag_time = tag_time;
             info.updated_at = now;
             latest_objects[object_id] = std::move(info);
+            if (object_fraud_flags.find(object_id) == object_fraud_flags.end()) {
+                object_fraud_flags[object_id] = false;
+            }
         }
 
         for (const auto& event : parsed_events) {
@@ -459,6 +490,8 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
             if (object_id.size() > kMaxObjectIdBytes) {
                 object_id.resize(kMaxObjectIdBytes);
             }
+
+            const bool is_outline_rule = (rule_name == outline_rule_name);
 
             if (rule_name == enter_rule_name) {
                 if (accepted_enter_count >= max_lines_per_batch) {
@@ -504,7 +537,7 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
                 continue;
             }
 
-            if (rule_name != outline_rule_name) continue;
+            if (!is_outline_rule) continue;
 
             PendingObject final_out;
             bool found = false;
@@ -550,6 +583,7 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
             }
             const CardAgeDecision card_age = evaluate_card_age(final_out.card_age_text);
             final_out.is_fraud = is_fraud_by_age_mismatch(card_age, final_out.age);
+            object_fraud_flags[final_out.object_id] = final_out.is_fraud;
 
             FraudRecord record;
             record.object_id = final_out.object_id;
