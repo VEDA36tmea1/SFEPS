@@ -356,7 +356,7 @@ bool MainWindow::openStream()
         return true;
     }
 
-    const QString rtspUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.101:8554/cam1");
+    const QString rtspUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.80:8554/cam1");
     cap.open(rtspUrl.toStdString(), cv::CAP_FFMPEG);
     if (!cap.isOpened()) {
         qWarning() << "[MainWindow] Failed to open stream:" << rtspUrl;

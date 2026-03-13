@@ -333,3 +333,96 @@ python3 pid_pwm_agent.py \
 이 문서는 `pid_pwm_agent.py`, `rtsp_laser_demo.cpp`, `ubuntu_tcp_server.cpp`, `lut_data.json` 의 현재 구현을 기준으로 작성되었다.  
 LUT가 화면 전체(특히 상·하단)까지 충분히 채워질수록 LUT-track 모드에서의 위치 오차가 줄어든다. 추후 필요하다면 LUT의 경계부에서 1D 보간 또는 extrapolation 전략을 추가해도 된다.
 
+---
+
+## 7. `--nolut` 모드 (레이저 탐지 스트림/지연 측정용)
+
+### 7.1 목적
+
+- **그리드/LUT 기능을 끈 상태**로 레이저 탐지 결과를 “가볍게” 흘려보내는 모드.
+- 특히 `Laser_Detection_Delay.py`처럼 “레이저 ON → 호스트가 레이저를 감지해 패킷을 보내기까지”의 지연을 측정할 때 사용.
+
+### 7.2 동작 요약
+
+- Host: `rtsp_laser_demo --nolut --gst`
+  - `g_lut_mode = false`
+  - 레이저가 잡히면 **박스(ROI)가 없어도** 주기적으로 한 줄을 `stdout`으로 보냄
+    - (지연 측정용이라 `EX/EY`는 0으로 보내도 충분)
+    - `TU/TV`에는 레이저 픽셀 좌표를 넣음
+- Server: `ubuntu_tcp_server`
+  - Host stdout(공백 구분 6개 숫자)을 받아 Raspi로 `EX=...,EY=...,TU=...,TV=...,GR=...,GC=...` 형태로 전송
+- Raspi: `Laser_Detection_Delay.py`
+  - TCP로 들어오는 라인에서 `EX=...,EY=...`가 수신되는 시각을 잡아 지연(ms)으로 계산
+
+### 7.3 실행 예
+
+Host (Ubuntu):
+
+```bash
+cd hardware/stm32-laser/host_cpp/build
+./rtsp_laser_demo --nolut --gst | ../../tmp_server/ubuntu_server/ubuntu_tcp_server
+```
+
+Raspi:
+
+```bash
+sudo python3 hardware/Raspi-laser/Laser_Detection_Delay.py --host <UBUNTU_IP> --port 5555
+```
+
+> 참고: `--nolut` 모드에서는 “박스 생성”을 하지 않아도 레이저만 잡히면 전송되므로, 지연 측정이 편하다.
+
+---
+
+## 8. `--lut-check` 모드 (LUT PWM 검증/그리드 셀 일치 확인)
+
+### 8.1 목적
+
+- Host에 저장된 `lut_data.json`의 각 그리드 포인트(`pan_us`, `tilt_us`)가 실제로
+  - 라즈베리 파이/서보에 적용됐을 때
+  - 레이저가 “해당 그리드 셀”로 들어오는지
+  를 빠르게 확인하는 **검증 모드**.
+
+### 8.2 핵심 아이디어
+
+- AutoLUT/LUT-track은 “오차 기반” 또는 “픽셀 기반 보간”이라 디버깅이 복잡할 수 있음.
+- LUT-check는 아예 **LUT에 저장된 PWM을 그대로 강제 적용(SET_PWM)**하고,
+  레이저 탐지 결과가 목표 셀에 들어오는지 화면에서 체크한다.
+
+### 8.3 프로토콜(추가)
+
+- Host → Raspi:
+  - `SET_PWM,PAN=####,TILT=####[,GR=..,GC=..]`
+- Raspi(`pid_pwm_agent.py`):
+  - `SET_PWM`을 받으면 해당 PWM을 **즉시 적용**(PID/LUT-track보다 우선)
+
+### 8.4 실행 예
+
+Host (Ubuntu):
+
+```bash
+cd hardware/stm32-laser/host_cpp/build
+./rtsp_laser_demo --gst --lut-check ./lut_data.json | ../../tmp_server/ubuntu_server/ubuntu_tcp_server
+```
+
+Raspi:
+
+```bash
+sudo python3 hardware/Raspi-laser/pid_pwm_agent.py --host <UBUNTU_IP> --port 5555
+```
+
+### 8.5 화면/키 조작
+
+- Host 창에서:
+  - `n`: 다음 LUT 포인트(다음 그리드 셀)로 이동 + 해당 PWM을 Raspi로 전송
+  - `p`: 이전 LUT 포인트
+  - `d`: 빨간색 마스크 디버그(`red_mask`) 토글
+  - `q` 또는 `ESC`: 종료
+
+### 8.6 판정(표시)
+
+- 목표 셀: **노란 박스**
+- 레이저가 검출되면 레이저 좌표로 현재 셀을 계산해서
+  - 목표 셀과 일치하면 목표 셀 박스를 **초록색**으로 한 번 더 표시
+  - 레이저 점은 **빨간 원**으로 표시
+
+

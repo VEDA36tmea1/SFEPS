@@ -12,6 +12,8 @@ pipeline {
         SFEPS_DB_USER = "${env.SFEPS_DB_USER ?: 'pi'}"
         SFEPS_DB_PASS = "${env.SFEPS_DB_PASS ?: 'raspberry'}"
         SFEPS_DB_NAME_ANALYTICS = "${env.SFEPS_DB_NAME_ANALYTICS ?: 'CCgbd'}"
+        SFEPS_ESP_TCP_ENABLE = "${env.SFEPS_ESP_TCP_ENABLE ?: '0'}"
+        SFEPS_ESP_TCP_BIND_IP = "${env.SFEPS_ESP_TCP_BIND_IP ?: '127.0.0.1'}"
     }
 
     stages {
@@ -101,14 +103,18 @@ CREATE TABLE IF NOT EXISTS recordings (
 
 CREATE TABLE IF NOT EXISTS analytics_logs (
   id bigint(20) NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  object_id varchar(128) NOT NULL,
+  card_age_text varchar(32) NOT NULL DEFAULT '',
+  age varchar(32) NOT NULL DEFAULT '',
+  is_fraud tinyint(1) NOT NULL DEFAULT 0,
   frame_time varchar(32) DEFAULT NULL,
   object_type varchar(64) DEFAULT NULL,
-  created_at timestamp NOT NULL DEFAULT current_timestamp(),
   estimated_age int(11) DEFAULT 0,
   photo_path varchar(255) DEFAULT '',
   x double DEFAULT 0,
   y double DEFAULT 0,
-  event varchar(128) DEFAULT ''
+  event varchar(128) DEFAULT '',
+  created_at timestamp NOT NULL DEFAULT current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 INSERT INTO users (id, password, name)
@@ -282,6 +288,39 @@ PY
                 '''
             }
         }
+
+        stage('Run Event Tests') {
+            steps {
+                sh '''
+                    set -eu
+                    export MYSQL_UNIX_PORT="$WORKSPACE/.ci-mariadb/mysqld.sock"
+                    mkdir -p reports
+                    python3 -m pytest -q tests/test_tc_func_event.py -r a --junitxml=reports/event-tests.xml
+
+                    python3 - <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+path = "reports/event-tests.xml"
+root = ET.parse(path).getroot()
+
+if root.tag == "testsuite":
+    tests = int(root.attrib.get("tests", "0"))
+    skipped = int(root.attrib.get("skipped", "0"))
+else:
+    tests = 0
+    skipped = 0
+    for suite in root.findall("testsuite"):
+        tests += int(suite.attrib.get("tests", "0"))
+        skipped += int(suite.attrib.get("skipped", "0"))
+
+if tests == 0 or skipped == tests:
+    print(f"All tests skipped ({skipped}/{tests}). Marking build as failed.")
+    sys.exit(2)
+PY
+                '''
+            }
+        }
     }
 
     post {
@@ -304,8 +343,18 @@ PY
                 fi
                 pkill -f 'ffmpeg.*rtsp://127.0.0.1:8554/cam1' 2>/dev/null || true
             '''
+            sh '''
+                set +e
+                mkdir -p reports
+                python3 scripts/generate_test_reports.py --input reports --output reports
+                rc=$?
+                if [ "$rc" -ne 0 ]; then
+                  echo "test report generation failed (non-fatal), exit=$rc"
+                fi
+                exit 0
+            '''
             junit testResults: 'reports/*.xml', allowEmptyResults: true
-            archiveArtifacts artifacts: 'tests/real_server.log,.ci-mediamtx.log,.ci-ffmpeg-publisher.log', allowEmptyArchive: true
+            archiveArtifacts artifacts: 'reports/*.xml,reports/test-report.html,reports/test-report.pdf,reports/test-report.xls,reports/test-report.xlsx,tests/real_server.log,.ci-mediamtx.log,.ci-ffmpeg-publisher.log', allowEmptyArchive: true
         }
     }
 }

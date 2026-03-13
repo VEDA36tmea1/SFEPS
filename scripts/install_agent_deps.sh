@@ -16,6 +16,7 @@ PKGS=(
   libswscale-dev
   libasound2-dev
   libssl-dev
+  wkhtmltopdf
 )
 
 echo "install_agent_deps: detect package manager"

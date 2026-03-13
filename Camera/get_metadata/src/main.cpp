@@ -66,4 +66,3 @@ int main() {
     delete[] big_buffer;
     return 0;
 }
-

@@ -12,6 +12,7 @@
 #include <queue>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 
 #include <mysql/mysql.h>
@@ -20,10 +21,22 @@
 
 class AnalyticsProcessor {
 public:
+    struct ObjectPositionSnapshot {
+        std::string object_id;
+        float left = -1.0f;
+        float top = -1.0f;
+        float right = -1.0f;
+        float bottom = -1.0f;
+        float x = -1.0f;
+        float y = -1.0f;
+        std::string tag_time;
+        std::chrono::steady_clock::time_point updated_at;
+    };
+
     struct FraudBBoxPayload {
         std::string object_id;
         std::string card_age_text;
-        std::string age_group;
+        std::string age;
         float left = -1.0f;
         float top = -1.0f;
         float right = -1.0f;
@@ -46,26 +59,43 @@ public:
 
     // Called by RFID monitor thread with RFID text value.
     void onRfidRead(const std::string& card_age_text);
+    bool getObjectPositionSnapshot(const std::string& object_id,
+                                   ObjectPositionSnapshot& out) const;
     void setFraudBBoxCallback(FraudBBoxCallback callback);
 
 private:
     struct PendingObject {
         std::string object_id;
         std::string card_age_text;
-        std::string age_group;
+        std::string age;
+        std::string enter_tag_time;
+        std::string outline_tag_time;
         bool is_fraud = false;
         float bbox_left = -1.0f;
         float bbox_top = -1.0f;
         float bbox_right = -1.0f;
         float bbox_bottom = -1.0f;
+        float center_x = -1.0f;
+        float center_y = -1.0f;
         std::chrono::steady_clock::time_point created_at;
     };
 
     struct FraudRecord {
         std::string object_id;
         std::string card_age_text;
-        std::string age_group;
+        std::string age;
         bool is_fraud = false;
+    };
+
+    struct LatestObjectInfo {
+        float x = -1.0f;
+        float y = -1.0f;
+        float left = -1.0f;
+        float top = -1.0f;
+        float right = -1.0f;
+        float bottom = -1.0f;
+        std::string tag_time;
+        std::chrono::steady_clock::time_point updated_at;
     };
 
     void workerLoop();
@@ -73,6 +103,7 @@ private:
     void closeStatements();
     bool insertAnalyticsRow(const FraudRecord& record);
     void pruneExpiredPendingLocked(std::chrono::steady_clock::time_point now);
+    void pruneExpiredStateLocked(std::chrono::steady_clock::time_point now);
 
     std::string host;
     std::string user;
@@ -85,9 +116,11 @@ private:
 
     std::deque<PendingObject> pending_queue;
     std::unordered_set<std::string> pending_object_ids;
+    std::unordered_map<std::string, PendingObject> matched_objects;
+    std::unordered_map<std::string, LatestObjectInfo> latest_objects;
     std::queue<FraudRecord> q;
 
-    std::mutex mtx;
+    mutable std::mutex mtx;
     std::condition_variable cv;
     std::atomic<bool> running;
 
@@ -96,6 +129,8 @@ private:
     std::size_t max_pending_size;
     std::size_t pending_ttl_seconds;
     std::size_t drop_log_interval;
+    std::string enter_rule_name;
+    std::string outline_rule_name;
 
     std::atomic<std::uint64_t> dropped_line_limit_count;
     std::atomic<std::uint64_t> dropped_queue_count;

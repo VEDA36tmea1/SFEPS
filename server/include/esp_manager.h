@@ -22,11 +22,22 @@ public:
     struct FraudBboxPayload {
         std::string object_id;
         std::string card_age_text;
-        std::string age_group;
+        std::string age;
         float left = -1.0f;
         float top = -1.0f;
         float right = -1.0f;
         float bottom = -1.0f;
+    };
+
+    struct TrackPosPayload {
+        std::string object_id;
+        float left = -1.0f;
+        float top = -1.0f;
+        float right = -1.0f;
+        float bottom = -1.0f;
+        float x = -1.0f;
+        float y = -1.0f;
+        std::string tag_time;
     };
 
     explicit EspManager(Config config);
@@ -35,6 +46,8 @@ public:
     bool start(std::atomic<bool>& app_running_flag);
     void stop();
     bool publishFraudBbox(const FraudBboxPayload& payload);
+    bool publishTrackPos(const TrackPosPayload& payload);
+    bool publishTrackEnd(const std::string& object_id, const std::string& reason);
 
 private:
     void acceptLoop();

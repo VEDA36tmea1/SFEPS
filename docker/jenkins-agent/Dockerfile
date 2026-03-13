@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libswscale-dev \
     libasound2-dev \
     libssl-dev \
+    wkhtmltopdf \
     ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 

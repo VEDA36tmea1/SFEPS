@@ -118,7 +118,7 @@ bool EspManager::publishFraudBbox(const FraudBboxPayload& payload) {
     const int line_len = std::snprintf(
         line, sizeof(line),
         "FRAUD_BBOX|%s|%s|%s|CX=%.0f|CY=%.0f|W=%.0f|H=%.0f\n",
-        payload.object_id.c_str(), payload.card_age_text.c_str(), payload.age_group.c_str(),
+        payload.object_id.c_str(), payload.card_age_text.c_str(), payload.age.c_str(),
         cx, cy, width, height);
     if (line_len <= 0 || line_len >= static_cast<int>(sizeof(line))) {
         return false;
@@ -147,6 +147,63 @@ bool EspManager::publishFraudBbox(const FraudBboxPayload& payload) {
     if (delivered) {
         std::cout << "[esp_manager.cpp] [ESP] sent fraud bbox: object_id=" << payload.object_id
                   << ", clients=" << clients_.size() << std::endl;
+    }
+    return delivered;
+}
+
+bool EspManager::publishTrackPos(const TrackPosPayload& payload) {
+    if (!server_running_.load()) return false;
+    if (payload.object_id.empty()) return false;
+    if (payload.left < 0.0f || payload.top < 0.0f || payload.right < payload.left ||
+        payload.bottom < payload.top) {
+        return false;
+    }
+
+    char line[320];
+    const int line_len = std::snprintf(
+        line, sizeof(line),
+        "TRACK_POS|%s|L=%.1f|T=%.1f|R=%.1f|B=%.1f|X=%.1f|Y=%.1f|TAG=%s\n",
+        payload.object_id.c_str(), payload.left, payload.top, payload.right, payload.bottom,
+        payload.x, payload.y, payload.tag_time.c_str());
+    if (line_len <= 0 || line_len >= static_cast<int>(sizeof(line))) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(clients_mutex_);
+    if (clients_.empty()) return false;
+
+    bool delivered = false;
+    for (auto it = clients_.begin(); it != clients_.end();) {
+        if (!sendLineLocked(*it, line, static_cast<std::size_t>(line_len))) {
+            ::close(*it);
+            it = clients_.erase(it);
+            continue;
+        }
+        delivered = true;
+        ++it;
+    }
+    return delivered;
+}
+
+bool EspManager::publishTrackEnd(const std::string& object_id, const std::string& reason) {
+    if (!server_running_.load()) return false;
+    if (object_id.empty()) return false;
+
+    std::string line = "TRACK_END|" + object_id + "|REASON=" + reason;
+    line.push_back('\n');
+
+    std::lock_guard<std::mutex> lock(clients_mutex_);
+    if (clients_.empty()) return false;
+
+    bool delivered = false;
+    for (auto it = clients_.begin(); it != clients_.end();) {
+        if (!sendLineLocked(*it, line.c_str(), line.size())) {
+            ::close(*it);
+            it = clients_.erase(it);
+            continue;
+        }
+        delivered = true;
+        ++it;
     }
     return delivered;
 }

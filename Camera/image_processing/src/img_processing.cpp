@@ -3,25 +3,125 @@
 #include <iostream>
 #include <vector>
 #include <algorithm>
+#include <cstdint>
 #include <opencv2/core/utility.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/dnn.hpp>
 
-// 1. Gamma Correnction + Tone Mapping
+// ========================================================
+// 🌟 [100% 순수 C++ 영역] 하드웨어 레벨 ISP 엔진
+// ========================================================
+
+// 1. 순수 C++ BLC & AWB 엔진 (기존과 동일)
+void applyInitialISP(uint16_t* raw_buf, int width, int height, const ISPConfig& cfg) {
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            int idx = y * width + x;
+            uint32_t pixel = raw_buf[idx];
+
+            pixel = (pixel > cfg.black_level) ? (pixel - cfg.black_level) : 0;
+
+            if (y % 2 == 0) { // B G 라인
+                if (x % 2 == 0) pixel = (uint32_t)(pixel * cfg.b_gain); 
+                else            pixel = (uint32_t)(pixel * cfg.g_gain); 
+            } else {          // G R 라인
+                if (x % 2 == 0) pixel = (uint32_t)(pixel * cfg.g_gain); 
+                else            pixel = (uint32_t)(pixel * cfg.r_gain); 
+            }
+
+            raw_buf[idx] = (uint16_t)std::min(pixel, (uint32_t)1023);
+        }
+    }
+}
+
+// 🌟 2. NEW: 순수 C++ 수동 Demosaicing (Bilinear Interpolation)
+// OpenCV를 쓰지 않고 주변 픽셀을 참조해 R, G, B 채널을 직접 조립합니다.
+std::vector<uint8_t> applyPureDemosaic(const uint16_t* raw_buf, int width, int height) {
+    std::vector<uint8_t> bgr_buf(width * height * 3, 0);
+
+    // 경계값을 안전하게 가져오면서 10-bit -> 8-bit 스케일링을 수행하는 람다 함수
+    auto get_val = [&](int y, int x) -> uint8_t {
+        y = std::max(0, std::min(y, height - 1));
+        x = std::max(0, std::min(x, width - 1));
+        return (uint8_t)(raw_buf[y * width + x] >> 2); 
+    };
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            int idx = (y * width + x) * 3;
+            uint8_t r = 0, g = 0, b = 0;
+
+            // SBGGR 패턴에 따른 선형 보간 수학식 구현
+            if (y % 2 == 0) { 
+                if (x % 2 == 0) { // Blue 픽셀 (B)
+                    b = get_val(y, x);
+                    g = (get_val(y, x-1) + get_val(y, x+1) + get_val(y-1, x) + get_val(y+1, x)) / 4;
+                    r = (get_val(y-1, x-1) + get_val(y-1, x+1) + get_val(y+1, x-1) + get_val(y+1, x+1)) / 4;
+                } else { // Green 픽셀 (G1)
+                    b = (get_val(y, x-1) + get_val(y, x+1)) / 2;
+                    g = get_val(y, x);
+                    r = (get_val(y-1, x) + get_val(y+1, x)) / 2;
+                }
+            } else { 
+                if (x % 2 == 0) { // Green 픽셀 (G2)
+                    b = (get_val(y-1, x) + get_val(y+1, x)) / 2;
+                    g = get_val(y, x);
+                    r = (get_val(y, x-1) + get_val(y, x+1)) / 2;
+                } else { // Red 픽셀 (R)
+                    b = (get_val(y-1, x-1) + get_val(y-1, x+1) + get_val(y+1, x-1) + get_val(y+1, x+1)) / 4;
+                    g = (get_val(y, x-1) + get_val(y, x+1) + get_val(y-1, x) + get_val(y+1, x)) / 4;
+                    r = get_val(y, x);
+                }
+            }
+
+            // 후처리 모듈(OpenCV)과의 호환을 위해 BGR 순서로 담아줍니다.
+            bgr_buf[idx + 0] = b;
+            bgr_buf[idx + 1] = g;
+            bgr_buf[idx + 2] = r;
+        }
+    }
+    return bgr_buf;
+}
+
+// 🌟 3. 브릿지 함수 수정: OpenCV의 cvtColor 완전 제거!
+cv::Mat runPureISP(cv::Mat& raw16_frame) {
+    if (raw16_frame.empty() || raw16_frame.type() != CV_16UC1) {
+        std::cerr << "🚨 입력이 16-bit RAW 데이터가 아닙니다!" << std::endl;
+        return raw16_frame;
+    }
+
+    int width = raw16_frame.cols;
+    int height = raw16_frame.rows;
+    uint16_t* raw_data = (uint16_t*)raw16_frame.data;
+
+    // [순수 C++ 1단계] BLC & AWB 엔진 가동 (원본 RAW 버퍼 직접 수정)
+    ISPConfig cfg;
+    applyInitialISP(raw_data, width, height, cfg);
+
+    // [순수 C++ 2단계] 수동 Demosaicing (Bayer 10-bit -> BGR 8-bit 배열로 복원)
+    std::vector<uint8_t> bgr_buffer = applyPureDemosaic(raw_data, width, height);
+
+    // [어플리케이션 계층] 순수 C++로 만든 1차원 배열을 OpenCV의 2차원 객체로 '포장'만 해줍니다.
+    cv::Mat bgr_img(height, width, CV_8UC3);
+    std::copy(bgr_buffer.begin(), bgr_buffer.end(), bgr_img.data);
+
+    // 이제 순수 C++로 1차 가공된 컬러 사진이 기존의 화질 튜닝 파이프라인으로 넘어갑니다!
+    return bgr_img; 
+}
+
+// 1. Gamma Correnction + Tone Mapping (기존과 동일)
 void applyShadowBoost(const cv::Mat& src, cv::Mat& dst, double gamma, double alpha) {
     if (src.empty()) return;
 
-    // 색상 공간 변환
     cv::Mat yuv;
     cv::cvtColor(src, yuv, cv::COLOR_BGR2YUV); 
 
-    // 룩업 테이블 생성
     unsigned char lut[256];
     for (int i = 0; i < 256; i++) {
-        double I_in = i / 255.0; // 정규화
-        double I_boost = std::pow(I_in, 1.0 / gamma); // 감마 보정 
-        I_boost = alpha * (I_boost - 0.5) + 0.5; // 대비 조절
-        double shadow_weight = 1.0 - std::pow(I_in, 2.0); // 암부 가중치 계산
+        double I_in = i / 255.0; 
+        double I_boost = std::pow(I_in, 1.0 / gamma); 
+        I_boost = alpha * (I_boost - 0.5) + 0.5; 
+        double shadow_weight = 1.0 - std::pow(I_in, 2.0); 
         double final_I = (I_boost * shadow_weight) + (I_in * (1.0 - shadow_weight));
         lut[i] = cv::saturate_cast<unsigned char>(final_I * 255.0);
     }
@@ -42,8 +142,7 @@ void applyShadowBoost(const cv::Mat& src, cv::Mat& dst, double gamma, double alp
     cv::cvtColor(yuv, dst, cv::COLOR_YUV2BGR);
 }
 
-
-// 3. CLAHE
+// 3. CLAHE (기존과 동일)
 void applyCLAHE(const cv::Mat& src, cv::Mat& dst, double clip_limit, cv::Size grid) {
     cv::Mat lab;
     cv::cvtColor(src, lab, cv::COLOR_BGR2Lab);
@@ -61,7 +160,6 @@ void applyCLAHE(const cv::Mat& src, cv::Mat& dst, double clip_limit, cv::Size gr
     std::vector<std::vector<std::vector<int>>> cdfs(grid_y, std::vector<std::vector<int>>(grid_x, std::vector<int>(256, 0)));
     int clip_threshold = std::max(1, (int)(clip_limit * (tile_w * tile_h) / 256.0));
 
-    // 히스토그램 생성 및 클리핑
     for (int ty = 0; ty < grid_y; ty++) {
         for (int tx = 0; tx < grid_x; tx++) {
             int hist[256] = {0};
@@ -100,7 +198,6 @@ void applyCLAHE(const cv::Mat& src, cv::Mat& dst, double clip_limit, cv::Size gr
         }
     }
 
-    // 이중 선형 보간법 매핑
     cv::Mat out_L = L.clone();
     for (int y = 0; y < rows; y++) {
         uchar* out_ptr = out_L.ptr<uchar>(y);
@@ -138,80 +235,48 @@ void applyCLAHE(const cv::Mat& src, cv::Mat& dst, double clip_limit, cv::Size gr
     cv::cvtColor(lab, dst, cv::COLOR_Lab2BGR);
 }
 
-// 엔트로피 계산 함수
+// 엔트로피 계산 함수 (기존과 동일)
 double calculateEntropy(const cv::Mat& frame) {
     if (frame.empty()) return 0.0;
-
     cv::Mat gray;
     cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
-
-    // 1. 히스토그램 계산
     int histSize = 256;
     float range[] = { 0, 256 };
     const float* histRange = { range };
     cv::Mat hist;
     cv::calcHist(&gray, 1, 0, cv::Mat(), hist, 1, &histSize, &histRange, true, false);
-
-    // 2. 전체 픽셀 수로 나누어 확률 p(i) 계산
     hist /= (gray.rows * gray.cols);
-
-    // 3. 섀넌 엔트로피 공식 적용: -sum( p * log2(p) )
     double entropy = 0.0;
     for (int i = 0; i < histSize; i++) {
         float p = hist.at<float>(i);
-        if (p > 0.0) {
-            entropy -= p * std::log2(p);
-        }
+        if (p > 0.0) entropy -= p * std::log2(p);
     }
     return entropy;
 }
 
-// 5. 8분할 이미지 & Bestshot 생성 함수
+// 5. 8분할 이미지 & Bestshot 생성 함수 (기존과 동일)
 cv::Mat processISPAndGetBest(const cv::Mat& raw_frame_in, cv::Mat& tuning_view_out) {
     if (raw_frame_in.empty()) return raw_frame_in;
 
-    // 1. FHD 원본 해상도로 8가지 파이프라인 모두 생성
     std::vector<cv::Mat> candidates(8);
-    candidates[0] = raw_frame_in.clone(); // 원본
+    candidates[0] = raw_frame_in.clone();
 
     cv::Mat t_boost;
-
-    // Lv.1
-    applyShadowBoost(raw_frame_in, t_boost, 1.2, 1.0); 
-    applyCLAHE(t_boost, candidates[1], 1.5, cv::Size(8,8));
-
-    // Lv.2
-    applyShadowBoost(raw_frame_in, t_boost, 1.5, 1.2); 
-    applyCLAHE(t_boost, candidates[2], 2.0, cv::Size(8,8));
-
-    // Lv.3
-    applyShadowBoost(raw_frame_in, t_boost, 1.8, 1.4); 
-    applyCLAHE(t_boost, candidates[3], 2.5, cv::Size(8,8));
-
-    // Lv.4
-    applyShadowBoost(raw_frame_in, t_boost, 2.2, 1.6); 
-    applyCLAHE(t_boost, candidates[4], 3.0, cv::Size(8,8));
-
-    // Lv.5
-    applyShadowBoost(raw_frame_in, t_boost, 2.5, 1.8); 
-    applyCLAHE(t_boost, candidates[5], 3.5, cv::Size(8,8));
-
-    // Lv.6
-    applyShadowBoost(raw_frame_in, t_boost, 2.8, 2.0); 
-    applyCLAHE(t_boost, candidates[6], 4.0, cv::Size(8,8));
-
-    // Lv.7
-    applyShadowBoost(raw_frame_in, t_boost, 3.0, 2.2); 
-    applyCLAHE(t_boost, candidates[7], 4.5, cv::Size(8,8));   
+    applyShadowBoost(raw_frame_in, t_boost, 1.2, 1.0); applyCLAHE(t_boost, candidates[1], 1.5, cv::Size(8,8));
+    applyShadowBoost(raw_frame_in, t_boost, 1.5, 1.2); applyCLAHE(t_boost, candidates[2], 2.0, cv::Size(8,8));
+    applyShadowBoost(raw_frame_in, t_boost, 1.8, 1.4); applyCLAHE(t_boost, candidates[3], 2.5, cv::Size(8,8));
+    applyShadowBoost(raw_frame_in, t_boost, 2.2, 1.6); applyCLAHE(t_boost, candidates[4], 3.0, cv::Size(8,8));
+    applyShadowBoost(raw_frame_in, t_boost, 2.5, 1.8); applyCLAHE(t_boost, candidates[5], 3.5, cv::Size(8,8));
+    applyShadowBoost(raw_frame_in, t_boost, 2.8, 2.0); applyCLAHE(t_boost, candidates[6], 4.0, cv::Size(8,8));
+    applyShadowBoost(raw_frame_in, t_boost, 3.0, 2.2); applyCLAHE(t_boost, candidates[7], 4.5, cv::Size(8,8));   
 
     cv::Mat gray_raw;
     cv::cvtColor(raw_frame_in, gray_raw, cv::COLOR_BGR2GRAY);
     cv::Scalar mean_val, stddev_val;
     cv::meanStdDev(gray_raw, mean_val, stddev_val);
 
-    std::string raw_info = cv::format("Mean(B): %.1f, Std(C): %.1f", mean_val[0], stddev_val[0]);
+    std::string raw_info = cv::format("Mean: %.1f, Std: %.1f", mean_val[0], stddev_val[0]);
 
-    // 2. 실시간 1등 찾기 및 8분할 뷰어(tuning_view_out) 제작을 위한 해상도 축소
     double scale = 1920.0 / raw_frame_in.cols;
     cv::Mat raw_resized;
     cv::resize(raw_frame_in, raw_resized, cv::Size(), scale, scale, cv::INTER_AREA);
@@ -224,60 +289,36 @@ cv::Mat processISPAndGetBest(const cv::Mat& raw_frame_in, cv::Mat& tuning_view_o
         "1. RAW", "2. Processing Lv.1", "3. Processing Lv.2", "4. Processing Lv.3", 
         "5. Processing Lv.4", "6. Processing Lv.5", "7. Processing Lv.6", "8. Processing Lv.7"
     };
-
     std::vector<std::string> subtitles = {
         raw_info, 
-        "(G=1.2, A=1.0, C=1.5)", "(G=1.5, A=1.2, C=2.0)", "(G=1.8, A=1.4, C=2.5)", 
-        "(G=2.2, A=1.6, C=3.0)", "(G=2.5, A=1.8, C=3.5)", "(G=2.8, A=2.0, C=4.0)", "(G=3.0, A=2.2, C=4.5)"
+        "(G=1.2, A=1.0)", "(G=1.5, A=1.2)", "(G=1.8, A=1.4)", 
+        "(G=2.2, A=1.6)", "(G=2.5, A=1.8)", "(G=2.8, A=2.0)", "(G=3.0, A=2.2)"
     };
 
-double max_entropy = -1.0;
+    double max_entropy = -1.0;
     int best_idx = 0;
     std::vector<double> entropies(8);
 
-    std::cout << "\n==========================================" << std::endl;
-    std::cout << "[Entropy 지표]" << std::endl;
-    std::cout << "원본 평균 밝기 : " << mean_val[0] << ", 표준편차(대비) : " << stddev_val[0] << std::endl;
-    std::cout << "------------------------------------------" << std::endl;
-
     for (int i = 0; i < 8; i++) {
         entropies[i] = calculateEntropy(candidates[i]); 
-        
-        std::string cmd_title = titles[i] + " " + subtitles[i];;
-        std::cout << cmd_title << " : " << entropies[i] << std::endl;
-        
         if (entropies[i] > max_entropy) {
             max_entropy = entropies[i];
             best_idx = i;
         }
     }
-    std::cout << "==========================================\n" << std::endl;
-    std::cout << titles[best_idx] << "가 BestShot으로 선정되었습니다." << "\n" << std::endl;
 
     for (int i = 0; i < 8; i++) {
-        // 8분할 이미지 화면 조립을 위해 축소
         cv::Mat q_resized;
         cv::resize(candidates[i], q_resized, cv::Size(q_cols, q_rows));
-
-        // 1등은 초록색, 나머지는 빨간색
         cv::Scalar text_color = (i == best_idx) ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
 
-        // 1. Draw Title (titles[i] 사용, y=35)
-        cv::putText(q_resized, titles[i], cv::Point(15, 35), 
-                    cv::FONT_HERSHEY_SIMPLEX, 0.9, cv::Scalar(0, 0, 0), 2, cv::LINE_AA);
-        
-        // 2. Draw Subtitle (subtitles[i] 사용, y=70, Clip Limit 파라미터 등 표시)
+        cv::putText(q_resized, titles[i], cv::Point(15, 35), cv::FONT_HERSHEY_SIMPLEX, 0.9, cv::Scalar(0, 0, 0), 2, cv::LINE_AA);
         if (!subtitles[i].empty()) {
-            cv::putText(q_resized, subtitles[i], cv::Point(15, 70), 
-                        cv::FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2, cv::LINE_AA);
+            cv::putText(q_resized, subtitles[i], cv::Point(15, 70), cv::FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2, cv::LINE_AA);
         }
-
-        // 3. Draw Entropy value (y=105)
         std::string entropy_text = cv::format("Entropy : %.2f", entropies[i]);
-        cv::putText(q_resized, entropy_text, cv::Point(15, 105), 
-                    cv::FONT_HERSHEY_SIMPLEX, 0.8, text_color, 2, cv::LINE_AA);
+        cv::putText(q_resized, entropy_text, cv::Point(15, 105), cv::FONT_HERSHEY_SIMPLEX, 0.8, text_color, 2, cv::LINE_AA);
 
-        //Place quadrant in view
         int r = i / 4;
         int c = i % 4;
         q_resized.copyTo(tuning_view_out(cv::Rect(c * q_cols, r * q_rows, q_cols, q_rows)));

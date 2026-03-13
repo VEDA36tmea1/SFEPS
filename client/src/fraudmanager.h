@@ -17,14 +17,12 @@ public:
     explicit FraudManager(QObject *parent = nullptr);
     ~FraudManager();
 
-    Q_INVOKABLE void connectToServer(const QString &host = "192.168.0.101", int port = 5557);
-    Q_INVOKABLE void sendCommand(const QString &msg);
-    // Position channel moved to PositionManager
+    Q_INVOKABLE void connectToServer(const QString &host = "192.168.0.80", int port = 5557);
 
 signals:
     void fraudDetected(const QString &objectId,
                        const QString &cardAgeText,
-                       const QString &ageGroup,
+                       const QString &age,
                        bool isFraud);
     
 

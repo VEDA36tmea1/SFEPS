@@ -21,7 +21,7 @@ extern "C" {
 }
 
 namespace {
-constexpr const char* kRtspUrl = "rtsp://192.168.0.101:8554/cam1";
+constexpr const char* kRtspUrl = "rtsp://192.168.0.80:8554/cam1";
 constexpr int kSegmentDurationSec = 60;
 constexpr const char* kXmlDeclStart = "<?xml";
 constexpr const char* kMetadataStreamStartTag = "<tt:MetadataStream";

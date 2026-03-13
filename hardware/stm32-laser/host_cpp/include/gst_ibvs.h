@@ -5,6 +5,9 @@
 // GStreamer forward declarations
 typedef struct _GstSample GstSample;
 
+/** GstSample (video/x-raw, BGR or GRAY8) → cv::Mat. rtsp_laser_demo 등에서 appsink 프레임 변환용. */
+bool gst_sample_to_mat(GstSample* sample, cv::Mat& outMat);
+
 class IbvsController;
 class StmInterface;
 class VisionDetector;

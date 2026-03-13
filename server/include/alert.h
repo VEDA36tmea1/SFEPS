@@ -12,6 +12,5 @@ std::size_t alert_client_count();
 void close_alert_client_connections();
 
 void send_alert_to_clients(const std::string& msg);
-void send_test_alert_to_clients(const std::string& msg = "TEST|PING");
 
 #endif

@@ -82,7 +82,7 @@ int main(int argc, char *argv[]) {
       return parsed;
   };
 
-  const QString alertHost = env.value("FRAUD_SERVER_HOST", "192.168.0.101");
+  const QString alertHost = env.value("FRAUD_SERVER_HOST", "192.168.0.80");
   const bool clientTlsEnabled = parseEnvBool(env, "SFEPS_CLIENT_TLS_ENABLE", false);
   const bool alertTlsEnabled = parseEnvBool(env, "SFEPS_ALERT_TLS_ENABLE", clientTlsEnabled);
   const int alertPort = alertTlsEnabled

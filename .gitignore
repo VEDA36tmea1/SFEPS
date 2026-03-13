@@ -150,6 +150,7 @@ temp/
 *.mov
 *.zip
 *.tar.gz
+Camera/calibration/*.png
 
 # 개인 설정 파일
 *.local.*

@@ -31,7 +31,7 @@ cd /home/iam/SFEPS/server
 ./tunnel_vscode_db.sh [pi-ip]
 ```
 
-`[pi-ip]`가 생략되면 기본 `192.168.0.101`로 실행됩니다.
+`[pi-ip]`가 생략되면 기본 `192.168.0.80`로 실행됩니다.
 
 ### 2) VSCode 연결 정보
 
@@ -152,9 +152,6 @@ make -j4
 # 수동 실행(권장: run_server.sh 사용)
 cd ..
 ./run_server.sh
-
-# 테스트 알림 핑(2초 주기)
-./run_server.sh --test-ping
 ```
 
 ## analytics_logs 1회 DDL 적용 (ObjectId + RFID Fraud 전용)
@@ -177,7 +174,7 @@ mysql -u"$SFEPS_DB_USER" -p"$SFEPS_DB_PASS" "$SFEPS_DB_NAME_ANALYTICS" \
         id INT(11) NOT NULL AUTO_INCREMENT, \
         object_id VARCHAR(128) NOT NULL, \
         card_age_text VARCHAR(64) NOT NULL DEFAULT '0', \
-        age_group VARCHAR(32) NOT NULL DEFAULT '20s', \
+        age VARCHAR(32) NOT NULL DEFAULT '20s', \
         is_fraud TINYINT(1) NOT NULL DEFAULT 0, \
         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, \
         PRIMARY KEY (id), \
@@ -304,7 +301,7 @@ journalctl -u sfeps-server -f
 - 메타데이터 패킷/큐 상한 및 XML 재조립 제한 + 샘플링 드롭 로그 (`SFEPS_META_*`, `SFEPS_ANALYTICS_QUEUE_MAX`)
 - XML 메타데이터에서 `Type=Human` 객체 `ObjectId`를 pending으로 등록하고 RFID와 FIFO 매칭
 - RFID `text`가 `성인/adult`가 아니면 부정승차(`fraud=Y`)로 판정
-- `fraud=Y` 건만 `analytics_logs(object_id, card_age_text, age_group, is_fraud, created_at)`에 저장
+- `fraud=Y` 건만 `analytics_logs(object_id, card_age_text, age, is_fraud, created_at)`에 저장
 - 알림 포맷: `FRAUD|object_id|card_age_text|age_group|is_fraud`
 - 음성 RAW PCM 수신 후 `AudioRingBuffer + AudioPlayback(ALSA)` 경로로 재생
 - 부정승차/테스트 메시지 알림 브로드캐스트

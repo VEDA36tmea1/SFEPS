@@ -36,6 +36,7 @@ namespace fs = std::filesystem;
 constexpr int AUTH_PORT = 5555;
 constexpr int AUDIO_PORT = 5556;
 constexpr int ALERT_PORT = 5557;
+constexpr int POSITION_PORT = 5558;
 
 std::atomic<bool> g_running(true);
 
@@ -161,13 +162,17 @@ SecurityRuntimeOptions load_security_runtime_options() {
     cfg.auth_max_bytes = load_env_size_t("SFEPS_AUTH_MAX_BYTES", 256, 1);
     cfg.audio_max_bytes = load_env_size_t("SFEPS_AUDIO_MAX_BYTES", 4 * 1024 * 1024, 1024);
     cfg.alert_max_clients = load_env_size_t("SFEPS_ALERT_MAX_CLIENTS", 64, 1);
+    cfg.position_max_clients = load_env_size_t("SFEPS_POSITION_MAX_CLIENTS", 64, 1);
     cfg.socket_read_timeout_ms = load_env_int("SFEPS_SOCKET_READ_TIMEOUT_MS", 5000, 1);
+    cfg.position_stream_tick_ms = load_env_int("SFEPS_POSITION_TICK_MS", 100, 1);
+    cfg.position_stale_seconds = load_env_size_t("SFEPS_POSITION_STALE_SEC", 3, 1);
 
     cfg.app_tls_enable = load_env_bool("SFEPS_APP_TLS_ENABLE", false);
     cfg.app_plaintext_enable = load_env_bool("SFEPS_APP_PLAINTEXT_ENABLE", true);
     cfg.auth_tls_port = load_env_port("SFEPS_AUTH_TLS_PORT", 6555);
     cfg.audio_tls_port = load_env_port("SFEPS_AUDIO_TLS_PORT", 6556);
     cfg.alert_tls_port = load_env_port("SFEPS_ALERT_TLS_PORT", 6557);
+    cfg.position_tls_port = load_env_port("SFEPS_POSITION_TLS_PORT", 6558);
     cfg.app_tls_handshake_timeout_ms =
         load_env_int("SFEPS_APP_TLS_HANDSHAKE_TIMEOUT_MS", 3000, 1);
     const char* bind_ip = std::getenv("SFEPS_APP_BIND_IP");
@@ -240,17 +245,19 @@ bool validate_security_runtime_options(const SecurityRuntimeOptions& cfg, std::s
         cfg.auth_tls_port,
         cfg.audio_tls_port,
         cfg.alert_tls_port,
+        cfg.position_tls_port,
     };
-    if (tls_ports.size() != 3) {
-        err = "invalid TLS port config: SFEPS_AUTH/AUDIO/ALERT_TLS_PORT must be unique";
+    if (tls_ports.size() != 4) {
+        err = "invalid TLS port config: SFEPS_AUTH/AUDIO/ALERT/POSITION_TLS_PORT must be unique";
         return false;
     }
 
     if (cfg.app_plaintext_enable) {
-        std::unordered_set<int> plain_ports = {AUTH_PORT, AUDIO_PORT, ALERT_PORT};
+        std::unordered_set<int> plain_ports = {AUTH_PORT, AUDIO_PORT, ALERT_PORT, POSITION_PORT};
         if (plain_ports.count(cfg.auth_tls_port) > 0 || plain_ports.count(cfg.audio_tls_port) > 0 ||
-            plain_ports.count(cfg.alert_tls_port) > 0) {
-            err = "invalid TLS port config: TLS ports collide with plaintext ports (5555/5556/5557)";
+            plain_ports.count(cfg.alert_tls_port) > 0 ||
+            plain_ports.count(cfg.position_tls_port) > 0) {
+            err = "invalid TLS port config: TLS ports collide with plaintext ports (5555/5556/5557/5558)";
             return false;
         }
     }
@@ -293,8 +300,9 @@ void log_transport_mode(const SecurityRuntimeOptions& cfg) {
     }
 
     if (cfg.app_tls_enable) {
-        std::cout << "[main.cpp] [Security] TLS ports auth/audio/alert=" << cfg.auth_tls_port << "/"
-                  << cfg.audio_tls_port << "/" << cfg.alert_tls_port
+        std::cout << "[main.cpp] [Security] TLS ports auth/audio/alert/position="
+                  << cfg.auth_tls_port << "/" << cfg.audio_tls_port << "/" << cfg.alert_tls_port
+                  << "/" << cfg.position_tls_port
                   << ", handshake_timeout_ms=" << cfg.app_tls_handshake_timeout_ms << std::endl;
         std::cout << "[main.cpp] [Security] TLS cert file=" << cfg.app_tls_cert_file << std::endl;
     }
@@ -324,7 +332,7 @@ void signal_handler(int signum) {
     g_running = false;
 }
 
-int main(int argc, char* argv[]) {
+int main() {
     RuntimeConfig cfg;
     std::string cfg_err;
     if (!load_runtime_config(cfg, cfg_err)) {
@@ -357,15 +365,10 @@ int main(int argc, char* argv[]) {
     std::cout << "[main.cpp] [Security] auth_max_bytes=" << sec_cfg.auth_max_bytes
               << ", audio_max_bytes=" << sec_cfg.audio_max_bytes
               << ", alert_max_clients=" << sec_cfg.alert_max_clients
+              << ", position_max_clients=" << sec_cfg.position_max_clients
+              << ", position_tick_ms=" << sec_cfg.position_stream_tick_ms
+              << ", position_stale_sec=" << sec_cfg.position_stale_seconds
               << ", socket_read_timeout_ms=" << sec_cfg.socket_read_timeout_ms << std::endl;
-
-    bool send_test_ping = false;
-    for (int i = 1; i < argc; ++i) {
-        const std::string arg = argv[i];
-        if (arg == "--ping-2s" || arg == "--test-ping") {
-            send_test_ping = true;
-        }
-    }
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
@@ -404,7 +407,7 @@ int main(int argc, char* argv[]) {
         EspManager::FraudBboxPayload esp_payload;
         esp_payload.object_id = payload.object_id;
         esp_payload.card_age_text = payload.card_age_text;
-        esp_payload.age_group = payload.age_group;
+        esp_payload.age = payload.age;
         esp_payload.left = payload.left;
         esp_payload.top = payload.top;
         esp_payload.right = payload.right;
@@ -430,22 +433,11 @@ int main(int argc, char* argv[]) {
     std::thread t_auth(run_login_auth, std::ref(g_running), std::cref(cfg), std::cref(sec_cfg));
     std::thread t_audio(run_audio_receiver, std::ref(g_running), std::cref(sec_cfg));
     std::thread t_alert(run_fraud_notifier, std::ref(g_running), std::cref(sec_cfg));
+    std::thread t_position(run_position_stream_service, std::ref(g_running), std::cref(sec_cfg),
+                           std::ref(analytics), std::ref(esp_manager));
 
     RfidMonitor rfid_monitor(g_running, analytics);
     std::thread t_rfid(&RfidMonitor::start, &rfid_monitor);
-
-    std::thread t_test_ping;
-    if (send_test_ping) {
-        t_test_ping = std::thread([&]() {
-            int seq = 0;
-            while (g_running.load()) {
-                send_test_alert_to_clients("TEST|PING|" + std::to_string(seq++));
-                if (!sleep_interruptible(g_running, std::chrono::seconds(2))) break;
-            }
-            std::cout << "[main.cpp] [Alert] test ping thread stopped." << std::endl;
-        });
-        std::cout << "[main.cpp] [System] Test ping enabled (--test-ping)." << std::endl;
-    }
 
     RTSPRecorder recorder(logger, g_running, analytics);
     recorder.run();
@@ -455,8 +447,8 @@ int main(int argc, char* argv[]) {
     close_alert_client_connections();
     esp_manager.stop();
 
-    if (t_test_ping.joinable()) t_test_ping.join();
     if (t_rfid.joinable()) t_rfid.join();
+    if (t_position.joinable()) t_position.join();
     if (t_alert.joinable()) t_alert.join();
     if (t_audio.joinable()) t_audio.join();
     if (t_auth.joinable()) t_auth.join();
