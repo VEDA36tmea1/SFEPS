@@ -21,6 +21,8 @@ pipeline {
         SFEPS_DOCKER_PLATFORM = "${env.SFEPS_DOCKER_PLATFORM ?: 'linux/arm64'}"
         SFEPS_DOCKERFILE_PATH = "${env.SFEPS_DOCKERFILE_PATH ?: 'docker/server/Dockerfile'}"
         SFEPS_REGISTRY_CREDENTIALS_ID = "${env.SFEPS_REGISTRY_CREDENTIALS_ID ?: 'sfeps-registry-creds'}"
+        // Single-job fallback branch (set to main when running main in a single Pipeline job)
+        SFEPS_SINGLE_JOB_BRANCH = "${env.SFEPS_SINGLE_JOB_BRANCH ?: 'develop'}"
 
         SFEPS_TEST_HOST = "${env.SFEPS_TEST_HOST ?: ''}"
         SFEPS_TEST_SSH_CREDENTIALS_ID = "${env.SFEPS_TEST_SSH_CREDENTIALS_ID ?: 'sfeps-test-ssh'}"
@@ -54,8 +56,14 @@ pipeline {
             steps {
                 script {
                     def branch = env.BRANCH_NAME?.trim()
+                    if (branch == 'null') {
+                        branch = ''
+                    }
                     if (!branch) {
                         branch = env.GIT_BRANCH?.trim()
+                        if (branch == 'null') {
+                            branch = ''
+                        }
                         if (branch?.startsWith('origin/')) {
                             branch = branch.substring('origin/'.length())
                         }
@@ -63,15 +71,23 @@ pipeline {
                     if (!branch || branch == 'HEAD') {
                         branch = sh(
                             returnStdout: true,
-                            script: "git for-each-ref --contains HEAD refs/remotes/origin --format='%(refname:short)' | sed 's#^origin/##' | head -n1"
+                            script: "git branch -r --contains HEAD | sed 's#^ *origin/##' | grep -v '^HEAD ->' | grep -v '^HEAD$' | head -n1 || true"
                         ).trim()
                     }
-                    if (!branch) {
-                        branch = "unknown"
+                    if (!branch || branch == 'null' || branch == 'HEAD') {
+                        branch = env.SFEPS_SINGLE_JOB_BRANCH?.trim()
+                    }
+                    if (!branch || branch == 'null' || branch == 'HEAD') {
+                        error "Unable to resolve branch name for CD. Set SFEPS_SINGLE_JOB_BRANCH (e.g. develop/main) in Jenkins job env."
+                    }
+
+                    def gitShaShort = sh(returnStdout: true, script: "git rev-parse --short=8 HEAD").trim()
+                    if (!gitShaShort || gitShaShort == 'null') {
+                        error "Unable to resolve git SHA for CD."
                     }
 
                     env.SFEPS_CI_BRANCH = branch
-                    env.SFEPS_GIT_SHA_SHORT = sh(returnStdout: true, script: "git rev-parse --short=8 HEAD").trim()
+                    env.SFEPS_GIT_SHA_SHORT = gitShaShort
                     def branchTag = branch.replaceAll("[^A-Za-z0-9_.-]+", "-")
 
                     if (env.SFEPS_DOCKER_REGISTRY?.trim()) {
@@ -82,7 +98,7 @@ pipeline {
                         env.SFEPS_IMAGE_LATEST_REF = ""
                     }
 
-                    echo "Resolved branch=${env.SFEPS_CI_BRANCH}, sha=${env.SFEPS_GIT_SHA_SHORT}"
+                    echo "Resolved branch=${branch}, sha=${gitShaShort}"
                     if (env.SFEPS_IMAGE_REF) {
                         echo "CD image tag=${env.SFEPS_IMAGE_REF}"
                     }
