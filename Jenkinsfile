@@ -14,12 +14,79 @@ pipeline {
         SFEPS_DB_NAME_ANALYTICS = "${env.SFEPS_DB_NAME_ANALYTICS ?: 'CCgbd'}"
         SFEPS_ESP_TCP_ENABLE = "${env.SFEPS_ESP_TCP_ENABLE ?: '0'}"
         SFEPS_ESP_TCP_BIND_IP = "${env.SFEPS_ESP_TCP_BIND_IP ?: '127.0.0.1'}"
+
+        // CD settings (override in Jenkins job/global env)
+        SFEPS_DOCKER_REGISTRY = "${env.SFEPS_DOCKER_REGISTRY ?: ''}"
+        SFEPS_DOCKER_IMAGE_REPO = "${env.SFEPS_DOCKER_IMAGE_REPO ?: 'sfeps/server'}"
+        SFEPS_DOCKER_PLATFORM = "${env.SFEPS_DOCKER_PLATFORM ?: 'linux/arm64'}"
+        SFEPS_DOCKERFILE_PATH = "${env.SFEPS_DOCKERFILE_PATH ?: 'docker/server/Dockerfile'}"
+        SFEPS_REGISTRY_CREDENTIALS_ID = "${env.SFEPS_REGISTRY_CREDENTIALS_ID ?: 'sfeps-registry-creds'}"
+
+        SFEPS_TEST_HOST = "${env.SFEPS_TEST_HOST ?: ''}"
+        SFEPS_TEST_SSH_CREDENTIALS_ID = "${env.SFEPS_TEST_SSH_CREDENTIALS_ID ?: 'sfeps-test-ssh'}"
+        SFEPS_TEST_CONTAINER_NAME = "${env.SFEPS_TEST_CONTAINER_NAME ?: 'sfeps-server-test'}"
+
+        SFEPS_PROD_HOST = "${env.SFEPS_PROD_HOST ?: ''}"
+        SFEPS_PROD_SSH_CREDENTIALS_ID = "${env.SFEPS_PROD_SSH_CREDENTIALS_ID ?: 'sfeps-prod-ssh'}"
+        SFEPS_PROD_CONTAINER_NAME = "${env.SFEPS_PROD_CONTAINER_NAME ?: 'sfeps-server-prod'}"
+
+        SFEPS_REMOTE_ENV_FILE = "${env.SFEPS_REMOTE_ENV_FILE ?: '/home/iam/SFEPS/server/.env.local'}"
+        SFEPS_CONTAINER_ENV_FILE = "${env.SFEPS_CONTAINER_ENV_FILE ?: '/opt/sfeps/server/.env.local'}"
+        SFEPS_REMOTE_PKI_DIR = "${env.SFEPS_REMOTE_PKI_DIR ?: '/etc/sfeps/pki'}"
+        SFEPS_VIDEO_DIR = "${env.SFEPS_VIDEO_DIR ?: '/home/iam/SFEPS/videos'}"
+        SFEPS_HEALTH_PORT = "${env.SFEPS_HEALTH_PORT ?: '5555'}"
+
+        // runtime metadata (filled in Resolve CI Metadata stage)
+        SFEPS_CI_BRANCH = ""
+        SFEPS_GIT_SHA_SHORT = ""
+        SFEPS_IMAGE_REF = ""
+        SFEPS_IMAGE_LATEST_REF = ""
     }
 
     stages {
         stage('Checkout') {
             steps {
                 checkout scm
+            }
+        }
+
+        stage('Resolve CI Metadata') {
+            steps {
+                script {
+                    def branch = env.BRANCH_NAME?.trim()
+                    if (!branch) {
+                        branch = env.GIT_BRANCH?.trim()
+                        if (branch?.startsWith('origin/')) {
+                            branch = branch.substring('origin/'.length())
+                        }
+                    }
+                    if (!branch || branch == 'HEAD') {
+                        branch = sh(
+                            returnStdout: true,
+                            script: "git for-each-ref --contains HEAD refs/remotes/origin --format='%(refname:short)' | sed 's#^origin/##' | head -n1"
+                        ).trim()
+                    }
+                    if (!branch) {
+                        branch = "unknown"
+                    }
+
+                    env.SFEPS_CI_BRANCH = branch
+                    env.SFEPS_GIT_SHA_SHORT = sh(returnStdout: true, script: "git rev-parse --short=8 HEAD").trim()
+                    def branchTag = branch.replaceAll("[^A-Za-z0-9_.-]+", "-")
+
+                    if (env.SFEPS_DOCKER_REGISTRY?.trim()) {
+                        env.SFEPS_IMAGE_REF = "${env.SFEPS_DOCKER_REGISTRY}/${env.SFEPS_DOCKER_IMAGE_REPO}:${branchTag}-${env.BUILD_NUMBER}-${env.SFEPS_GIT_SHA_SHORT}"
+                        env.SFEPS_IMAGE_LATEST_REF = "${env.SFEPS_DOCKER_REGISTRY}/${env.SFEPS_DOCKER_IMAGE_REPO}:${branchTag}-latest"
+                    } else {
+                        env.SFEPS_IMAGE_REF = ""
+                        env.SFEPS_IMAGE_LATEST_REF = ""
+                    }
+
+                    echo "Resolved branch=${env.SFEPS_CI_BRANCH}, sha=${env.SFEPS_GIT_SHA_SHORT}"
+                    if (env.SFEPS_IMAGE_REF) {
+                        echo "CD image tag=${env.SFEPS_IMAGE_REF}"
+                    }
+                }
             }
         }
 
@@ -319,6 +386,168 @@ if tests == 0 or skipped == tests:
     sys.exit(2)
 PY
                 '''
+            }
+        }
+
+        stage('Build & Push ARM Image') {
+            when {
+                expression { env.SFEPS_CI_BRANCH == 'develop' || env.SFEPS_CI_BRANCH == 'main' }
+            }
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: "${env.SFEPS_REGISTRY_CREDENTIALS_ID}",
+                        usernameVariable: 'REGISTRY_USER',
+                        passwordVariable: 'REGISTRY_PASS'
+                    )
+                ]) {
+                    sh '''
+                        set -eu
+                        if [ -z "${SFEPS_DOCKER_REGISTRY}" ]; then
+                          echo "SFEPS_DOCKER_REGISTRY is required for CD image push." >&2
+                          exit 1
+                        fi
+                        if [ -z "${SFEPS_IMAGE_REF}" ] || [ -z "${SFEPS_IMAGE_LATEST_REF}" ]; then
+                          echo "CD image tags are empty. Resolve CI Metadata stage failed." >&2
+                          exit 1
+                        fi
+
+                        docker buildx inspect sfeps-builder >/dev/null 2>&1 || docker buildx create --name sfeps-builder --use
+                        docker buildx use sfeps-builder
+
+                        printf '%s' "${REGISTRY_PASS}" | docker login "${SFEPS_DOCKER_REGISTRY}" -u "${REGISTRY_USER}" --password-stdin
+                        docker buildx build \
+                          --platform "${SFEPS_DOCKER_PLATFORM}" \
+                          -f "${SFEPS_DOCKERFILE_PATH}" \
+                          -t "${SFEPS_IMAGE_REF}" \
+                          -t "${SFEPS_IMAGE_LATEST_REF}" \
+                          --push \
+                          .
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy To Test Raspberry (develop)') {
+            when {
+                expression { env.SFEPS_CI_BRANCH == 'develop' }
+            }
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: "${env.SFEPS_REGISTRY_CREDENTIALS_ID}",
+                        usernameVariable: 'REGISTRY_USER',
+                        passwordVariable: 'REGISTRY_PASS'
+                    ),
+                    sshUserPrivateKey(
+                        credentialsId: "${env.SFEPS_TEST_SSH_CREDENTIALS_ID}",
+                        keyFileVariable: 'SSH_KEY',
+                        usernameVariable: 'SSH_USER'
+                    )
+                ]) {
+                    sh '''
+                        set -eu
+                        if [ -z "${SFEPS_TEST_HOST}" ]; then
+                          echo "SFEPS_TEST_HOST is required for develop deployment." >&2
+                          exit 1
+                        fi
+                        REMOTE="${SSH_USER}@${SFEPS_TEST_HOST}"
+                        SSH_OPTS="-i ${SSH_KEY} -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
+
+                        printf '%s' "${REGISTRY_PASS}" | ssh ${SSH_OPTS} "${REMOTE}" \
+                          "docker login '${SFEPS_DOCKER_REGISTRY}' -u '${REGISTRY_USER}' --password-stdin"
+
+                        ssh ${SSH_OPTS} "${REMOTE}" "set -eu
+                          docker pull '${SFEPS_IMAGE_REF}'
+                          docker rm -f '${SFEPS_TEST_CONTAINER_NAME}' >/dev/null 2>&1 || true
+                          mkdir -p '${SFEPS_VIDEO_DIR}'
+                          docker run -d --name '${SFEPS_TEST_CONTAINER_NAME}' --restart unless-stopped --network host \
+                            -v '${SFEPS_REMOTE_ENV_FILE}:${SFEPS_CONTAINER_ENV_FILE}:ro' \
+                            -v '${SFEPS_REMOTE_PKI_DIR}:${SFEPS_REMOTE_PKI_DIR}:ro' \
+                            -v '${SFEPS_VIDEO_DIR}:${SFEPS_VIDEO_DIR}' \
+                            -e SFEPS_ENV_FILE='${SFEPS_CONTAINER_ENV_FILE}' \
+                            '${SFEPS_IMAGE_REF}'"
+
+                        ssh ${SSH_OPTS} "${REMOTE}" "set -eu
+                          for _ in \$(seq 1 45); do
+                            if timeout 1 bash -lc 'cat </dev/null >/dev/tcp/127.0.0.1/${SFEPS_HEALTH_PORT}' 2>/dev/null; then
+                              echo 'test deploy health check OK on port ${SFEPS_HEALTH_PORT}'
+                              exit 0
+                            fi
+                            sleep 2
+                          done
+                          echo 'test deploy health check FAILED' >&2
+                          docker logs --tail 120 '${SFEPS_TEST_CONTAINER_NAME}' || true
+                          exit 1"
+                    '''
+                }
+            }
+        }
+
+        stage('Approve Production Deployment') {
+            when {
+                expression { env.SFEPS_CI_BRANCH == 'main' }
+            }
+            steps {
+                timeout(time: 30, unit: 'MINUTES') {
+                    input message: 'Deploy main image to production Raspberry Pi?', ok: 'Deploy'
+                }
+            }
+        }
+
+        stage('Deploy To Production Raspberry (main)') {
+            when {
+                expression { env.SFEPS_CI_BRANCH == 'main' }
+            }
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: "${env.SFEPS_REGISTRY_CREDENTIALS_ID}",
+                        usernameVariable: 'REGISTRY_USER',
+                        passwordVariable: 'REGISTRY_PASS'
+                    ),
+                    sshUserPrivateKey(
+                        credentialsId: "${env.SFEPS_PROD_SSH_CREDENTIALS_ID}",
+                        keyFileVariable: 'SSH_KEY',
+                        usernameVariable: 'SSH_USER'
+                    )
+                ]) {
+                    sh '''
+                        set -eu
+                        if [ -z "${SFEPS_PROD_HOST}" ]; then
+                          echo "SFEPS_PROD_HOST is required for production deployment." >&2
+                          exit 1
+                        fi
+                        REMOTE="${SSH_USER}@${SFEPS_PROD_HOST}"
+                        SSH_OPTS="-i ${SSH_KEY} -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
+
+                        printf '%s' "${REGISTRY_PASS}" | ssh ${SSH_OPTS} "${REMOTE}" \
+                          "docker login '${SFEPS_DOCKER_REGISTRY}' -u '${REGISTRY_USER}' --password-stdin"
+
+                        ssh ${SSH_OPTS} "${REMOTE}" "set -eu
+                          docker pull '${SFEPS_IMAGE_REF}'
+                          docker rm -f '${SFEPS_PROD_CONTAINER_NAME}' >/dev/null 2>&1 || true
+                          mkdir -p '${SFEPS_VIDEO_DIR}'
+                          docker run -d --name '${SFEPS_PROD_CONTAINER_NAME}' --restart unless-stopped --network host \
+                            -v '${SFEPS_REMOTE_ENV_FILE}:${SFEPS_CONTAINER_ENV_FILE}:ro' \
+                            -v '${SFEPS_REMOTE_PKI_DIR}:${SFEPS_REMOTE_PKI_DIR}:ro' \
+                            -v '${SFEPS_VIDEO_DIR}:${SFEPS_VIDEO_DIR}' \
+                            -e SFEPS_ENV_FILE='${SFEPS_CONTAINER_ENV_FILE}' \
+                            '${SFEPS_IMAGE_REF}'"
+
+                        ssh ${SSH_OPTS} "${REMOTE}" "set -eu
+                          for _ in \$(seq 1 45); do
+                            if timeout 1 bash -lc 'cat </dev/null >/dev/tcp/127.0.0.1/${SFEPS_HEALTH_PORT}' 2>/dev/null; then
+                              echo 'production deploy health check OK on port ${SFEPS_HEALTH_PORT}'
+                              exit 0
+                            fi
+                            sleep 2
+                          done
+                          echo 'production deploy health check FAILED' >&2
+                          docker logs --tail 120 '${SFEPS_PROD_CONTAINER_NAME}' || true
+                          exit 1"
+                    '''
+                }
             }
         }
     }
