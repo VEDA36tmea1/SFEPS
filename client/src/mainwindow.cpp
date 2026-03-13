@@ -139,6 +139,8 @@ void MainWindow::processFrame(const cv::Mat &frame)
                      displayMat.step, 
                      QImage::Format_RGB888).copy(); 
                      // Mat 데이터가 소멸될 수 있으므로 깊은 복사(Deep Copy) 필요
+    // notify image size change for QML normalization
+    emit imageSizeChanged();
                      
     // 메인 스레드에 화면 갱신 요청
     update();
@@ -165,6 +167,154 @@ void MainWindow::paint(QPainter *painter)
     }
 
     painter->drawImage(boundingRect(), m_image, sourceRect);
+
+    // Draw detections (expected as QVariantList of maps: {id: string, x: double, y: double, w: double, h: double}
+    // Coordinates are normalized to image size (0..1). Map image coords -> item coords using sourceRect -> boundingRect mapping.
+    QRectF itemRect = boundingRect();
+    for (const QVariant &v : m_detections) {
+        if (!v.canConvert<QVariantMap>()) continue;
+        const QVariantMap m = v.toMap();
+        const QString id = m.value("id").toString();
+        const double nx = m.value("x").toDouble();
+        const double ny = m.value("y").toDouble();
+        const double nw = m.value("w").toDouble();
+        const double nh = m.value("h").toDouble();
+
+        // Image coordinates (within full image)
+        const double imgW = m_image.width();
+        const double imgH = m_image.height();
+        const double imgX = nx * imgW;
+        const double imgY = ny * imgH;
+        const double imgBoxW = nw * imgW;
+        const double imgBoxH = nh * imgH;
+
+        // Map to item coords considering sourceRect crop
+        const double srcX = sourceRect.x();
+        const double srcY = sourceRect.y();
+        const double srcW = sourceRect.width();
+        const double srcH = sourceRect.height();
+
+        // Skip boxes that don't intersect visible sourceRect
+        QRectF imgBox(imgX, imgY, imgBoxW, imgBoxH);
+        QRectF srcRect(srcX, srcY, srcW, srcH);
+        if (!imgBox.intersects(srcRect)) continue;
+
+        // Clip box to sourceRect for proper mapping
+        QRectF visible = imgBox.intersected(srcRect);
+
+        const double fx = (visible.x() - srcX) / srcW;
+        const double fy = (visible.y() - srcY) / srcH;
+        const double fw = visible.width() / srcW;
+        const double fh = visible.height() / srcH;
+
+        QRectF drawRect(
+            itemRect.x() + fx * itemRect.width(),
+            itemRect.y() + fy * itemRect.height(),
+            fw * itemRect.width(),
+            fh * itemRect.height()
+        );
+
+        QPen pen(Qt::green);
+        pen.setWidth(2);
+        if (!m_selectedDetectionId.isEmpty() && m_selectedDetectionId == id) {
+            pen.setColor(Qt::yellow);
+            pen.setWidth(3);
+        }
+        painter->setPen(pen);
+        painter->setBrush(Qt::NoBrush);
+        painter->drawRect(drawRect);
+
+        // Draw ID label
+        painter->setPen(Qt::white);
+        QFont f = painter->font();
+        f.setPointSize(10);
+        painter->setFont(f);
+        painter->drawText(drawRect.topLeft() + QPointF(4, 14), id);
+    }
+}
+
+void MainWindow::setDetections(const QVariantList &list)
+{
+    QMutexLocker locker(&m_mutex);
+    m_detections = list;
+    qDebug() << "[MainWindow] setDetections count:" << m_detections.size();
+    for (const QVariant &v : m_detections) {
+        if (!v.canConvert<QVariantMap>()) continue;
+        const QVariantMap det = v.toMap();
+        const QString id = det.value("id").toString();
+        const double nx = det.value("x").toDouble();
+        const double ny = det.value("y").toDouble();
+        const double nw = det.value("w").toDouble();
+        const double nh = det.value("h").toDouble();
+        qDebug() << "[MainWindow] Detection" << id << "x=" << nx << "y=" << ny << "w=" << nw << "h=" << nh;
+    }
+    emit detectionsChanged();
+    update();
+}
+
+QString MainWindow::detectionAt(qreal x, qreal y)
+{
+    QMutexLocker locker(&m_mutex);
+    if (m_image.isNull()) return QString();
+
+    QRectF srcRect(0, 0, m_image.width(), m_image.height());
+    if (!m_zoomRect.isEmpty()) srcRect = m_zoomRect;
+
+    QRectF itemRect = boundingRect();
+    if (itemRect.width() <= 0 || itemRect.height() <= 0) return QString();
+
+    // Map item coords -> image coords
+    const double fx = (x - itemRect.x()) / itemRect.width();
+    const double fy = (y - itemRect.y()) / itemRect.height();
+    const double imgX = srcRect.x() + fx * srcRect.width();
+    const double imgY = srcRect.y() + fy * srcRect.height();
+
+    for (const QVariant &v : m_detections) {
+        if (!v.canConvert<QVariantMap>()) continue;
+        const QVariantMap m = v.toMap();
+        const QString id = m.value("id").toString();
+        const double nx = m.value("x").toDouble();
+        const double ny = m.value("y").toDouble();
+        const double nw = m.value("w").toDouble();
+        const double nh = m.value("h").toDouble();
+
+        const double imgW = m_image.width();
+        const double imgH = m_image.height();
+        QRectF imgBox(nx * imgW, ny * imgH, nw * imgW, nh * imgH);
+        if (imgBox.contains(QPointF(imgX, imgY))) return id;
+    }
+    return QString();
+}
+
+void MainWindow::clearDetections()
+{
+    QMutexLocker locker(&m_mutex);
+    m_detections.clear();
+    m_selectedDetectionId.clear();
+    emit detectionsChanged();
+    emit selectedDetectionChanged();
+    update();
+}
+
+void MainWindow::setSelectedDetection(const QString &id)
+{
+    QMutexLocker locker(&m_mutex);
+    if (m_selectedDetectionId == id) return;
+    m_selectedDetectionId = id;
+    emit selectedDetectionChanged();
+    update();
+}
+
+int MainWindow::imageWidth() const
+{
+    QMutexLocker locker(&m_mutex);
+    return m_image.isNull() ? 0 : m_image.width();
+}
+
+int MainWindow::imageHeight() const
+{
+    QMutexLocker locker(&m_mutex);
+    return m_image.isNull() ? 0 : m_image.height();
 }
 
 void MainWindow::onReadFailed()
@@ -206,7 +356,7 @@ bool MainWindow::openStream()
         return true;
     }
 
-    const QString rtspUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.97:8554/cam1");
+    const QString rtspUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.101:8554/cam1");
     cap.open(rtspUrl.toStdString(), cv::CAP_FFMPEG);
     if (!cap.isOpened()) {
         qWarning() << "[MainWindow] Failed to open stream:" << rtspUrl;

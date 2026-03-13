@@ -16,7 +16,7 @@ static bool parseEnvBool(const QProcessEnvironment &env, const QString &key, boo
 }
 
 // 서버 주소/포트 (Audio_Speaker_Unit·서버와 동일 포트)
-static const char * const AUDIO_SERVER_HOST = "192.168.0.97";
+static const char * const AUDIO_SERVER_HOST = "192.168.0.101";
 static const quint16 AUDIO_SERVER_PORT = 5556;
 
 VoiceManager::VoiceManager(QObject *parent) : QObject(parent)

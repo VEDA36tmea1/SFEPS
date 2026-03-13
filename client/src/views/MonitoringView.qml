@@ -101,6 +101,8 @@ Page {
                     property real startY: 0
                     property bool selecting: false
                     property bool zoomedIn: false
+                        property real lastClickX: 0
+                        property real lastClickY: 0
 
                     Rectangle {
                         id: selectionRect
@@ -147,6 +149,88 @@ Page {
                             }
                         }
                     }
+                    MouseArea {
+                        anchors.fill: parent
+                        z: 50
+                        enabled: !zoomBtn.checked
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            // save click coords for popup positioning
+                            videoDisplay.lastClickX = mouse.x
+                            videoDisplay.lastClickY = mouse.y
+                            var id = videoDisplay.detectionAt(mouse.x, mouse.y)
+                            if (id && id !== "") {
+                                videoDisplay.setSelectedDetection(id)
+                            } else {
+                                videoDisplay.setSelectedDetection("")
+                            }
+                        }
+                    }
+                }
+
+                // Popup for Track controls when an object is selected
+                Popup {
+                    id: trackPopup
+                    // position near last click, clamp inside parent
+                    x: Math.min(parent.width - width - 8, Math.max(8, videoDisplay.x + videoDisplay.lastClickX - width/2))
+                    y: Math.min(parent.height - height - 8, Math.max(8, videoDisplay.y + videoDisplay.lastClickY - height/2))
+                    visible: videoDisplay.selectedDetection !== ""
+                    modal: false
+                    focus: true
+
+                    Rectangle {
+                        width: 240
+                        height: 120
+                        color: AppTheme.surfaceCard
+                        radius: 8
+                        border.color: AppTheme.borderCard
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: 12
+                            spacing: 8
+
+                            Text {
+                                text: "Selected: " + videoDisplay.selectedDetection
+                                color: "white"
+                                font.pixelSize: 12
+                                elide: Text.ElideRight
+                            }
+
+                            RowLayout {
+                                spacing: 8
+                                anchors.horizontalCenter: parent.horizontalCenter
+
+                                Button {
+                                    Layout.preferredWidth: 100
+                                    text: "Track"
+                                    enabled: videoDisplay.selectedDetection !== ""
+                                    onClicked: {
+                                        if (videoDisplay.selectedDetection !== "") {
+                                            positionManager.sendPositionCommand("SUB_POS|" + videoDisplay.selectedDetection)
+                                        }
+                                        trackPopup.visible = false
+                                    }
+                                }
+
+                                Button {
+                                    Layout.preferredWidth: 100
+                                    text: "Untrack"
+                                    enabled: videoDisplay.selectedDetection !== ""
+                                    onClicked: {
+                                        if (videoDisplay.selectedDetection !== "") {
+                                            positionManager.sendPositionCommand("UNSUB_POS|" + videoDisplay.selectedDetection)
+                                            videoDisplay.setSelectedDetection("")
+                                        }
+                                        trackPopup.visible = false
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    onVisibleChanged: if (!visible) videoDisplay.setSelectedDetection("")
                 }
 
                 // Camera ID & Name Overlay
@@ -391,6 +475,8 @@ Page {
                         }
                         onClicked: voiceManager.toggleMicrophone()
                     }
+
+                    
                 }
             }
         }
@@ -671,6 +757,51 @@ Page {
 
                     // 오른쪽 여백
                     Item { Layout.fillWidth: true }
+                }
+            }
+            Connections {
+                target: positionManager
+                function onPositionsUpdated(list) {
+                    if (!videoDisplay) return;
+                    var out = [];
+                    for (var i=0;i<list.length;i++) {
+                        var it = list[i];
+                        // if already in expected format
+                        if (it.x !== undefined && it.w !== undefined && it.id !== undefined) {
+                            out.push({ id: it.id, x: it.x, y: it.y, w: it.w, h: it.h });
+                            continue;
+                        }
+                        // POS format fields L,T,R,B
+                        var id = it.id !== undefined ? it.id : (it.ID !== undefined ? it.ID : "");
+                        var L = it.L !== undefined ? it.L : (it.l !== undefined ? it.l : undefined);
+                        var T = it.T !== undefined ? it.T : (it.t !== undefined ? it.t : undefined);
+                        var R = it.R !== undefined ? it.R : (it.r !== undefined ? it.r : undefined);
+                        var B = it.B !== undefined ? it.B : (it.b !== undefined ? it.b : undefined);
+                        if (L !== undefined && T !== undefined && R !== undefined && B !== undefined) {
+                            var nx = L;
+                            var ny = T;
+                            var nw = R - L;
+                            var nh = B - T;
+                            // If coordinates are in pixels (imageWidth>0 and values >1), normalize
+                            if (videoDisplay.imageWidth > 0 && videoDisplay.imageHeight > 0) {
+                                if (nx > 1 || ny > 1 || nw > 1 || nh > 1) {
+                                    nx = nx / videoDisplay.imageWidth;
+                                    nw = nw / videoDisplay.imageWidth;
+                                    ny = ny / videoDisplay.imageHeight;
+                                    nh = nh / videoDisplay.imageHeight;
+                                }
+                            }
+                            out.push({ id: id, x: nx, y: ny, w: nw, h: nh });
+                        } else {
+                            // unknown format, skip
+                        }
+                    }
+                    // debug: log converted detections to QML console
+                    console.log("[QML] positionsUpdated -> converted count:", out.length);
+                    for (var j=0;j<out.length;j++) {
+                        console.log("[QML] det", out[j].id, "->", out[j].x, out[j].y, out[j].w, out[j].h);
+                    }
+                    videoDisplay.setDetections(out);
                 }
             }
         }

@@ -31,7 +31,7 @@ cd /home/iam/SFEPS/server
 ./tunnel_vscode_db.sh [pi-ip]
 ```
 
-`[pi-ip]`가 생략되면 기본 `192.168.0.97`로 실행됩니다.
+`[pi-ip]`가 생략되면 기본 `192.168.0.101`로 실행됩니다.
 
 ### 2) VSCode 연결 정보
 
@@ -66,7 +66,7 @@ export SFEPS_AUTH_MAX_BYTES=256
 export SFEPS_AUDIO_MAX_BYTES=4194304
 export SFEPS_ALERT_MAX_CLIENTS=64
 export SFEPS_SOCKET_READ_TIMEOUT_MS=5000
-export SFEPS_RTSPS_VERIFYHOST=192.168.0.97
+export SFEPS_RTSPS_VERIFYHOST=192.168.0.101
 
 export SFEPS_APP_TLS_ENABLE=0
 export SFEPS_APP_PLAINTEXT_ENABLE=1

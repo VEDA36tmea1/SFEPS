@@ -14,6 +14,7 @@
 #include "mainwindow.h"
 #include "voicemanager.h"
 #include "fraudmanager.h"
+#include "positionmanager.h"
 
 void myMessageOutput(QtMsgType type, const QMessageLogContext &context, const QString &msg)
 {
@@ -58,6 +59,10 @@ int main(int argc, char *argv[]) {
   FraudManager fraudManager;
   engine.rootContext()->setContextProperty("fraudManager", &fraudManager);
 
+    // PositionManager를 컨텍스트 속성으로 등록 (포지션/트래킹 전용)
+    PositionManager positionManager;
+    engine.rootContext()->setContextProperty("positionManager", &positionManager);
+
   // 알림 서버 호스트: 환경변수 FRAUD_SERVER_HOST가 설정되어 있으면 그 값을 사용하고,
   // 설정되어 있지 않으면 기존 하드코드된 주소를 기본값으로 사용합니다.
   const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -77,7 +82,7 @@ int main(int argc, char *argv[]) {
       return parsed;
   };
 
-  const QString alertHost = env.value("FRAUD_SERVER_HOST", "192.168.0.97");
+  const QString alertHost = env.value("FRAUD_SERVER_HOST", "192.168.0.101");
   const bool clientTlsEnabled = parseEnvBool(env, "SFEPS_CLIENT_TLS_ENABLE", false);
   const bool alertTlsEnabled = parseEnvBool(env, "SFEPS_ALERT_TLS_ENABLE", clientTlsEnabled);
   const int alertPort = alertTlsEnabled
@@ -86,6 +91,26 @@ int main(int argc, char *argv[]) {
   qDebug() << "[Main] Fraud alert server:" << alertHost << ":" << alertPort
            << (alertTlsEnabled ? "(TLS)" : "(Plain)");
   fraudManager.connectToServer(alertHost, alertPort);
+
+    // Position channel (separate socket) for SUB_POS/UNSUB_POS and POS events
+    const QString posHost = env.value("POS_SERVER_HOST", alertHost);
+    const bool posTlsEnabled = parseEnvBool(env, "SFEPS_POS_TLS_ENABLE", false);
+    const int posPort = posTlsEnabled
+                                                        ? parseEnvPort(env, "SFEPS_POS_TLS_PORT", 6558)
+                                                        : parseEnvPort(env, "POS_SERVER_PORT", 5558);
+    qDebug() << "[Main] Position server:" << posHost << ":" << posPort
+                     << (posTlsEnabled ? "(TLS)" : "(Plain)");
+    positionManager.connectPositionServer(posHost, posPort);
+
+    // Auto-subscribe helper for testing: if SFEPS_AUTO_SUB_POS_ID env var is set,
+    // send a SUB_POS|<id> once after connecting.
+    const QString autoSubId = env.value("SFEPS_AUTO_SUB_POS_ID", "").trimmed();
+    if (!autoSubId.isEmpty()) {
+        qDebug() << "[Main] Auto SUB_POS enabled for id:" << autoSubId;
+        QTimer::singleShot(1000, [&positionManager, autoSubId]() {
+            positionManager.sendPositionCommand(QString("SUB_POS|%1").arg(autoSubId));
+        });
+    }
 
   // QML 파일 URL 정의
   const QUrl loginUrl(QStringLiteral("qrc:/src/views/LoginView.qml"));
