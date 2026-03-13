@@ -5,6 +5,7 @@ import argparse
 import html
 import textwrap
 import xml.etree.ElementTree as ET
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -274,6 +275,208 @@ def render_excel_xls(summary: dict[str, float], rows: list[TestCaseRow], output_
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def xlsx_col_name(index_1_based: int) -> str:
+    value = index_1_based
+    name = ""
+    while value > 0:
+        value, rem = divmod(value - 1, 26)
+        name = chr(65 + rem) + name
+    return name
+
+
+def xlsx_string_cell(col: int, row: int, value: str, style: int | None = None) -> str:
+    ref = f"{xlsx_col_name(col)}{row}"
+    style_attr = f' s="{style}"' if style is not None else ""
+    return f'<c r="{ref}" t="inlineStr"{style_attr}><is><t>{xml_escape(value)}</t></is></c>'
+
+
+def xlsx_number_cell(col: int, row: int, value: float | int, style: int | None = None) -> str:
+    ref = f"{xlsx_col_name(col)}{row}"
+    style_attr = f' s="{style}"' if style is not None else ""
+    return f'<c r="{ref}"{style_attr}><v>{value}</v></c>'
+
+
+def build_xlsx_styles_xml() -> str:
+    return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="6">
+    <font><sz val="11"/><name val="Calibri"/><family val="2"/></font>
+    <font><b/><sz val="11"/><name val="Calibri"/><family val="2"/></font>
+    <font><b/><sz val="11"/><name val="Calibri"/><color rgb="FF166534"/></font>
+    <font><b/><sz val="11"/><name val="Calibri"/><color rgb="FF991B1B"/></font>
+    <font><b/><sz val="11"/><name val="Calibri"/><color rgb="FFB91C1C"/></font>
+    <font><b/><sz val="11"/><name val="Calibri"/><color rgb="FF92400E"/></font>
+  </fonts>
+  <fills count="3">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFDCEBFF"/><bgColor indexed="64"/></patternFill></fill>
+  </fills>
+  <borders count="1">
+    <border><left/><right/><top/><bottom/><diagonal/></border>
+  </borders>
+  <cellStyleXfs count="1">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0"/>
+  </cellStyleXfs>
+  <cellXfs count="7">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1">
+      <alignment horizontal="center" vertical="center" wrapText="1"/>
+    </xf>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1">
+      <alignment vertical="top" wrapText="1"/>
+    </xf>
+    <xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1">
+      <alignment vertical="top"/>
+    </xf>
+    <xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1">
+      <alignment vertical="top"/>
+    </xf>
+    <xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1">
+      <alignment vertical="top"/>
+    </xf>
+    <xf numFmtId="0" fontId="5" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1">
+      <alignment vertical="top"/>
+    </xf>
+  </cellXfs>
+  <cellStyles count="1">
+    <cellStyle name="Normal" xfId="0" builtinId="0"/>
+  </cellStyles>
+</styleSheet>
+"""
+
+
+def build_xlsx_summary_sheet_xml(summary: dict[str, float]) -> str:
+    rows: list[str] = []
+    rows.append(
+        "<row r=\"1\">"
+        + xlsx_string_cell(1, 1, "Metric", style=1)
+        + xlsx_string_cell(2, 1, "Value", style=1)
+        + "</row>"
+    )
+
+    metrics = [
+        ("Tests", int(summary["tests"])),
+        ("Failures", int(summary["failures"])),
+        ("Errors", int(summary["errors"])),
+        ("Skipped", int(summary["skipped"])),
+        ("Duration(sec)", round(summary["time"], 3)),
+    ]
+    for idx, (name, value) in enumerate(metrics, start=2):
+        rows.append(
+            f"<row r=\"{idx}\">"
+            + xlsx_string_cell(1, idx, name, style=2)
+            + xlsx_number_cell(2, idx, value)
+            + "</row>"
+        )
+
+    sheet_data = "".join(rows)
+    return (
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+        "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
+        "<sheetViews><sheetView workbookViewId=\"0\"/></sheetViews>"
+        "<cols>"
+        "<col min=\"1\" max=\"1\" width=\"26\" customWidth=\"1\"/>"
+        "<col min=\"2\" max=\"2\" width=\"14\" customWidth=\"1\"/>"
+        "</cols>"
+        f"<sheetData>{sheet_data}</sheetData>"
+        "</worksheet>"
+    )
+
+
+def build_xlsx_testcases_sheet_xml(rows: list[TestCaseRow]) -> str:
+    status_style_map = {
+        "passed": 3,
+        "failure": 4,
+        "error": 5,
+        "skipped": 6,
+    }
+    xml_rows: list[str] = []
+    xml_rows.append(
+        "<row r=\"1\">"
+        + xlsx_string_cell(1, 1, "Suite", style=1)
+        + xlsx_string_cell(2, 1, "Class", style=1)
+        + xlsx_string_cell(3, 1, "Test Case", style=1)
+        + xlsx_string_cell(4, 1, "Status", style=1)
+        + xlsx_string_cell(5, 1, "Time (s)", style=1)
+        + xlsx_string_cell(6, 1, "Detail", style=1)
+        + "</row>"
+    )
+
+    for row_idx, row in enumerate(rows, start=2):
+        status_style = status_style_map.get(row.status, 2)
+        xml_rows.append(
+            f"<row r=\"{row_idx}\">"
+            + xlsx_string_cell(1, row_idx, row.suite, style=2)
+            + xlsx_string_cell(2, row_idx, row.classname, style=2)
+            + xlsx_string_cell(3, row_idx, row.name, style=2)
+            + xlsx_string_cell(4, row_idx, row.status, style=status_style)
+            + xlsx_number_cell(5, row_idx, round(row.elapsed_sec, 3))
+            + xlsx_string_cell(6, row_idx, row.detail, style=2)
+            + "</row>"
+        )
+
+    sheet_data = "".join(xml_rows)
+    return (
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+        "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
+        "<sheetViews><sheetView workbookViewId=\"0\"/></sheetViews>"
+        "<cols>"
+        "<col min=\"1\" max=\"1\" width=\"20\" customWidth=\"1\"/>"
+        "<col min=\"2\" max=\"2\" width=\"24\" customWidth=\"1\"/>"
+        "<col min=\"3\" max=\"3\" width=\"34\" customWidth=\"1\"/>"
+        "<col min=\"4\" max=\"4\" width=\"12\" customWidth=\"1\"/>"
+        "<col min=\"5\" max=\"5\" width=\"12\" customWidth=\"1\"/>"
+        "<col min=\"6\" max=\"6\" width=\"50\" customWidth=\"1\"/>"
+        "</cols>"
+        f"<sheetData>{sheet_data}</sheetData>"
+        "</worksheet>"
+    )
+
+
+def render_excel_xlsx(summary: dict[str, float], rows: list[TestCaseRow], output_path: Path) -> None:
+    content_types = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>
+"""
+    rels_root = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>
+"""
+    workbook_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <bookViews><workbookView xWindow="0" yWindow="0" windowWidth="18000" windowHeight="9000"/></bookViews>
+  <sheets>
+    <sheet name="Summary" sheetId="1" r:id="rId1"/>
+    <sheet name="TestCases" sheetId="2" r:id="rId2"/>
+  </sheets>
+</workbook>
+"""
+    workbook_rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>
+"""
+
+    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", content_types)
+        zf.writestr("_rels/.rels", rels_root)
+        zf.writestr("xl/workbook.xml", workbook_xml)
+        zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
+        zf.writestr("xl/styles.xml", build_xlsx_styles_xml())
+        zf.writestr("xl/worksheets/sheet1.xml", build_xlsx_summary_sheet_xml(summary))
+        zf.writestr("xl/worksheets/sheet2.xml", build_xlsx_testcases_sheet_xml(rows))
+
+
 def pdf_escape(text: str) -> str:
     return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
@@ -409,14 +612,17 @@ def main() -> int:
 
     html_path = output_dir / "test-report.html"
     xls_path = output_dir / "test-report.xls"
+    xlsx_path = output_dir / "test-report.xlsx"
     pdf_path = output_dir / "test-report.pdf"
 
     render_html(summary, rows, html_path)
     render_excel_xls(summary, rows, xls_path)
+    render_excel_xlsx(summary, rows, xlsx_path)
     render_pdf(summary, rows, pdf_path)
 
     print(f"Generated: {html_path}")
     print(f"Generated: {xls_path}")
+    print(f"Generated: {xlsx_path}")
     print(f"Generated: {pdf_path}")
     return 0
 
