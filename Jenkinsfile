@@ -16,8 +16,8 @@ pipeline {
         SFEPS_ESP_TCP_BIND_IP = "${env.SFEPS_ESP_TCP_BIND_IP ?: '127.0.0.1'}"
 
         // CD settings (override in Jenkins job/global env)
-        SFEPS_DOCKER_REGISTRY = "${env.SFEPS_DOCKER_REGISTRY ?: ''}"
-        SFEPS_DOCKER_IMAGE_REPO = "${env.SFEPS_DOCKER_IMAGE_REPO ?: 'sfeps/server'}"
+        SFEPS_DOCKER_REGISTRY = "${env.SFEPS_DOCKER_REGISTRY ?: 'ghcr.io'}"
+        SFEPS_DOCKER_IMAGE_REPO = "${env.SFEPS_DOCKER_IMAGE_REPO ?: 'veda36tmea1/sfeps-server'}"
         SFEPS_DOCKER_PLATFORM = "${env.SFEPS_DOCKER_PLATFORM ?: 'linux/arm64'}"
         SFEPS_DOCKERFILE_PATH = "${env.SFEPS_DOCKERFILE_PATH ?: 'docker/server/Dockerfile'}"
         SFEPS_REGISTRY_CREDENTIALS_ID = "${env.SFEPS_REGISTRY_CREDENTIALS_ID ?: 'sfeps-registry-creds'}"
