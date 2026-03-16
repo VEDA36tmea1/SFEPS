@@ -692,7 +692,7 @@ if image_ref:
 if build_url:
     lines.append(f"- build: <{build_url}|Open Jenkins Build>")
 
-payload = {"text": "\n".join(lines)}
+payload = {"text": "\\n".join(lines)}
 if channel:
     payload["channel"] = channel
 
