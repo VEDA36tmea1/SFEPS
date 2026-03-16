@@ -21,6 +21,7 @@
 #include <atomic>
 #include <csignal>
 #include <cstring>
+#include <cstdlib>
 #include <iostream>
 #include <mutex>
 #include <string>
@@ -36,6 +37,18 @@ static std::vector<ParsedMetadataObject> g_objects;  // 마지막 프레임 기�
 static cv::Mat g_last_frame;
 static std::mutex g_frame_mutex;
 
+static void configure_low_latency_capture()
+{
+#ifdef _WIN32
+    // OpenCV FFmpeg backend option string: key;value|key;value
+    _putenv_s("OPENCV_FFMPEG_CAPTURE_OPTIONS",
+              "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0");
+#else
+    setenv("OPENCV_FFMPEG_CAPTURE_OPTIONS",
+           "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0", 1);
+#endif
+}
+
 static void signal_handler(int) {
     g_running = false;
 }
@@ -47,12 +60,12 @@ static void metadata_thread_fn(RTSPClient* client, XMLParser* parser)
     char* big_buffer = new char[65536];
     std::string accumulated_xml;
     unsigned int last_timestamp = 0;
-    int sock = client->getSocket();
+    socket_t sock = client->getSocket();
 
     while (g_running) {
         client->sendHeartbeat();
 
-        int read_len = recv(sock, header, 4, MSG_WAITALL);
+        int read_len = recv(sock, reinterpret_cast<char*>(header), 4, MSG_WAITALL);
         if (read_len <= 0) break;
         if (header[0] != '$') continue; // interleaved RTP 가 아니면 무시
 
@@ -165,6 +178,16 @@ static void on_mouse(int event, int x, int y, int /*flags*/, void* userdata)
 
 int main(int argc, char** argv)
 {
+#ifdef _WIN32
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        std::cerr << "WSAStartup failed" << std::endl;
+        return -1;
+    }
+#endif
+
+    configure_low_latency_capture();
+
     // 인자: --detect-all 이면 Human 외 타입도 모두 표시
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -187,7 +210,7 @@ int main(int argc, char** argv)
     std::thread meta_thread(metadata_thread_fn, &client, &parser);
 
     // 3. 영상 스트림 (ONVIF 카메라 RTSP URL 사용)
-    cv::VideoCapture cap(RTSP_URL);
+    cv::VideoCapture cap(RTSP_URL, cv::CAP_FFMPEG);
     if (!cap.isOpened()) {
         std::cerr << "[camera_client] RTSP 영상 열기 실패: " << RTSP_URL << std::endl;
         g_running = false;
@@ -195,12 +218,22 @@ int main(int argc, char** argv)
         return -1;
     }
 
+    // Keep decoder queue short to reduce display lag.
+    cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
+
     cv::namedWindow("camera_client", cv::WINDOW_NORMAL);
     cv::setMouseCallback("camera_client", on_mouse, &g_last_frame);
 
     while (g_running) {
         cv::Mat frame;
-        if (!cap.read(frame) || frame.empty()) {
+
+        // Drop a couple of queued frames each loop to stay close to live edge.
+        int dropped = 0;
+        while (dropped < 2 && cap.grab()) {
+            ++dropped;
+        }
+
+        if (!cap.retrieve(frame) || frame.empty()) {
             std::cerr << "[camera_client] 빈 프레임, 종료" << std::endl;
             break;
         }
@@ -255,5 +288,10 @@ int main(int argc, char** argv)
     if (meta_thread.joinable()) meta_thread.join();
     cap.release();
     cv::destroyAllWindows();
+
+#ifdef _WIN32
+    WSACleanup();
+#endif
+
     return 0;
 }

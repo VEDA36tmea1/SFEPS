@@ -68,6 +68,16 @@ void PositionManager::attachPosSocketSignals()
                     // enqueue/update parsed map by id: keep latest per id
                     QString parsedId = map.value("id").toString();
                     if (!parsedId.isEmpty()) {
+                        // Track FRAUD flag: if present and 'Y', mark suspected; if 'N' clear
+                        if (map.contains("FRAUD")) {
+                            QVariant v = map.value("FRAUD");
+                            QString sv = v.toString().trimmed().toUpper();
+                            if (sv == "Y" || sv == "1" || sv == "TRUE") {
+                                m_suspected.insert(parsedId);
+                            } else {
+                                m_suspected.remove(parsedId);
+                            }
+                        }
                         bool existed = m_pendingMap.contains(parsedId);
                         m_pendingMap.insert(parsedId, map);
                         qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -108,6 +118,11 @@ void PositionManager::attachPosSocketSignals()
                         m_pendingOrder.removeAll(id);
                         qDebug() << "[PositionManager][POS] removed id on OUTLINE_POS_END:" << id;
                     }
+                    // clear suspected state when outline ends
+                    if (m_suspected.contains(id)) {
+                        m_suspected.remove(id);
+                        qDebug() << "[PositionManager][POS] cleared suspected state on OUTLINE_POS_END for" << id;
+                    }
                 }
             } else if (s.startsWith("OBJ_END|")) {
                 const QStringList parts = s.split('|', Qt::SkipEmptyParts);
@@ -118,6 +133,11 @@ void PositionManager::attachPosSocketSignals()
                         m_lastSeen.remove(id);
                         m_pendingOrder.removeAll(id);
                         qDebug() << "[PositionManager][POS] removed id on OBJ_END:" << id;
+                    }
+                    // clear suspected state when object ends
+                    if (m_suspected.contains(id)) {
+                        m_suspected.remove(id);
+                        qDebug() << "[PositionManager][POS] cleared suspected state on OBJ_END for" << id;
                     }
                 }
             } else {
@@ -192,13 +212,22 @@ void PositionManager::flushPending()
             toRemove.append(k);
             continue;
         }
-        out.append(QVariant::fromValue(m_pendingMap.value(k)));
+        QVariantMap m = m_pendingMap.value(k);
+        // annotate with alert if this id is currently suspected
+        if (m_suspected.contains(k)) {
+            m.insert("alert", true);
+        }
+        out.append(QVariant::fromValue(m));
     }
     // Remove expired entries
     for (const QString &k : toRemove) {
         m_pendingMap.remove(k);
         m_lastSeen.remove(k);
         m_pendingOrder.removeAll(k);
+        if (m_suspected.contains(k)) {
+            m_suspected.remove(k);
+            qDebug() << "[PositionManager][POS] cleared suspected state due to TTL expiry for" << k;
+        }
     }
     // Emit current active set
     emit positionsUpdated(out);

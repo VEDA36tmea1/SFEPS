@@ -102,6 +102,10 @@ int main(int argc, char *argv[]) {
                      << (posTlsEnabled ? "(TLS)" : "(Plain)");
     positionManager.connectPositionServer(posHost, posPort);
 
+    // Expose RTSP stream URL to QML so QML MediaPlayer can use it
+    const QString rtspStreamUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.101:8554/cam1");
+    engine.rootContext()->setContextProperty("rtspStreamUrl", rtspStreamUrl);
+
     // Auto-subscribe helper for testing: if SFEPS_AUTO_SUB_POS_ID env var is set,
     // send a SUB_POS|<id> once after connecting.
     const QString autoSubId = env.value("SFEPS_AUTO_SUB_POS_ID", "").trimmed();

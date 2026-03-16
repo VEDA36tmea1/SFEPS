@@ -37,6 +37,7 @@ private:
     // Track last-seen timestamps per id and TTL for active items
     QHash<QString, qint64> m_lastSeen;
     int m_ttlMs = 2000; // milliseconds to keep an object without updates before dropping
+    QSet<QString> m_suspected; // IDs currently marked as suspected/fraud
 };
 
 #endif // POSITIONMANAGER_H
