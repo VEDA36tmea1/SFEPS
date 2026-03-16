@@ -35,6 +35,7 @@ pipeline {
         SFEPS_REMOTE_ENV_FILE = "${env.SFEPS_REMOTE_ENV_FILE ?: '/home/iam/SFEPS/server/.env.local'}"
         SFEPS_CONTAINER_ENV_FILE = "${env.SFEPS_CONTAINER_ENV_FILE ?: '/opt/sfeps/server/.env.local'}"
         SFEPS_REMOTE_PKI_DIR = "${env.SFEPS_REMOTE_PKI_DIR ?: '/etc/sfeps/pki'}"
+        SFEPS_REMOTE_MYSQL_SOCK_DIR = "${env.SFEPS_REMOTE_MYSQL_SOCK_DIR ?: '/run/mysqld'}"
         SFEPS_VIDEO_DIR = "${env.SFEPS_VIDEO_DIR ?: '/home/iam/SFEPS/videos'}"
         SFEPS_HEALTH_PORT = "${env.SFEPS_HEALTH_PORT ?: '5555'}"
 
@@ -476,6 +477,10 @@ PY
                             echo 'missing env file: ${SFEPS_REMOTE_ENV_FILE}' >&2
                             exit 1
                           fi
+                          if [ ! -S '${SFEPS_REMOTE_MYSQL_SOCK_DIR}/mysqld.sock' ]; then
+                            echo 'missing mysql socket: ${SFEPS_REMOTE_MYSQL_SOCK_DIR}/mysqld.sock' >&2
+                            exit 1
+                          fi
                           grep -Ev '^(SFEPS_APP_TLS_ENABLE|SFEPS_APP_PLAINTEXT_ENABLE|SFEPS_APP_TLS_CERT_FILE|SFEPS_APP_TLS_KEY_FILE)=' \
                             '${SFEPS_REMOTE_ENV_FILE}' > '/tmp/sfeps-server-test.env'
                           {
@@ -485,6 +490,7 @@ PY
                           if ! docker run -d --name '${SFEPS_TEST_CONTAINER_NAME}' --restart unless-stopped --network host \
                             -v '/tmp/sfeps-server-test.env:${SFEPS_CONTAINER_ENV_FILE}:ro' \
                             -v '${SFEPS_REMOTE_PKI_DIR}:${SFEPS_REMOTE_PKI_DIR}:ro' \
+                            -v '${SFEPS_REMOTE_MYSQL_SOCK_DIR}:${SFEPS_REMOTE_MYSQL_SOCK_DIR}' \
                             -v '${SFEPS_VIDEO_DIR}:${SFEPS_VIDEO_DIR}' \
                             -e SFEPS_ENV_FILE='${SFEPS_CONTAINER_ENV_FILE}' \
                             '${SFEPS_IMAGE_REF}'; then
@@ -554,6 +560,10 @@ PY
                             echo 'missing env file: ${SFEPS_REMOTE_ENV_FILE}' >&2
                             exit 1
                           fi
+                          if [ ! -S '${SFEPS_REMOTE_MYSQL_SOCK_DIR}/mysqld.sock' ]; then
+                            echo 'missing mysql socket: ${SFEPS_REMOTE_MYSQL_SOCK_DIR}/mysqld.sock' >&2
+                            exit 1
+                          fi
                           grep -Ev '^(SFEPS_APP_TLS_ENABLE|SFEPS_APP_PLAINTEXT_ENABLE|SFEPS_APP_TLS_CERT_FILE|SFEPS_APP_TLS_KEY_FILE)=' \
                             '${SFEPS_REMOTE_ENV_FILE}' > '/tmp/sfeps-server-prod.env'
                           {
@@ -563,6 +573,7 @@ PY
                           if ! docker run -d --name '${SFEPS_PROD_CONTAINER_NAME}' --restart unless-stopped --network host \
                             -v '/tmp/sfeps-server-prod.env:${SFEPS_CONTAINER_ENV_FILE}:ro' \
                             -v '${SFEPS_REMOTE_PKI_DIR}:${SFEPS_REMOTE_PKI_DIR}:ro' \
+                            -v '${SFEPS_REMOTE_MYSQL_SOCK_DIR}:${SFEPS_REMOTE_MYSQL_SOCK_DIR}' \
                             -v '${SFEPS_VIDEO_DIR}:${SFEPS_VIDEO_DIR}' \
                             -e SFEPS_ENV_FILE='${SFEPS_CONTAINER_ENV_FILE}' \
                             '${SFEPS_IMAGE_REF}'; then
