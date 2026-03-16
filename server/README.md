@@ -31,7 +31,7 @@ cd /home/iam/SFEPS/server
 ./tunnel_vscode_db.sh [pi-ip]
 ```
 
-`[pi-ip]`가 생략되면 기본 `192.168.0.80`로 실행됩니다.
+`[pi-ip]`가 생략되면 기본 `192.168.0.101`로 실행됩니다.
 
 ### 2) VSCode 연결 정보
 

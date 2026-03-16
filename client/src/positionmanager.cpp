@@ -1,6 +1,7 @@
 #include "positionmanager.h"
 #include <QDebug>
 #include <QAbstractSocket>
+#include <QDateTime>
 
 // Sensor/target scaling: incoming coordinates are reported in sensor (4K) pixels.
 // Scale them to FullHD when numeric.
@@ -18,6 +19,12 @@ PositionManager::~PositionManager() {
 void PositionManager::attachPosSocketSignals()
 {
     if (!posSocket) return;
+    if (!m_batchTimer) {
+        m_batchTimer = new QTimer(this);
+        m_batchTimer->setInterval(400); // emit batches every 400ms (further reduce UI load)
+        connect(m_batchTimer, &QTimer::timeout, this, &PositionManager::flushPending);
+        m_batchTimer->start();
+    }
     connect(posSocket, &QTcpSocket::readyRead, this, [this]() {
         posRecvBuffer.append(posSocket->readAll());
         while (true) {
@@ -28,7 +35,7 @@ void PositionManager::attachPosSocketSignals()
             if (line.isEmpty()) continue;
             QString s = QString::fromUtf8(line);
             qDebug() << "[PositionManager][POS] Received:" << s;
-            if (s.startsWith("OUTLINE_POS|")) {
+            if (s.startsWith("OUTLINE_POS|") || s.startsWith("BCAST_OBJ|") || s.startsWith("OBJ_POS|") || s.startsWith("POS|")) {
                 const QStringList parts = s.split('|', Qt::SkipEmptyParts);
                 if (parts.size() >= 2) {
                     QVariantMap map;
@@ -58,27 +65,60 @@ void PositionManager::attachPosSocketSignals()
                             map[QString("field%1").arg(i)] = p;
                         }
                     }
-                    QVariantList list;
-                    // Debug: print parsed/scaled coordinate fields for visibility
+                    // enqueue/update parsed map by id: keep latest per id
                     QString parsedId = map.value("id").toString();
-                    QVariant Lv = map.contains("L") ? map.value("L") : map.value("l");
-                    QVariant Tv = map.contains("T") ? map.value("T") : map.value("t");
-                    QVariant Rv = map.contains("R") ? map.value("R") : map.value("r");
-                    QVariant Bv = map.contains("B") ? map.value("B") : map.value("b");
-                    QVariant Xv = map.contains("X") ? map.value("X") : map.value("x");
-                    QVariant Yv = map.contains("Y") ? map.value("Y") : map.value("y");
-                    QVariant TAGv = map.contains("TAG") ? map.value("TAG") : map.value("tag");
-                    qDebug() << "[PositionManager] Parsed POS -> id:" << parsedId
-                             << "L=" << Lv << "T=" << Tv << "R=" << Rv << "B=" << Bv
-                             << "X=" << Xv << "Y=" << Yv << "TAG=" << TAGv;
-                    list.append(map);
-                    emit positionsUpdated(list);
+                    if (!parsedId.isEmpty()) {
+                        bool existed = m_pendingMap.contains(parsedId);
+                        m_pendingMap.insert(parsedId, map);
+                        qint64 now = QDateTime::currentMSecsSinceEpoch();
+                        m_lastSeen.insert(parsedId, now);
+                        if (!existed) m_pendingOrder.append(parsedId);
+                        // trim oldest unique items if over capacity
+                        if (m_pendingOrder.size() > m_maxPending) {
+                            int drop = m_pendingOrder.size() - m_maxPending;
+                            for (int di = 0; di < drop; ++di) {
+                                QString old = m_pendingOrder.takeFirst();
+                                m_pendingMap.remove(old);
+                            }
+                            qDebug() << "[PositionManager] dropped" << drop << "old unique items to enforce maxPending=" << m_maxPending;
+                        }
+                        // debug: log pending unique count occasionally
+                        if ((m_pendingMap.size() % 50) == 0) {
+                            qDebug() << "[PositionManager] pending unique count:" << m_pendingMap.size();
+                        }
+                    } else {
+                        // fallback: if no id present, append to orderless buffer (rare)
+                        QVariantMap tmp = map;
+                        QString gen = QString::number(QDateTime::currentMSecsSinceEpoch());
+                        tmp["_gen"] = gen;
+                        m_pendingMap.insert(gen, tmp);
+                        m_lastSeen.insert(gen, QDateTime::currentMSecsSinceEpoch());
+                        m_pendingOrder.append(gen);
+                    }
                 }
             } else if (s.startsWith("OUTLINE_POS_END|")) {
                 const QStringList parts = s.split('|', Qt::SkipEmptyParts);
                 if (parts.size() >= 2) {
                     QString id = parts[1].trimmed();
                     qDebug() << "[PositionManager][POS] End for" << id;
+                    // remove from active map/list if present
+                    if (m_pendingMap.contains(id)) {
+                        m_pendingMap.remove(id);
+                        m_lastSeen.remove(id);
+                        m_pendingOrder.removeAll(id);
+                        qDebug() << "[PositionManager][POS] removed id on OUTLINE_POS_END:" << id;
+                    }
+                }
+            } else if (s.startsWith("OBJ_END|")) {
+                const QStringList parts = s.split('|', Qt::SkipEmptyParts);
+                if (parts.size() >= 2) {
+                    QString id = parts[1].trimmed();
+                    if (m_pendingMap.contains(id)) {
+                        m_pendingMap.remove(id);
+                        m_lastSeen.remove(id);
+                        m_pendingOrder.removeAll(id);
+                        qDebug() << "[PositionManager][POS] removed id on OBJ_END:" << id;
+                    }
                 }
             } else {
                 qDebug() << "[PositionManager][POS] unknown line:" << s;
@@ -135,4 +175,31 @@ void PositionManager::sendPositionCommand(const QString &msg)
         posSocket->flush();
         qDebug() << "[PositionManager] Sent pos command:" << msg;
     }
+}
+
+void PositionManager::flushPending()
+{
+    if (m_pendingMap.isEmpty()) return;
+    QVariantList out;
+    out.reserve(m_pendingMap.size());
+    qint64 now = QDateTime::currentMSecsSinceEpoch();
+    // Build output from active entries, prune expired ones
+    QList<QString> toRemove;
+    for (const QString &k : m_pendingOrder) {
+        if (!m_pendingMap.contains(k)) continue;
+        qint64 last = m_lastSeen.value(k, 0);
+        if (now - last > m_ttlMs) {
+            toRemove.append(k);
+            continue;
+        }
+        out.append(QVariant::fromValue(m_pendingMap.value(k)));
+    }
+    // Remove expired entries
+    for (const QString &k : toRemove) {
+        m_pendingMap.remove(k);
+        m_lastSeen.remove(k);
+        m_pendingOrder.removeAll(k);
+    }
+    // Emit current active set
+    emit positionsUpdated(out);
 }

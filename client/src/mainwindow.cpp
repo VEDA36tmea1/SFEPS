@@ -356,7 +356,7 @@ bool MainWindow::openStream()
         return true;
     }
 
-    const QString rtspUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.80:8554/cam1");
+    const QString rtspUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.101:8554/cam1");
     cap.open(rtspUrl.toStdString(), cv::CAP_FFMPEG);
     if (!cap.isOpened()) {
         qWarning() << "[MainWindow] Failed to open stream:" << rtspUrl;
@@ -364,7 +364,11 @@ bool MainWindow::openStream()
     }
 
     cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
-    qDebug() << "[MainWindow] Stream open success:" << rtspUrl;
+    // Log stream and source frame size for diagnosing image-size/resolution
+    double srcW = cap.get(cv::CAP_PROP_FRAME_WIDTH);
+    double srcH = cap.get(cv::CAP_PROP_FRAME_HEIGHT);
+    qDebug() << "[MainWindow] Stream open success:" << rtspUrl << "source size:" << srcW << "x" << srcH;
+    emit imageSizeChanged();
     return true;
 }
 
