@@ -1,0 +1,13 @@
+.git
+.github
+.venv
+.pytest_cache
+**/__pycache__
+**/*.pyc
+**/.DS_Store
+client/build
+server/build
+hardware/**/build
+tests/real_server.log
+reports
+*.log

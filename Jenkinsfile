@@ -14,12 +14,94 @@ pipeline {
         SFEPS_DB_NAME_ANALYTICS = "${env.SFEPS_DB_NAME_ANALYTICS ?: 'CCgbd'}"
         SFEPS_ESP_TCP_ENABLE = "${env.SFEPS_ESP_TCP_ENABLE ?: '0'}"
         SFEPS_ESP_TCP_BIND_IP = "${env.SFEPS_ESP_TCP_BIND_IP ?: '127.0.0.1'}"
+
+        // CD settings (override in Jenkins job/global env)
+        SFEPS_DOCKER_REGISTRY = "${env.SFEPS_DOCKER_REGISTRY ?: 'ghcr.io'}"
+        SFEPS_DOCKER_IMAGE_REPO = "${env.SFEPS_DOCKER_IMAGE_REPO ?: 'veda36tmea1/sfeps-server'}"
+        SFEPS_DOCKER_PLATFORM = "${env.SFEPS_DOCKER_PLATFORM ?: 'linux/arm64'}"
+        SFEPS_DOCKERFILE_PATH = "${env.SFEPS_DOCKERFILE_PATH ?: 'docker/server/Dockerfile'}"
+        SFEPS_REGISTRY_CREDENTIALS_ID = "${env.SFEPS_REGISTRY_CREDENTIALS_ID ?: 'sfeps-registry-creds'}"
+        // Single-job fallback branch (set to main when running main in a single Pipeline job)
+        SFEPS_SINGLE_JOB_BRANCH = "${env.SFEPS_SINGLE_JOB_BRANCH ?: 'develop'}"
+
+        SFEPS_TEST_HOST = "${env.SFEPS_TEST_HOST ?: ''}"
+        SFEPS_TEST_SSH_CREDENTIALS_ID = "${env.SFEPS_TEST_SSH_CREDENTIALS_ID ?: 'sfeps-test-ssh'}"
+        SFEPS_TEST_CONTAINER_NAME = "${env.SFEPS_TEST_CONTAINER_NAME ?: 'sfeps-server-test'}"
+
+        SFEPS_PROD_HOST = "${env.SFEPS_PROD_HOST ?: ''}"
+        SFEPS_PROD_SSH_CREDENTIALS_ID = "${env.SFEPS_PROD_SSH_CREDENTIALS_ID ?: 'sfeps-prod-ssh'}"
+        SFEPS_PROD_CONTAINER_NAME = "${env.SFEPS_PROD_CONTAINER_NAME ?: 'sfeps-server-prod'}"
+
+        SFEPS_REMOTE_ENV_FILE = "${env.SFEPS_REMOTE_ENV_FILE ?: '/home/iam/SFEPS/server/.env.local'}"
+        SFEPS_CONTAINER_ENV_FILE = "${env.SFEPS_CONTAINER_ENV_FILE ?: '/opt/sfeps/server/.env.local'}"
+        SFEPS_REMOTE_PKI_DIR = "${env.SFEPS_REMOTE_PKI_DIR ?: '/etc/sfeps/pki'}"
+        SFEPS_REMOTE_MYSQL_SOCK_DIR = "${env.SFEPS_REMOTE_MYSQL_SOCK_DIR ?: '/run/mysqld'}"
+        SFEPS_VIDEO_DIR = "${env.SFEPS_VIDEO_DIR ?: '/home/iam/SFEPS/videos'}"
+        SFEPS_HEALTH_PORT = "${env.SFEPS_HEALTH_PORT ?: '5555'}"
+        SFEPS_SLACK_NOTIFY = "${env.SFEPS_SLACK_NOTIFY ?: '1'}"
+        SFEPS_SLACK_WEBHOOK_CREDENTIALS_ID = "${env.SFEPS_SLACK_WEBHOOK_CREDENTIALS_ID ?: 'sfeps-slack-webhook'}"
+        SFEPS_SLACK_CHANNEL = "${env.SFEPS_SLACK_CHANNEL ?: ''}"
+
     }
 
     stages {
         stage('Checkout') {
             steps {
                 checkout scm
+            }
+        }
+
+        stage('Resolve CI Metadata') {
+            steps {
+                script {
+                    def branch = env.BRANCH_NAME?.trim()
+                    if (branch == 'null') {
+                        branch = ''
+                    }
+                    if (!branch) {
+                        branch = env.GIT_BRANCH?.trim()
+                        if (branch == 'null') {
+                            branch = ''
+                        }
+                        if (branch?.startsWith('origin/')) {
+                            branch = branch.substring('origin/'.length())
+                        }
+                    }
+                    if (!branch || branch == 'HEAD') {
+                        branch = sh(
+                            returnStdout: true,
+                            script: '''git branch -r --contains HEAD | sed 's#^ *origin/##' | grep -v '^HEAD ->' | grep -v '^HEAD$' | head -n1 || true'''
+                        ).trim()
+                    }
+                    if (!branch || branch == 'null' || branch == 'HEAD') {
+                        branch = env.SFEPS_SINGLE_JOB_BRANCH?.trim()
+                    }
+                    if (!branch || branch == 'null' || branch == 'HEAD') {
+                        error "Unable to resolve branch name for CD. Set SFEPS_SINGLE_JOB_BRANCH (e.g. develop/main) in Jenkins job env."
+                    }
+
+                    def gitShaShort = sh(returnStdout: true, script: "git rev-parse --short=8 HEAD").trim()
+                    if (!gitShaShort || gitShaShort == 'null') {
+                        error "Unable to resolve git SHA for CD."
+                    }
+
+                    env.SFEPS_CI_BRANCH = branch
+                    env.SFEPS_GIT_SHA_SHORT = gitShaShort
+                    def branchTag = branch.replaceAll("[^A-Za-z0-9_.-]+", "-")
+
+                    if (env.SFEPS_DOCKER_REGISTRY?.trim()) {
+                        env.SFEPS_IMAGE_REF = "${env.SFEPS_DOCKER_REGISTRY}/${env.SFEPS_DOCKER_IMAGE_REPO}:${branchTag}-${env.BUILD_NUMBER}-${env.SFEPS_GIT_SHA_SHORT}"
+                        env.SFEPS_IMAGE_LATEST_REF = "${env.SFEPS_DOCKER_REGISTRY}/${env.SFEPS_DOCKER_IMAGE_REPO}:${branchTag}-latest"
+                    } else {
+                        env.SFEPS_IMAGE_REF = ""
+                        env.SFEPS_IMAGE_LATEST_REF = ""
+                    }
+
+                    echo "Resolved branch=${branch}, sha=${gitShaShort}"
+                    if (env.SFEPS_IMAGE_REF) {
+                        echo "CD image tag=${env.SFEPS_IMAGE_REF}"
+                    }
+                }
             }
         }
 
@@ -321,6 +403,202 @@ PY
                 '''
             }
         }
+
+        stage('Build & Push ARM Image') {
+            when {
+                expression { env.SFEPS_CI_BRANCH == 'develop' || env.SFEPS_CI_BRANCH == 'main' }
+            }
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: "${env.SFEPS_REGISTRY_CREDENTIALS_ID}",
+                        usernameVariable: 'REGISTRY_USER',
+                        passwordVariable: 'REGISTRY_PASS'
+                    )
+                ]) {
+                    sh '''
+                        set -eu
+                        if [ -z "${SFEPS_DOCKER_REGISTRY}" ]; then
+                          echo "SFEPS_DOCKER_REGISTRY is required for CD image push." >&2
+                          exit 1
+                        fi
+                        if [ -z "${SFEPS_IMAGE_REF}" ] || [ -z "${SFEPS_IMAGE_LATEST_REF}" ]; then
+                          echo "CD image tags are empty. Resolve CI Metadata stage failed." >&2
+                          exit 1
+                        fi
+
+                        docker buildx inspect sfeps-builder >/dev/null 2>&1 || docker buildx create --name sfeps-builder --use
+                        docker buildx use sfeps-builder
+
+                        printf '%s' "${REGISTRY_PASS}" | docker login "${SFEPS_DOCKER_REGISTRY}" -u "${REGISTRY_USER}" --password-stdin
+                        docker buildx build \
+                          --platform "${SFEPS_DOCKER_PLATFORM}" \
+                          -f "${SFEPS_DOCKERFILE_PATH}" \
+                          -t "${SFEPS_IMAGE_REF}" \
+                          -t "${SFEPS_IMAGE_LATEST_REF}" \
+                          --push \
+                          .
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy To Test Raspberry (develop)') {
+            when {
+                expression { env.SFEPS_CI_BRANCH == 'develop' }
+            }
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: "${env.SFEPS_REGISTRY_CREDENTIALS_ID}",
+                        usernameVariable: 'REGISTRY_USER',
+                        passwordVariable: 'REGISTRY_PASS'
+                    ),
+                    sshUserPrivateKey(
+                        credentialsId: "${env.SFEPS_TEST_SSH_CREDENTIALS_ID}",
+                        keyFileVariable: 'SSH_KEY',
+                        usernameVariable: 'SSH_USER'
+                    )
+                ]) {
+                    sh '''
+                        set -eu
+                        if [ -z "${SFEPS_TEST_HOST}" ]; then
+                          echo "SFEPS_TEST_HOST is required for develop deployment." >&2
+                          exit 1
+                        fi
+                        REMOTE="${SSH_USER}@${SFEPS_TEST_HOST}"
+                        SSH_OPTS="-i ${SSH_KEY} -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
+
+                        printf '%s' "${REGISTRY_PASS}" | ssh ${SSH_OPTS} "${REMOTE}" \
+                          "docker login '${SFEPS_DOCKER_REGISTRY}' -u '${REGISTRY_USER}' --password-stdin"
+
+                        ssh ${SSH_OPTS} "${REMOTE}" "set -eu
+                          docker pull '${SFEPS_IMAGE_REF}'
+                          docker rm -f '${SFEPS_TEST_CONTAINER_NAME}' >/dev/null 2>&1 || true
+                          mkdir -p '${SFEPS_VIDEO_DIR}'
+                          if [ ! -r '${SFEPS_REMOTE_ENV_FILE}' ]; then
+                            echo 'missing env file: ${SFEPS_REMOTE_ENV_FILE}' >&2
+                            exit 1
+                          fi
+                          if [ ! -S '${SFEPS_REMOTE_MYSQL_SOCK_DIR}/mysqld.sock' ]; then
+                            echo 'missing mysql socket: ${SFEPS_REMOTE_MYSQL_SOCK_DIR}/mysqld.sock' >&2
+                            exit 1
+                          fi
+                          grep -Ev '^(SFEPS_APP_BIND_IP|SFEPS_APP_TLS_ENABLE|SFEPS_APP_PLAINTEXT_ENABLE|SFEPS_APP_TLS_CERT_FILE|SFEPS_APP_TLS_KEY_FILE|SFEPS_ESP_TCP_ENABLE|SFEPS_ESP_TCP_BIND_IP|SFEPS_ESP_TCP_PORT|SFEPS_ESP_TCP_MAX_CLIENTS|SFEPS_ESP_TCP_ALLOW_IPS)=' \
+                            '${SFEPS_REMOTE_ENV_FILE}' > '/tmp/sfeps-server-test.env'
+                          {
+                            echo 'SFEPS_APP_BIND_IP=0.0.0.0'
+                            echo 'SFEPS_APP_TLS_ENABLE=0'
+                            echo 'SFEPS_APP_PLAINTEXT_ENABLE=1'
+                            echo 'SFEPS_ESP_TCP_ENABLE=0'
+                          } >> '/tmp/sfeps-server-test.env'
+                          if ! docker run -d --name '${SFEPS_TEST_CONTAINER_NAME}' --restart unless-stopped --network host \
+                            -v '/tmp/sfeps-server-test.env:${SFEPS_CONTAINER_ENV_FILE}:ro' \
+                            -v '${SFEPS_REMOTE_PKI_DIR}:${SFEPS_REMOTE_PKI_DIR}:ro' \
+                            -v '${SFEPS_REMOTE_MYSQL_SOCK_DIR}:${SFEPS_REMOTE_MYSQL_SOCK_DIR}' \
+                            -v '${SFEPS_VIDEO_DIR}:${SFEPS_VIDEO_DIR}' \
+                            -e SFEPS_ENV_FILE='${SFEPS_CONTAINER_ENV_FILE}' \
+                            '${SFEPS_IMAGE_REF}'; then
+                            echo 'docker run failed for test deploy' >&2
+                            docker ps -a --filter name='${SFEPS_TEST_CONTAINER_NAME}' || true
+                            exit 1
+                          fi"
+
+                        ssh ${SSH_OPTS} "${REMOTE}" "set -eu
+                          if timeout 90 bash -lc 'while ! cat </dev/null >/dev/tcp/127.0.0.1/${SFEPS_HEALTH_PORT} 2>/dev/null; do sleep 2; done'; then
+                            echo 'test deploy health check OK on port ${SFEPS_HEALTH_PORT}'
+                            exit 0
+                          fi
+                          echo 'test deploy health check FAILED' >&2
+                          docker logs --tail 120 '${SFEPS_TEST_CONTAINER_NAME}' || true
+                          exit 1"
+                    '''
+                }
+            }
+        }
+
+        stage('Approve Production Deployment') {
+            when {
+                expression { env.SFEPS_CI_BRANCH == 'main' }
+            }
+            steps {
+                timeout(time: 30, unit: 'MINUTES') {
+                    input message: 'Deploy main image to production Raspberry Pi?', ok: 'Deploy'
+                }
+            }
+        }
+
+        stage('Deploy To Production Raspberry (main)') {
+            when {
+                expression { env.SFEPS_CI_BRANCH == 'main' }
+            }
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: "${env.SFEPS_REGISTRY_CREDENTIALS_ID}",
+                        usernameVariable: 'REGISTRY_USER',
+                        passwordVariable: 'REGISTRY_PASS'
+                    ),
+                    sshUserPrivateKey(
+                        credentialsId: "${env.SFEPS_PROD_SSH_CREDENTIALS_ID}",
+                        keyFileVariable: 'SSH_KEY',
+                        usernameVariable: 'SSH_USER'
+                    )
+                ]) {
+                    sh '''
+                        set -eu
+                        if [ -z "${SFEPS_PROD_HOST}" ]; then
+                          echo "SFEPS_PROD_HOST is required for production deployment." >&2
+                          exit 1
+                        fi
+                        REMOTE="${SSH_USER}@${SFEPS_PROD_HOST}"
+                        SSH_OPTS="-i ${SSH_KEY} -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
+
+                        printf '%s' "${REGISTRY_PASS}" | ssh ${SSH_OPTS} "${REMOTE}" \
+                          "docker login '${SFEPS_DOCKER_REGISTRY}' -u '${REGISTRY_USER}' --password-stdin"
+
+                        ssh ${SSH_OPTS} "${REMOTE}" "set -eu
+                          docker pull '${SFEPS_IMAGE_REF}'
+                          docker rm -f '${SFEPS_PROD_CONTAINER_NAME}' >/dev/null 2>&1 || true
+                          mkdir -p '${SFEPS_VIDEO_DIR}'
+                          if [ ! -r '${SFEPS_REMOTE_ENV_FILE}' ]; then
+                            echo 'missing env file: ${SFEPS_REMOTE_ENV_FILE}' >&2
+                            exit 1
+                          fi
+                          if [ ! -S '${SFEPS_REMOTE_MYSQL_SOCK_DIR}/mysqld.sock' ]; then
+                            echo 'missing mysql socket: ${SFEPS_REMOTE_MYSQL_SOCK_DIR}/mysqld.sock' >&2
+                            exit 1
+                          fi
+                          grep -Ev '^(SFEPS_APP_TLS_ENABLE|SFEPS_APP_PLAINTEXT_ENABLE|SFEPS_APP_TLS_CERT_FILE|SFEPS_APP_TLS_KEY_FILE)=' \
+                            '${SFEPS_REMOTE_ENV_FILE}' > '/tmp/sfeps-server-prod.env'
+                          {
+                            echo 'SFEPS_APP_TLS_ENABLE=0'
+                            echo 'SFEPS_APP_PLAINTEXT_ENABLE=1'
+                          } >> '/tmp/sfeps-server-prod.env'
+                          if ! docker run -d --name '${SFEPS_PROD_CONTAINER_NAME}' --restart unless-stopped --network host \
+                            -v '/tmp/sfeps-server-prod.env:${SFEPS_CONTAINER_ENV_FILE}:ro' \
+                            -v '${SFEPS_REMOTE_PKI_DIR}:${SFEPS_REMOTE_PKI_DIR}:ro' \
+                            -v '${SFEPS_REMOTE_MYSQL_SOCK_DIR}:${SFEPS_REMOTE_MYSQL_SOCK_DIR}' \
+                            -v '${SFEPS_VIDEO_DIR}:${SFEPS_VIDEO_DIR}' \
+                            -e SFEPS_ENV_FILE='${SFEPS_CONTAINER_ENV_FILE}' \
+                            '${SFEPS_IMAGE_REF}'; then
+                            echo 'docker run failed for production deploy' >&2
+                            docker ps -a --filter name='${SFEPS_PROD_CONTAINER_NAME}' || true
+                            exit 1
+                          fi"
+
+                        ssh ${SSH_OPTS} "${REMOTE}" "set -eu
+                          if timeout 90 bash -lc 'while ! cat </dev/null >/dev/tcp/127.0.0.1/${SFEPS_HEALTH_PORT} 2>/dev/null; do sleep 2; done'; then
+                            echo 'production deploy health check OK on port ${SFEPS_HEALTH_PORT}'
+                            exit 0
+                          fi
+                          echo 'production deploy health check FAILED' >&2
+                          docker logs --tail 120 '${SFEPS_PROD_CONTAINER_NAME}' || true
+                          exit 1"
+                    '''
+                }
+            }
+        }
     }
 
     post {
@@ -344,153 +622,99 @@ PY
                 pkill -f 'ffmpeg.*rtsp://127.0.0.1:8554/cam1' 2>/dev/null || true
             '''
             sh '''
-                set -eu
+                set +e
                 mkdir -p reports
-                python3 - <<'PY'
-import glob
-import html
-from pathlib import Path
-import xml.etree.ElementTree as ET
-
-
-def parse_int(value):
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
-
-
-def parse_float(value):
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-report_dir = Path("reports")
-xml_files = sorted(glob.glob(str(report_dir / "*.xml")))
-out_path = report_dir / "test-report.html"
-
-summary = {
-    "tests": 0,
-    "failures": 0,
-    "errors": 0,
-    "skipped": 0,
-    "time": 0.0,
-}
-rows = []
-
-for xml_path in xml_files:
-    root = ET.parse(xml_path).getroot()
-    if root.tag == "testsuite":
-        suites = [root]
-    else:
-        suites = root.findall(".//testsuite")
-
-    for suite in suites:
-        summary["tests"] += parse_int(suite.attrib.get("tests"))
-        summary["failures"] += parse_int(suite.attrib.get("failures"))
-        summary["errors"] += parse_int(suite.attrib.get("errors"))
-        summary["skipped"] += parse_int(suite.attrib.get("skipped"))
-        summary["time"] += parse_float(suite.attrib.get("time"))
-
-        suite_name = suite.attrib.get("name") or Path(xml_path).name
-        for tc in suite.findall("testcase"):
-            classname = tc.attrib.get("classname", "")
-            case_name = tc.attrib.get("name", "")
-            duration = parse_float(tc.attrib.get("time"))
-            status = "passed"
-            detail = ""
-
-            for child in tc:
-                if child.tag in ("failure", "error", "skipped"):
-                    status = child.tag
-                    detail = (child.attrib.get("message") or child.text or "").strip()
-                    detail = " ".join(detail.split())[:300]
-                    break
-
-            rows.append(
-                {
-                    "suite": suite_name,
-                    "classname": classname,
-                    "name": case_name,
-                    "status": status,
-                    "time": duration,
-                    "detail": detail,
-                }
-            )
-
-
-status_class_map = {
-    "passed": "ok",
-    "failure": "fail",
-    "error": "err",
-    "skipped": "skip",
-}
-
-html_parts = [
-    "<!doctype html>",
-    "<html lang='en'>",
-    "<head>",
-    "<meta charset='utf-8'>",
-    "<meta name='viewport' content='width=device-width, initial-scale=1'>",
-    "<title>SFEPS Test Report</title>",
-    "<style>",
-    "body { font-family: Arial, sans-serif; margin: 24px; color: #1f2937; }",
-    "h1 { margin: 0 0 12px 0; }",
-    ".meta { margin-bottom: 18px; }",
-    ".kpi { display: inline-block; margin-right: 14px; padding: 8px 10px; border-radius: 8px; background: #f3f4f6; }",
-    "table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }",
-    "th, td { border: 1px solid #e5e7eb; padding: 8px; text-align: left; vertical-align: top; }",
-    "th { background: #f9fafb; }",
-    ".ok { color: #166534; font-weight: 600; }",
-    ".fail, .err { color: #991b1b; font-weight: 700; }",
-    ".skip { color: #92400e; font-weight: 600; }",
-    ".small { color: #6b7280; font-size: 12px; }",
-    "</style>",
-    "</head>",
-    "<body>",
-    "<h1>SFEPS Jenkins Test Report</h1>",
-    "<div class='meta'>",
-    f"<span class='kpi'>Tests: {summary['tests']}</span>",
-    f"<span class='kpi'>Failures: {summary['failures']}</span>",
-    f"<span class='kpi'>Errors: {summary['errors']}</span>",
-    f"<span class='kpi'>Skipped: {summary['skipped']}</span>",
-    f"<span class='kpi'>Time: {summary['time']:.2f}s</span>",
-    "</div>",
-]
-
-if not rows:
-    html_parts.append("<p>No testcases found in reports/*.xml</p>")
-else:
-    html_parts.extend(
-        [
-            "<table>",
-            "<thead><tr><th>Suite</th><th>Class</th><th>Test Case</th><th>Status</th><th>Time(s)</th><th>Detail</th></tr></thead>",
-            "<tbody>",
-        ]
-    )
-    for row in rows:
-        css = status_class_map.get(row["status"], "")
-        html_parts.append(
-            "<tr>"
-            f"<td>{html.escape(row['suite'])}</td>"
-            f"<td>{html.escape(row['classname'])}</td>"
-            f"<td>{html.escape(row['name'])}</td>"
-            f"<td class='{css}'>{html.escape(row['status'])}</td>"
-            f"<td>{row['time']:.3f}</td>"
-            f"<td class='small'>{html.escape(row['detail'])}</td>"
-            "</tr>"
-        )
-    html_parts.extend(["</tbody>", "</table>"])
-
-html_parts.extend(["</body>", "</html>"])
-out_path.write_text("\n".join(html_parts), encoding="utf-8")
-print(f"Wrote {out_path}")
-PY
+                python3 scripts/generate_test_reports.py --input reports --output reports
+                rc=$?
+                if [ "$rc" -ne 0 ]; then
+                  echo "test report generation failed (non-fatal), exit=$rc"
+                fi
+                exit 0
             '''
             junit testResults: 'reports/*.xml', allowEmptyResults: true
-            archiveArtifacts artifacts: 'reports/*.xml,reports/test-report.html,tests/real_server.log,.ci-mediamtx.log,.ci-ffmpeg-publisher.log', allowEmptyArchive: true
+            archiveArtifacts artifacts: 'reports/*.xml,reports/test-report.html,reports/test-report.pdf,reports/test-report.xls,reports/test-report.xlsx,tests/real_server.log,.ci-mediamtx.log,.ci-ffmpeg-publisher.log', allowEmptyArchive: true
+
+            script {
+                def notifyFlag = (env.SFEPS_SLACK_NOTIFY ?: '0').trim().toLowerCase()
+                if (!(notifyFlag in ['1', 'true', 'yes', 'on'])) {
+                    echo "Slack notification disabled (SFEPS_SLACK_NOTIFY=${env.SFEPS_SLACK_NOTIFY})."
+                    return
+                }
+
+                def status = currentBuild.currentResult ?: 'UNKNOWN'
+                def emoji = '[INFO]'
+                if (status == 'SUCCESS') {
+                    emoji = '[SUCCESS]'
+                } else if (status == 'FAILURE') {
+                    emoji = '[FAILURE]'
+                } else if (status == 'UNSTABLE') {
+                    emoji = '[UNSTABLE]'
+                } else if (status == 'ABORTED') {
+                    emoji = '[ABORTED]'
+                }
+
+                env.SFEPS_NOTIFY_STATUS = status
+                env.SFEPS_NOTIFY_EMOJI = emoji
+
+                try {
+                    withCredentials([
+                        string(
+                            credentialsId: "${env.SFEPS_SLACK_WEBHOOK_CREDENTIALS_ID}",
+                            variable: 'SLACK_WEBHOOK_URL'
+                        )
+                    ]) {
+                        sh '''
+                            set +e
+                            python3 - <<'PY'
+import json
+import os
+import urllib.request
+
+webhook = os.environ.get("SLACK_WEBHOOK_URL", "").strip()
+if not webhook:
+    raise SystemExit(0)
+
+status = os.environ.get("SFEPS_NOTIFY_STATUS", "UNKNOWN")
+emoji = os.environ.get("SFEPS_NOTIFY_EMOJI", "[INFO]")
+job = os.environ.get("JOB_NAME", "unknown-job")
+build_no = os.environ.get("BUILD_NUMBER", "?")
+branch = os.environ.get("SFEPS_CI_BRANCH") or os.environ.get("BRANCH_NAME", "unknown")
+build_url = os.environ.get("BUILD_URL", "")
+image_ref = os.environ.get("SFEPS_IMAGE_REF", "")
+channel = os.environ.get("SFEPS_SLACK_CHANNEL", "").strip()
+
+lines = [
+    f"{emoji} *{status}* `{job} #{build_no}`",
+    f"- branch: `{branch}`",
+]
+if image_ref:
+    lines.append(f"- image: `{image_ref}`")
+if build_url:
+    lines.append(f"- build: <{build_url}|Open Jenkins Build>")
+
+payload = {"text": "\n".join(lines)}
+if channel:
+    payload["channel"] = channel
+
+req = urllib.request.Request(
+    webhook,
+    data=json.dumps(payload).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+)
+with urllib.request.urlopen(req, timeout=10) as resp:
+    resp.read()
+PY
+                            rc=$?
+                            if [ "$rc" -ne 0 ]; then
+                              echo "Slack notification failed (non-fatal), exit=$rc"
+                            fi
+                            exit 0
+                        '''
+                    }
+                } catch (err) {
+                    echo "Slack notification skipped (non-fatal): ${err}"
+                }
+            }
         }
     }
 }

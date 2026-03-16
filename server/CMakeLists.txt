@@ -44,6 +44,7 @@ add_executable(smart_server
     src/alert.cpp
     src/esp_manager.cpp
     src/tls_server.cpp
+    ${CAMERA_GET_METADATA_DIR}/src/XMLParser.cpp
     ${AUDIO_SPEAKER_UNIT_DIR}/src/audio_ring_buffer.cpp
     ${AUDIO_SPEAKER_UNIT_DIR}/src/audio_playback.cpp
 )
@@ -63,6 +64,7 @@ target_include_directories(smart_server PRIVATE
     ${MARIADB_INCLUDE_DIRS}
     ${FFMPEG_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CAMERA_GET_METADATA_DIR}/inc
     ${AUDIO_SPEAKER_UNIT_DIR}/include
     ${CAMERA_GET_METADATA_DIR}/inc
 )
@@ -71,7 +73,6 @@ target_include_directories(smart_server PRIVATE
 target_link_libraries(smart_server PRIVATE
     ${MARIADB_LIBRARIES}
     ${FFMPEG_LIBRARIES}
-    camera_metadata_parser
     OpenSSL::SSL
     OpenSSL::Crypto
     Threads::Threads
