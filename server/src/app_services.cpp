@@ -523,6 +523,7 @@ void run_position_stream_service(std::atomic<bool>& running,
     AnalyticsProcessor::ObjectPositionSnapshot esp_last_sent;
     struct ObjLastSentState {
         std::chrono::steady_clock::time_point updated_at;
+        std::chrono::steady_clock::time_point sent_at;
         bool is_fraud = false;
     };
     std::unordered_map<std::string, ObjLastSentState> obj_last_sent;
@@ -828,6 +829,8 @@ void run_position_stream_service(std::atomic<bool>& running,
         const auto esp_stale_limit =
             std::chrono::seconds(static_cast<long long>(sec_cfg.position_stale_seconds));
         const auto obj_stale_limit = std::chrono::seconds(1);
+        const auto obj_min_send_interval =
+            std::chrono::milliseconds(std::max(1, sec_cfg.position_min_send_ms));
 
         if (!esp_active_object_id.empty()) {
             AnalyticsProcessor::ObjectPositionSnapshot snapshot;
@@ -905,11 +908,16 @@ void run_position_stream_service(std::atomic<bool>& running,
                 sent_it->second.is_fraud == snapshot.is_fraud) {
                 continue;
             }
+            if (sent_it != obj_last_sent.end() &&
+                (now - sent_it->second.sent_at) < obj_min_send_interval) {
+                continue;
+            }
 
             const std::string obj_line = format_obj_pos_line(snapshot);
             if (broadcast_obj_line(obj_line)) {
                 ObjLastSentState sent_state;
                 sent_state.updated_at = snapshot.updated_at;
+                sent_state.sent_at = now;
                 sent_state.is_fraud = snapshot.is_fraud;
                 obj_last_sent[object_id] = sent_state;
             }

@@ -7,7 +7,6 @@ SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
 PRIMARY_BIN_PATH="${SCRIPT_DIR}/build/smart_server.bin"
 LEGACY_BIN_PATH="${SCRIPT_DIR}/build/smart_server"
-DEFAULT_RTSPS_CA_PATH="/etc/sfeps/pki/ca.crt"
 
 log_info() {
   if [[ "${SFEPS_RUN_VERBOSE:-0}" == "1" ]]; then
@@ -64,7 +63,6 @@ fi
 
 # Use defaults unless caller already exported custom paths.
 : "${SFEPS_DB_HOST:=localhost}"
-: "${RTSPS_TLS_CA:=${DEFAULT_RTSPS_CA_PATH}}"
 # Compatibility only: runtime uses SFEPS_DB_NAME_ANALYTICS single schema.
 : "${SFEPS_DB_NAME_AUTH:=${SFEPS_DB_NAME_ANALYTICS:-}}"
 
@@ -78,6 +76,7 @@ fi
 : "${SFEPS_AUDIO_MAX_BYTES:=4194304}"
 : "${SFEPS_ALERT_MAX_CLIENTS:=64}"
 : "${SFEPS_SOCKET_READ_TIMEOUT_MS:=5000}"
+: "${SFEPS_POSITION_MIN_SEND_MS:=1000}"
 
 # App port TLS (dual-stack migration defaults).
 : "${SFEPS_APP_TLS_ENABLE:=0}"
@@ -168,12 +167,6 @@ if [[ -z "${BIN_PATH}" ]]; then
   exit 1
 fi
 
-if [[ ! -r "${RTSPS_TLS_CA}" ]]; then
-  echo "[run_server] RTSPS_TLS_CA is not readable: ${RTSPS_TLS_CA}" >&2
-  exit 1
-fi
-
-export RTSPS_TLS_CA
 export SFEPS_META_MAX_PACKET_BYTES
 export SFEPS_META_BAD_STREAK_LIMIT
 export SFEPS_META_MAX_LINES_PER_BATCH
@@ -183,6 +176,7 @@ export SFEPS_AUTH_MAX_BYTES
 export SFEPS_AUDIO_MAX_BYTES
 export SFEPS_ALERT_MAX_CLIENTS
 export SFEPS_SOCKET_READ_TIMEOUT_MS
+export SFEPS_POSITION_MIN_SEND_MS
 export SFEPS_APP_TLS_ENABLE
 export SFEPS_APP_PLAINTEXT_ENABLE
 export SFEPS_AUTH_TLS_PORT
@@ -204,7 +198,6 @@ if [[ -n "${SFEPS_APP_TLS_KEY_FILE:-}" ]]; then
   export SFEPS_APP_TLS_KEY_FILE
 fi
 
-log_info "RTSPS_TLS_CA=${RTSPS_TLS_CA}"
 log_info "SFEPS_DB_HOST=${SFEPS_DB_HOST}"
 log_info "SFEPS_DB_USER=${SFEPS_DB_USER}"
 log_info "SFEPS_DB_NAME_ANALYTICS=${SFEPS_DB_NAME_ANALYTICS}"
