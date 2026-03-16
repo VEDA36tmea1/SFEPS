@@ -480,11 +480,13 @@ PY
                             '${SFEPS_IMAGE_REF}'"
 
                         ssh ${SSH_OPTS} "${REMOTE}" "set -eu
-                          for _ in \$(seq 1 45); do
+                          i=1
+                          while [ \"\$i\" -le 45 ]; do
                             if timeout 1 bash -lc 'cat </dev/null >/dev/tcp/127.0.0.1/${SFEPS_HEALTH_PORT}' 2>/dev/null; then
                               echo 'test deploy health check OK on port ${SFEPS_HEALTH_PORT}'
                               exit 0
                             fi
+                            i=\$((i + 1))
                             sleep 2
                           done
                           echo 'test deploy health check FAILED' >&2
@@ -547,11 +549,13 @@ PY
                             '${SFEPS_IMAGE_REF}'"
 
                         ssh ${SSH_OPTS} "${REMOTE}" "set -eu
-                          for _ in \$(seq 1 45); do
+                          i=1
+                          while [ \"\$i\" -le 45 ]; do
                             if timeout 1 bash -lc 'cat </dev/null >/dev/tcp/127.0.0.1/${SFEPS_HEALTH_PORT}' 2>/dev/null; then
                               echo 'production deploy health check OK on port ${SFEPS_HEALTH_PORT}'
                               exit 0
                             fi
+                            i=\$((i + 1))
                             sleep 2
                           done
                           echo 'production deploy health check FAILED' >&2
