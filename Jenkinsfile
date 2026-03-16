@@ -472,11 +472,17 @@ PY
                           docker pull '${SFEPS_IMAGE_REF}'
                           docker rm -f '${SFEPS_TEST_CONTAINER_NAME}' >/dev/null 2>&1 || true
                           mkdir -p '${SFEPS_VIDEO_DIR}'
+                          test -r '${SFEPS_REMOTE_PKI_DIR}/ca.crt'
+                          test -r '${SFEPS_REMOTE_PKI_DIR}/server.crt'
+                          test -r '${SFEPS_REMOTE_PKI_DIR}/server.key'
                           docker run -d --name '${SFEPS_TEST_CONTAINER_NAME}' --restart unless-stopped --network host \
                             -v '${SFEPS_REMOTE_ENV_FILE}:${SFEPS_CONTAINER_ENV_FILE}:ro' \
                             -v '${SFEPS_REMOTE_PKI_DIR}:${SFEPS_REMOTE_PKI_DIR}:ro' \
                             -v '${SFEPS_VIDEO_DIR}:${SFEPS_VIDEO_DIR}' \
                             -e SFEPS_ENV_FILE='${SFEPS_CONTAINER_ENV_FILE}' \
+                            -e RTSPS_TLS_CA='${SFEPS_REMOTE_PKI_DIR}/ca.crt' \
+                            -e SFEPS_APP_TLS_CERT_FILE='${SFEPS_REMOTE_PKI_DIR}/server.crt' \
+                            -e SFEPS_APP_TLS_KEY_FILE='${SFEPS_REMOTE_PKI_DIR}/server.key' \
                             '${SFEPS_IMAGE_REF}'"
 
                         ssh ${SSH_OPTS} "${REMOTE}" "set -eu
@@ -536,11 +542,17 @@ PY
                           docker pull '${SFEPS_IMAGE_REF}'
                           docker rm -f '${SFEPS_PROD_CONTAINER_NAME}' >/dev/null 2>&1 || true
                           mkdir -p '${SFEPS_VIDEO_DIR}'
+                          test -r '${SFEPS_REMOTE_PKI_DIR}/ca.crt'
+                          test -r '${SFEPS_REMOTE_PKI_DIR}/server.crt'
+                          test -r '${SFEPS_REMOTE_PKI_DIR}/server.key'
                           docker run -d --name '${SFEPS_PROD_CONTAINER_NAME}' --restart unless-stopped --network host \
                             -v '${SFEPS_REMOTE_ENV_FILE}:${SFEPS_CONTAINER_ENV_FILE}:ro' \
                             -v '${SFEPS_REMOTE_PKI_DIR}:${SFEPS_REMOTE_PKI_DIR}:ro' \
                             -v '${SFEPS_VIDEO_DIR}:${SFEPS_VIDEO_DIR}' \
                             -e SFEPS_ENV_FILE='${SFEPS_CONTAINER_ENV_FILE}' \
+                            -e RTSPS_TLS_CA='${SFEPS_REMOTE_PKI_DIR}/ca.crt' \
+                            -e SFEPS_APP_TLS_CERT_FILE='${SFEPS_REMOTE_PKI_DIR}/server.crt' \
+                            -e SFEPS_APP_TLS_KEY_FILE='${SFEPS_REMOTE_PKI_DIR}/server.key' \
                             '${SFEPS_IMAGE_REF}'"
 
                         ssh ${SSH_OPTS} "${REMOTE}" "set -eu
