@@ -54,6 +54,8 @@ def set_enable(channel: int, enabled: bool) -> None:
         _write_text(enable_path, "1" if enabled else "0")
 
 
+
+
 def clamp(v: int, lo: int, hi: int) -> int:
     return lo if v < lo else hi if v > hi else v
 

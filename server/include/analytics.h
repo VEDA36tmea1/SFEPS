@@ -14,6 +14,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include <mysql/mysql.h>
 
@@ -29,6 +30,7 @@ public:
         float bottom = -1.0f;
         float x = -1.0f;
         float y = -1.0f;
+        bool is_fraud = false;
         std::string tag_time;
         std::chrono::steady_clock::time_point updated_at;
     };
@@ -61,6 +63,7 @@ public:
     void onRfidRead(const std::string& card_age_text);
     bool getObjectPositionSnapshot(const std::string& object_id,
                                    ObjectPositionSnapshot& out) const;
+    void getAllObjectSnapshots(std::vector<ObjectPositionSnapshot>& out) const;
     void setFraudBBoxCallback(FraudBBoxCallback callback);
 
 private:
@@ -118,6 +121,7 @@ private:
     std::unordered_set<std::string> pending_object_ids;
     std::unordered_map<std::string, PendingObject> matched_objects;
     std::unordered_map<std::string, LatestObjectInfo> latest_objects;
+    std::unordered_map<std::string, bool> object_fraud_flags;
     std::queue<FraudRecord> q;
 
     mutable std::mutex mtx;

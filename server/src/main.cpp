@@ -165,6 +165,7 @@ SecurityRuntimeOptions load_security_runtime_options() {
     cfg.position_max_clients = load_env_size_t("SFEPS_POSITION_MAX_CLIENTS", 64, 1);
     cfg.socket_read_timeout_ms = load_env_int("SFEPS_SOCKET_READ_TIMEOUT_MS", 5000, 1);
     cfg.position_stream_tick_ms = load_env_int("SFEPS_POSITION_TICK_MS", 100, 1);
+    cfg.position_min_send_ms = load_env_int("SFEPS_POSITION_MIN_SEND_MS", 1000, 1);
     cfg.position_stale_seconds = load_env_size_t("SFEPS_POSITION_STALE_SEC", 3, 1);
 
     cfg.app_tls_enable = load_env_bool("SFEPS_APP_TLS_ENABLE", false);

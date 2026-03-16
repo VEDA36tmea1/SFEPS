@@ -264,10 +264,12 @@ void FraudManager::onReadyRead()
         QString cardAgeText;
         QString age;
         bool isFraud = false;
-        if (!s.isEmpty() && parseFraudMessage(s, objectId, cardAgeText, age, isFraud)) {
+        if (!s.isEmpty()) {
             qDebug() << "[FraudManager] Received (no-nl fallback):" << s;
-            emit fraudDetected(objectId, cardAgeText, age, isFraud);
-            recvBuffer.clear();
+            if (parseFraudMessage(s, objectId, cardAgeText, ageGroup, isFraud)) {
+                emit fraudDetected(objectId, cardAgeText, ageGroup, isFraud);
+                recvBuffer.clear();
+            }
         }
 
         // 안전장치: 버퍼가 너무 커지면 초기화하여 메모리/무한루프 방지
