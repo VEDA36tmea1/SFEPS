@@ -59,9 +59,9 @@ int main(int argc, char *argv[]) {
   FraudManager fraudManager;
   engine.rootContext()->setContextProperty("fraudManager", &fraudManager);
 
-  // PositionManager를 컨텍스트 속성으로 등록
-  PositionManager positionManager;
-  engine.rootContext()->setContextProperty("positionManager", &positionManager);
+    // PositionManager를 컨텍스트 속성으로 등록 (포지션/트래킹 전용)
+    PositionManager positionManager;
+    engine.rootContext()->setContextProperty("positionManager", &positionManager);
 
   // 알림 서버 호스트: 환경변수 FRAUD_SERVER_HOST가 설정되어 있으면 그 값을 사용하고,
   // 설정되어 있지 않으면 기존 하드코드된 주소를 기본값으로 사용합니다.
@@ -82,23 +82,35 @@ int main(int argc, char *argv[]) {
       return parsed;
   };
 
-  const QString alertHost = env.value("FRAUD_SERVER_HOST", "192.168.0.80");
+  const QString alertHost = env.value("FRAUD_SERVER_HOST", "192.168.0.101");
   const bool clientTlsEnabled = parseEnvBool(env, "SFEPS_CLIENT_TLS_ENABLE", false);
   const bool alertTlsEnabled = parseEnvBool(env, "SFEPS_ALERT_TLS_ENABLE", clientTlsEnabled);
   const int alertPort = alertTlsEnabled
                             ? parseEnvPort(env, "SFEPS_ALERT_TLS_PORT", 6557)
                             : parseEnvPort(env, "FRAUD_SERVER_PORT", 5557);
-  const QString positionHost = env.value("POSITION_SERVER_HOST", alertHost);
-  const bool positionTlsEnabled =
-      parseEnvBool(env, "SFEPS_POSITION_TLS_ENABLE", clientTlsEnabled);
-  const int positionPort = positionTlsEnabled
-                               ? parseEnvPort(env, "SFEPS_POSITION_TLS_PORT", 6558)
-                               : parseEnvPort(env, "POSITION_SERVER_PORT", 5558);
   qDebug() << "[Main] Fraud alert server:" << alertHost << ":" << alertPort
            << (alertTlsEnabled ? "(TLS)" : "(Plain)");
-  qDebug() << "[Main] Position stream server:" << positionHost << ":" << positionPort
-           << (positionTlsEnabled ? "(TLS)" : "(Plain)");
   fraudManager.connectToServer(alertHost, alertPort);
+
+    // Position channel (separate socket) for SUB_POS/UNSUB_POS and POS events
+    const QString posHost = env.value("POS_SERVER_HOST", alertHost);
+    const bool posTlsEnabled = parseEnvBool(env, "SFEPS_POS_TLS_ENABLE", false);
+    const int posPort = posTlsEnabled
+                                                        ? parseEnvPort(env, "SFEPS_POS_TLS_PORT", 6558)
+                                                        : parseEnvPort(env, "POS_SERVER_PORT", 5558);
+    qDebug() << "[Main] Position server:" << posHost << ":" << posPort
+                     << (posTlsEnabled ? "(TLS)" : "(Plain)");
+    positionManager.connectPositionServer(posHost, posPort);
+
+    // Auto-subscribe helper for testing: if SFEPS_AUTO_SUB_POS_ID env var is set,
+    // send a SUB_POS|<id> once after connecting.
+    const QString autoSubId = env.value("SFEPS_AUTO_SUB_POS_ID", "").trimmed();
+    if (!autoSubId.isEmpty()) {
+        qDebug() << "[Main] Auto SUB_POS enabled for id:" << autoSubId;
+        QTimer::singleShot(1000, [&positionManager, autoSubId]() {
+            positionManager.sendPositionCommand(QString("SUB_POS|%1").arg(autoSubId));
+        });
+    }
 
   // QML 파일 URL 정의
   const QUrl loginUrl(QStringLiteral("qrc:/src/views/LoginView.qml"));
@@ -114,13 +126,9 @@ int main(int argc, char *argv[]) {
       Qt::QueuedConnection);
 
   // 로그인 성공 시 메인 창으로 전환
-  QObject::connect(&authManager, &AuthManager::loginSuccess,
-                   [&engine, mainUrl, &positionManager, positionHost, positionPort](){
+  QObject::connect(&authManager, &AuthManager::loginSuccess, [&engine, mainUrl](){
       // 1. 메인 윈도우 로드 (앱 종료 방지를 위해 먼저 로드)
       engine.load(mainUrl);
-
-      // 1-1. 로그인 성공 후 Position 스트림 연결
-      positionManager.connectToServer(positionHost, positionPort);
       
       // 2. 기존 로그인 윈도우 닫기
       // 루트 객체들 중 타이틀이 "SFEPS Login"인 윈도우를 찾아 닫습니다.
