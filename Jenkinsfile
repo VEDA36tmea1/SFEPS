@@ -35,6 +35,7 @@ pipeline {
         SFEPS_REMOTE_ENV_FILE = "${env.SFEPS_REMOTE_ENV_FILE ?: '/home/iam/SFEPS/server/.env.local'}"
         SFEPS_CONTAINER_ENV_FILE = "${env.SFEPS_CONTAINER_ENV_FILE ?: '/opt/sfeps/server/.env.local'}"
         SFEPS_REMOTE_PKI_DIR = "${env.SFEPS_REMOTE_PKI_DIR ?: '/etc/sfeps/pki'}"
+        SFEPS_REMOTE_MYSQL_SOCK_DIR = "${env.SFEPS_REMOTE_MYSQL_SOCK_DIR ?: '/run/mysqld'}"
         SFEPS_VIDEO_DIR = "${env.SFEPS_VIDEO_DIR ?: '/home/iam/SFEPS/videos'}"
         SFEPS_HEALTH_PORT = "${env.SFEPS_HEALTH_PORT ?: '5555'}"
 
@@ -472,21 +473,39 @@ PY
                           docker pull '${SFEPS_IMAGE_REF}'
                           docker rm -f '${SFEPS_TEST_CONTAINER_NAME}' >/dev/null 2>&1 || true
                           mkdir -p '${SFEPS_VIDEO_DIR}'
-                          docker run -d --name '${SFEPS_TEST_CONTAINER_NAME}' --restart unless-stopped --network host \
-                            -v '${SFEPS_REMOTE_ENV_FILE}:${SFEPS_CONTAINER_ENV_FILE}:ro' \
+                          if [ ! -r '${SFEPS_REMOTE_ENV_FILE}' ]; then
+                            echo 'missing env file: ${SFEPS_REMOTE_ENV_FILE}' >&2
+                            exit 1
+                          fi
+                          if [ ! -S '${SFEPS_REMOTE_MYSQL_SOCK_DIR}/mysqld.sock' ]; then
+                            echo 'missing mysql socket: ${SFEPS_REMOTE_MYSQL_SOCK_DIR}/mysqld.sock' >&2
+                            exit 1
+                          fi
+                          grep -Ev '^(SFEPS_APP_BIND_IP|SFEPS_APP_TLS_ENABLE|SFEPS_APP_PLAINTEXT_ENABLE|SFEPS_APP_TLS_CERT_FILE|SFEPS_APP_TLS_KEY_FILE|SFEPS_ESP_TCP_ENABLE|SFEPS_ESP_TCP_BIND_IP|SFEPS_ESP_TCP_PORT|SFEPS_ESP_TCP_MAX_CLIENTS|SFEPS_ESP_TCP_ALLOW_IPS)=' \
+                            '${SFEPS_REMOTE_ENV_FILE}' > '/tmp/sfeps-server-test.env'
+                          {
+                            echo 'SFEPS_APP_BIND_IP=0.0.0.0'
+                            echo 'SFEPS_APP_TLS_ENABLE=0'
+                            echo 'SFEPS_APP_PLAINTEXT_ENABLE=1'
+                            echo 'SFEPS_ESP_TCP_ENABLE=0'
+                          } >> '/tmp/sfeps-server-test.env'
+                          if ! docker run -d --name '${SFEPS_TEST_CONTAINER_NAME}' --restart unless-stopped --network host \
+                            -v '/tmp/sfeps-server-test.env:${SFEPS_CONTAINER_ENV_FILE}:ro' \
                             -v '${SFEPS_REMOTE_PKI_DIR}:${SFEPS_REMOTE_PKI_DIR}:ro' \
+                            -v '${SFEPS_REMOTE_MYSQL_SOCK_DIR}:${SFEPS_REMOTE_MYSQL_SOCK_DIR}' \
                             -v '${SFEPS_VIDEO_DIR}:${SFEPS_VIDEO_DIR}' \
                             -e SFEPS_ENV_FILE='${SFEPS_CONTAINER_ENV_FILE}' \
-                            '${SFEPS_IMAGE_REF}'"
+                            '${SFEPS_IMAGE_REF}'; then
+                            echo 'docker run failed for test deploy' >&2
+                            docker ps -a --filter name='${SFEPS_TEST_CONTAINER_NAME}' || true
+                            exit 1
+                          fi"
 
                         ssh ${SSH_OPTS} "${REMOTE}" "set -eu
-                          for _ in \$(seq 1 45); do
-                            if timeout 1 bash -lc 'cat </dev/null >/dev/tcp/127.0.0.1/${SFEPS_HEALTH_PORT}' 2>/dev/null; then
-                              echo 'test deploy health check OK on port ${SFEPS_HEALTH_PORT}'
-                              exit 0
-                            fi
-                            sleep 2
-                          done
+                          if timeout 90 bash -lc 'while ! cat </dev/null >/dev/tcp/127.0.0.1/${SFEPS_HEALTH_PORT} 2>/dev/null; do sleep 2; done'; then
+                            echo 'test deploy health check OK on port ${SFEPS_HEALTH_PORT}'
+                            exit 0
+                          fi
                           echo 'test deploy health check FAILED' >&2
                           docker logs --tail 120 '${SFEPS_TEST_CONTAINER_NAME}' || true
                           exit 1"
@@ -539,21 +558,37 @@ PY
                           docker pull '${SFEPS_IMAGE_REF}'
                           docker rm -f '${SFEPS_PROD_CONTAINER_NAME}' >/dev/null 2>&1 || true
                           mkdir -p '${SFEPS_VIDEO_DIR}'
-                          docker run -d --name '${SFEPS_PROD_CONTAINER_NAME}' --restart unless-stopped --network host \
-                            -v '${SFEPS_REMOTE_ENV_FILE}:${SFEPS_CONTAINER_ENV_FILE}:ro' \
+                          if [ ! -r '${SFEPS_REMOTE_ENV_FILE}' ]; then
+                            echo 'missing env file: ${SFEPS_REMOTE_ENV_FILE}' >&2
+                            exit 1
+                          fi
+                          if [ ! -S '${SFEPS_REMOTE_MYSQL_SOCK_DIR}/mysqld.sock' ]; then
+                            echo 'missing mysql socket: ${SFEPS_REMOTE_MYSQL_SOCK_DIR}/mysqld.sock' >&2
+                            exit 1
+                          fi
+                          grep -Ev '^(SFEPS_APP_TLS_ENABLE|SFEPS_APP_PLAINTEXT_ENABLE|SFEPS_APP_TLS_CERT_FILE|SFEPS_APP_TLS_KEY_FILE)=' \
+                            '${SFEPS_REMOTE_ENV_FILE}' > '/tmp/sfeps-server-prod.env'
+                          {
+                            echo 'SFEPS_APP_TLS_ENABLE=0'
+                            echo 'SFEPS_APP_PLAINTEXT_ENABLE=1'
+                          } >> '/tmp/sfeps-server-prod.env'
+                          if ! docker run -d --name '${SFEPS_PROD_CONTAINER_NAME}' --restart unless-stopped --network host \
+                            -v '/tmp/sfeps-server-prod.env:${SFEPS_CONTAINER_ENV_FILE}:ro' \
                             -v '${SFEPS_REMOTE_PKI_DIR}:${SFEPS_REMOTE_PKI_DIR}:ro' \
+                            -v '${SFEPS_REMOTE_MYSQL_SOCK_DIR}:${SFEPS_REMOTE_MYSQL_SOCK_DIR}' \
                             -v '${SFEPS_VIDEO_DIR}:${SFEPS_VIDEO_DIR}' \
                             -e SFEPS_ENV_FILE='${SFEPS_CONTAINER_ENV_FILE}' \
-                            '${SFEPS_IMAGE_REF}'"
+                            '${SFEPS_IMAGE_REF}'; then
+                            echo 'docker run failed for production deploy' >&2
+                            docker ps -a --filter name='${SFEPS_PROD_CONTAINER_NAME}' || true
+                            exit 1
+                          fi"
 
                         ssh ${SSH_OPTS} "${REMOTE}" "set -eu
-                          for _ in \$(seq 1 45); do
-                            if timeout 1 bash -lc 'cat </dev/null >/dev/tcp/127.0.0.1/${SFEPS_HEALTH_PORT}' 2>/dev/null; then
-                              echo 'production deploy health check OK on port ${SFEPS_HEALTH_PORT}'
-                              exit 0
-                            fi
-                            sleep 2
-                          done
+                          if timeout 90 bash -lc 'while ! cat </dev/null >/dev/tcp/127.0.0.1/${SFEPS_HEALTH_PORT} 2>/dev/null; do sleep 2; done'; then
+                            echo 'production deploy health check OK on port ${SFEPS_HEALTH_PORT}'
+                            exit 0
+                          fi
                           echo 'production deploy health check FAILED' >&2
                           docker logs --tail 120 '${SFEPS_PROD_CONTAINER_NAME}' || true
                           exit 1"
