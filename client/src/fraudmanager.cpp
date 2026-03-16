@@ -6,6 +6,8 @@
 #include <QProcessEnvironment>
 #include <QSslConfiguration>
 #include <QSslError>
+#include <QCoreApplication>
+#include <QProcessEnvironment>
 
 static bool parseEnvBool(const QProcessEnvironment &env, const QString &key, bool defaultValue)
 {
@@ -177,6 +179,27 @@ void FraudManager::onSslErrors(const QList<QSslError> &errors)
     }
 }
 
+void FraudManager::sendCommand(const QString &msg)
+{
+    if (!socket) {
+        qWarning() << "[FraudManager] sendCommand: socket is null";
+        return;
+    }
+    if (socket->state() != QAbstractSocket::ConnectedState) {
+        qWarning() << "[FraudManager] sendCommand: socket not connected:" << socket->state();
+        return;
+    }
+    QByteArray data = msg.toUtf8();
+    if (!data.endsWith('\n')) data.append('\n');
+    qint64 n = socket->write(data);
+    if (n <= 0) {
+        qWarning() << "[FraudManager] failed to write command:" << msg;
+    } else {
+        socket->flush();
+        qDebug() << "[FraudManager] Sent command:" << msg;
+    }
+}
+
 void FraudManager::attachSocketSignals()
 {
     connect(socket, &QTcpSocket::readyRead, this, &FraudManager::onReadyRead);
@@ -192,7 +215,11 @@ void FraudManager::attachSocketSignals()
     if (QSslSocket *ssl = qobject_cast<QSslSocket*>(socket)) {
         connect(ssl, &QSslSocket::sslErrors, this, &FraudManager::onSslErrors);
     }
+
+    // Position socket moved to PositionManager
 }
+
+// Position handling moved to PositionManager
 
 bool FraudManager::resolveAlertTlsEnabled() const
 {
@@ -237,10 +264,12 @@ void FraudManager::onReadyRead()
         QString cardAgeText;
         QString age;
         bool isFraud = false;
-        if (!s.isEmpty() && parseFraudMessage(s, objectId, cardAgeText, age, isFraud)) {
+        if (!s.isEmpty()) {
             qDebug() << "[FraudManager] Received (no-nl fallback):" << s;
-            emit fraudDetected(objectId, cardAgeText, age, isFraud);
-            recvBuffer.clear();
+            if (parseFraudMessage(s, objectId, cardAgeText, ageGroup, isFraud)) {
+                emit fraudDetected(objectId, cardAgeText, ageGroup, isFraud);
+                recvBuffer.clear();
+            }
         }
 
         // 안전장치: 버퍼가 너무 커지면 초기화하여 메모리/무한루프 방지

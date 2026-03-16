@@ -31,7 +31,9 @@ cd /home/iam/SFEPS/server
 ./tunnel_vscode_db.sh [pi-ip]
 ```
 
-`[pi-ip]`가 생략되면 기본 `192.168.0.80`로 실행됩니다.
+
+`[pi-ip]`가 생략되면 기본 `192.168.0.101`로 실행됩니다.
+
 
 ### 2) VSCode 연결 정보
 
@@ -66,7 +68,11 @@ export SFEPS_AUTH_MAX_BYTES=256
 export SFEPS_AUDIO_MAX_BYTES=4194304
 export SFEPS_ALERT_MAX_CLIENTS=64
 export SFEPS_SOCKET_READ_TIMEOUT_MS=5000
+<<<<<<< HEAD
 export SFEPS_RTSPS_VERIFYHOST=192.168.0.80
+=======
+export SFEPS_RTSPS_VERIFYHOST=192.168.0.101
+>>>>>>> 7153fc9 (CCGBD-93 #in progress Qt Client 화면에 객체감지 바운딩박스 생성)
 
 export SFEPS_APP_TLS_ENABLE=0
 export SFEPS_APP_PLAINTEXT_ENABLE=1
