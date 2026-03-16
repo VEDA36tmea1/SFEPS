@@ -19,6 +19,9 @@ public:
 signals:
     void positionsUpdated(const QVariantList &list);
 
+private slots:
+    void flushPending();
+
 private:
     void attachPosSocketSignals();
 
@@ -26,6 +29,15 @@ private:
     QByteArray posRecvBuffer;
     QString lastPosHost;
     int lastPosPort = 0;
+    QTimer *m_batchTimer = nullptr;
+    // Use a map keyed by id to keep only the latest update per object (reduces duplicates)
+    QHash<QString, QVariantMap> m_pendingMap;
+    QList<QString> m_pendingOrder; // insertion order for trimming oldest
+    int m_maxPending = 100; // cap unique pending items to avoid UI overload
+    // Track last-seen timestamps per id and TTL for active items
+    QHash<QString, qint64> m_lastSeen;
+    int m_ttlMs = 2000; // milliseconds to keep an object without updates before dropping
+    QSet<QString> m_suspected; // IDs currently marked as suspected/fraud
 };
 
 #endif // POSITIONMANAGER_H

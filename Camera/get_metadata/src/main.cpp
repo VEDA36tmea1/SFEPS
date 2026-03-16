@@ -4,6 +4,13 @@
 #include "XMLParser.h"
 
 int main() {
+#ifdef _WIN32
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2,2), &wsaData) != 0) {
+        std::cerr << "WSAStartup failed" << std::endl;
+        return -1;
+    }
+#endif
     // 1. 객체 생성
     RTSPClient client;
     XMLParser parser;
@@ -20,14 +27,14 @@ int main() {
     std::string accumulated_xml = "";
     unsigned int last_timestamp = 0;
 
-    int sock = client.getSocket();
+    socket_t sock = client.getSocket();
 
     while (true) {
         // Keep-Alive (30초마다)
         client.sendHeartbeat();
 
         // 헤더 읽기
-        int read_len = recv(sock, header, 4, MSG_WAITALL);
+        int read_len = recv(sock, reinterpret_cast<char*>(header), 4, MSG_WAITALL);
         if (read_len <= 0) break;
 
         if (header[0] == '$') {
@@ -64,5 +71,8 @@ int main() {
     }
 
     delete[] big_buffer;
+#ifdef _WIN32
+    WSACleanup();
+#endif
     return 0;
 }

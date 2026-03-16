@@ -6,17 +6,25 @@
 MainWindow::MainWindow(QQuickItem *parent)
     : QQuickPaintedItem(parent),
       worker(nullptr),
-      m_reconnectTimer(new QTimer(this)),
+    m_reconnectTimer(new QTimer(this)),
+    m_updateTimer(nullptr),
       m_running(false),
       m_brightness(0),
       m_streamStatus("STOPPED"),
-      m_streamConnected(false)
+    m_streamConnected(false),
+    m_lastImageSize(0, 0)
+    ,m_hasPendingDetections(false)
 {
     // 성능 최적화: QQuickPaintedItem은 기본적으로 FBO(FramebufferObject)에 렌더링하도록 설정
     setRenderTarget(QQuickPaintedItem::FramebufferObject);
 
     m_reconnectTimer->setInterval(3000);
     connect(m_reconnectTimer, &QTimer::timeout, this, &MainWindow::attemptReconnect);
+
+    // Coalesce frequent detection updates to avoid flooding the UI thread
+    m_updateTimer = new QTimer(this);
+    m_updateTimer->setSingleShot(true);
+    connect(m_updateTimer, &QTimer::timeout, this, &MainWindow::onUpdateTimerTimeout);
 }
 
 MainWindow::~MainWindow()
@@ -108,12 +116,9 @@ void MainWindow::processFrame(const cv::Mat &frame)
     }
 
     QMutexLocker locker(&m_mutex);
-    
-    // 원본 프레임 저장 (워커와의 분리를 위해 복사)
-    currentFrame = frame.clone();
-    
-    // 화면 표시를 위한 가공
-    cv::Mat displayMat = currentFrame.clone();
+
+    // 화면 표시를 위한 가공 (single deep copy)
+    cv::Mat displayMat = frame.clone();
 
     // 1. 밝기 조절
     if (m_brightness != 0) {
@@ -139,8 +144,13 @@ void MainWindow::processFrame(const cv::Mat &frame)
                      displayMat.step, 
                      QImage::Format_RGB888).copy(); 
                      // Mat 데이터가 소멸될 수 있으므로 깊은 복사(Deep Copy) 필요
-    // notify image size change for QML normalization
-    emit imageSizeChanged();
+
+    // notify image size changes only when dimensions actually changed
+    const QSize newSize(m_image.width(), m_image.height());
+    if (m_lastImageSize != newSize) {
+        m_lastImageSize = newSize;
+        emit imageSizeChanged();
+    }
                      
     // 메인 스레드에 화면 갱신 요청
     update();
@@ -216,7 +226,23 @@ void MainWindow::paint(QPainter *painter)
 
         QPen pen(Qt::green);
         pen.setWidth(2);
-        if (!m_selectedDetectionId.isEmpty() && m_selectedDetectionId == id) {
+
+        // If detection carries a type/alert indicating suspected fare evasion,
+        // draw the box in red (give suspicion priority over selection).
+        bool suspected = false;
+        if (m.contains("type")) {
+            const QString t = m.value("type").toString().toLower();
+            if (t.contains("fraud") || t.contains("fare") || t.contains("susp")) suspected = true;
+        }
+        if (!suspected && m.contains("alert")) {
+            // some sources may provide an explicit alert boolean
+            if (m.value("alert").toBool()) suspected = true;
+        }
+
+        if (suspected) {
+            pen.setColor(Qt::red);
+            pen.setWidth(3);
+        } else if (!m_selectedDetectionId.isEmpty() && m_selectedDetectionId == id) {
             pen.setColor(Qt::yellow);
             pen.setWidth(3);
         }
@@ -236,19 +262,26 @@ void MainWindow::paint(QPainter *painter)
 void MainWindow::setDetections(const QVariantList &list)
 {
     QMutexLocker locker(&m_mutex);
-    m_detections = list;
-    qDebug() << "[MainWindow] setDetections count:" << m_detections.size();
-    for (const QVariant &v : m_detections) {
-        if (!v.canConvert<QVariantMap>()) continue;
-        const QVariantMap det = v.toMap();
-        const QString id = det.value("id").toString();
-        const double nx = det.value("x").toDouble();
-        const double ny = det.value("y").toDouble();
-        const double nw = det.value("w").toDouble();
-        const double nh = det.value("h").toDouble();
-        qDebug() << "[MainWindow] Detection" << id << "x=" << nx << "y=" << ny << "w=" << nw << "h=" << nh;
+    m_pendingDetections = list;
+    m_hasPendingDetections = true;
+    // Coalesce multiple rapid detection updates.
+    if (m_updateTimer && !m_updateTimer->isActive()) {
+        m_updateTimer->start(66);
     }
-    emit detectionsChanged();
+}
+
+void MainWindow::onUpdateTimerTimeout()
+{
+    {
+        QMutexLocker locker(&m_mutex);
+        if (m_hasPendingDetections) {
+            m_hasPendingDetections = false;
+            if (m_detections != m_pendingDetections) {
+                m_detections = m_pendingDetections;
+                emit detectionsChanged();
+            }
+        }
+    }
     update();
 }
 
@@ -356,6 +389,9 @@ bool MainWindow::openStream()
         return true;
     }
 
+        qputenv("OPENCV_FFMPEG_CAPTURE_OPTIONS",
+            QByteArray("rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0"));
+
     const QString rtspUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.101:8554/cam1");
     cap.open(rtspUrl.toStdString(), cv::CAP_FFMPEG);
     if (!cap.isOpened()) {
@@ -364,7 +400,11 @@ bool MainWindow::openStream()
     }
 
     cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
-    qDebug() << "[MainWindow] Stream open success:" << rtspUrl;
+    // Log stream and source frame size for diagnosing image-size/resolution
+    double srcW = cap.get(cv::CAP_PROP_FRAME_WIDTH);
+    double srcH = cap.get(cv::CAP_PROP_FRAME_HEIGHT);
+    qDebug() << "[MainWindow] Stream open success:" << rtspUrl << "source size:" << srcW << "x" << srcH;
+    emit imageSizeChanged();
     return true;
 }
 
@@ -372,7 +412,7 @@ void MainWindow::ensureWorkerRunning()
 {
     if (!worker) {
         worker = new VideoCaptureWorker(&cap, this);
-        connect(worker, &VideoCaptureWorker::newFrame, this, &MainWindow::processFrame);
+        connect(worker, &VideoCaptureWorker::newFrame, this, &MainWindow::processFrame, Qt::QueuedConnection);
         connect(worker, &VideoCaptureWorker::readFailed, this, &MainWindow::onReadFailed);
     }
 

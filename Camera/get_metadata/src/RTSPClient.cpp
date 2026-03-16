@@ -3,10 +3,20 @@
 #include <iostream>
 #include <cstring>
 
-RTSPClient::RTSPClient() : sock(-1), last_heartbeat(0) {}
+RTSPClient::RTSPClient() : sock(
+#ifdef _WIN32
+    INVALID_SOCKET
+#else
+    -1
+#endif
+), last_heartbeat(0) {}
 
 RTSPClient::~RTSPClient() {
+#ifdef _WIN32
+    if (sock != INVALID_SOCKET) closesocket(sock);
+#else
     if (sock != -1) close(sock);
+#endif
 }
 
 bool RTSPClient::connectToCamera() {
@@ -16,10 +26,25 @@ bool RTSPClient::connectToCamera() {
     serv_addr.sin_port = htons(CAMERA_PORT);
     inet_pton(AF_INET, CAMERA_IP, &serv_addr.sin_addr);
 
+#ifdef _WIN32
+    if (sock == INVALID_SOCKET) {
+        std::cerr << "❌ socket() failed" << std::endl;
+        return false;
+    }
+    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) == SOCKET_ERROR) {
+        std::cerr << "❌ Connection Failed" << std::endl;
+        return false;
+    }
+#else
+    if (sock < 0) {
+        std::cerr << "❌ socket() failed" << std::endl;
+        return false;
+    }
     if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
         std::cerr << "❌ Connection Failed" << std::endl;
         return false;
     }
+#endif
     std::cout << "✅ Connected to Camera!" << std::endl;
     return true;
 }
