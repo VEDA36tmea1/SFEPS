@@ -476,15 +476,14 @@ PY
                             echo 'missing env file: ${SFEPS_REMOTE_ENV_FILE}' >&2
                             exit 1
                           fi
-                          DEPLOY_ENV_FILE='/tmp/${SFEPS_TEST_CONTAINER_NAME}.env'
                           grep -Ev '^(SFEPS_APP_TLS_ENABLE|SFEPS_APP_PLAINTEXT_ENABLE|SFEPS_APP_TLS_CERT_FILE|SFEPS_APP_TLS_KEY_FILE)=' \
-                            '${SFEPS_REMOTE_ENV_FILE}' > \"\${DEPLOY_ENV_FILE}\"
+                            '${SFEPS_REMOTE_ENV_FILE}' > '/tmp/sfeps-server-test.env'
                           {
                             echo 'SFEPS_APP_TLS_ENABLE=0'
                             echo 'SFEPS_APP_PLAINTEXT_ENABLE=1'
-                          } >> \"\${DEPLOY_ENV_FILE}\"
+                          } >> '/tmp/sfeps-server-test.env'
                           if ! docker run -d --name '${SFEPS_TEST_CONTAINER_NAME}' --restart unless-stopped --network host \
-                            -v \"\${DEPLOY_ENV_FILE}:${SFEPS_CONTAINER_ENV_FILE}:ro\" \
+                            -v '/tmp/sfeps-server-test.env:${SFEPS_CONTAINER_ENV_FILE}:ro' \
                             -v '${SFEPS_REMOTE_PKI_DIR}:${SFEPS_REMOTE_PKI_DIR}:ro' \
                             -v '${SFEPS_VIDEO_DIR}:${SFEPS_VIDEO_DIR}' \
                             -e SFEPS_ENV_FILE='${SFEPS_CONTAINER_ENV_FILE}' \
@@ -555,15 +554,14 @@ PY
                             echo 'missing env file: ${SFEPS_REMOTE_ENV_FILE}' >&2
                             exit 1
                           fi
-                          DEPLOY_ENV_FILE='/tmp/${SFEPS_PROD_CONTAINER_NAME}.env'
                           grep -Ev '^(SFEPS_APP_TLS_ENABLE|SFEPS_APP_PLAINTEXT_ENABLE|SFEPS_APP_TLS_CERT_FILE|SFEPS_APP_TLS_KEY_FILE)=' \
-                            '${SFEPS_REMOTE_ENV_FILE}' > \"\${DEPLOY_ENV_FILE}\"
+                            '${SFEPS_REMOTE_ENV_FILE}' > '/tmp/sfeps-server-prod.env'
                           {
                             echo 'SFEPS_APP_TLS_ENABLE=0'
                             echo 'SFEPS_APP_PLAINTEXT_ENABLE=1'
-                          } >> \"\${DEPLOY_ENV_FILE}\"
+                          } >> '/tmp/sfeps-server-prod.env'
                           if ! docker run -d --name '${SFEPS_PROD_CONTAINER_NAME}' --restart unless-stopped --network host \
-                            -v \"\${DEPLOY_ENV_FILE}:${SFEPS_CONTAINER_ENV_FILE}:ro\" \
+                            -v '/tmp/sfeps-server-prod.env:${SFEPS_CONTAINER_ENV_FILE}:ro' \
                             -v '${SFEPS_REMOTE_PKI_DIR}:${SFEPS_REMOTE_PKI_DIR}:ro' \
                             -v '${SFEPS_VIDEO_DIR}:${SFEPS_VIDEO_DIR}' \
                             -e SFEPS_ENV_FILE='${SFEPS_CONTAINER_ENV_FILE}' \
