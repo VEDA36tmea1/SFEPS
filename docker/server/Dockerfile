@@ -10,7 +10,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libmariadb-dev \
     libmariadb-dev-compat \
-    default-libmysqlclient-dev \
     libtinyxml2-dev \
     libavcodec-dev \
     libavformat-dev \
@@ -18,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libswscale-dev \
     libasound2-dev \
     libssl-dev \
+ && [ -e /usr/include/mysql ] || ln -s /usr/include/mariadb /usr/include/mysql \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/sfeps
