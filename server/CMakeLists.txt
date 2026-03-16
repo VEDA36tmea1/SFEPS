@@ -17,6 +17,17 @@ find_package(OpenSSL REQUIRED)
 set(AUDIO_SPEAKER_UNIT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../hardware/Raspi-driver/Audio_Speaker_Unit)
 set(CAMERA_GET_METADATA_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../Camera/get_metadata)
 
+if(EXISTS "${CAMERA_GET_METADATA_DIR}/CMakeLists.txt")
+    add_subdirectory(${CAMERA_GET_METADATA_DIR} ${CMAKE_CURRENT_BINARY_DIR}/camera_get_metadata)
+else()
+    add_library(camera_metadata_parser STATIC
+        ${CAMERA_GET_METADATA_DIR}/src/XMLParser.cpp
+    )
+    target_include_directories(camera_metadata_parser PUBLIC
+        ${CAMERA_GET_METADATA_DIR}/inc
+    )
+endif()
+
 # 4. 실행 파일 (오디오 모듈 소스 포함)
 add_executable(smart_server
     src/main.cpp
@@ -55,6 +66,7 @@ target_include_directories(smart_server PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CAMERA_GET_METADATA_DIR}/inc
     ${AUDIO_SPEAKER_UNIT_DIR}/include
+    ${CAMERA_GET_METADATA_DIR}/inc
 )
 
 # 6. 라이브러리 링크 (ALSA 오디오 재생)

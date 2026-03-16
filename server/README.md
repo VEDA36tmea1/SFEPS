@@ -7,8 +7,6 @@ SFEPS 서버는 영상 녹화, 로그인 인증, RFID 수신, 음성 재생, 알
 서버 기동 전에 아래 값이 모두 설정되어 있어야 합니다.
 
 ```bash
-export RTSPS_TLS_CA=/etc/sfeps/pki/ca.crt
-
 export SFEPS_DB_HOST=localhost
 export SFEPS_DB_USER=pi
 export SFEPS_DB_PASS='***'
@@ -19,6 +17,7 @@ export SFEPS_DB_NAME_ANALYTICS=CCgbd
 
 누락된 값이 있으면 서버는 즉시 기동을 거부합니다.
 `SFEPS_DB_HOST`는 로컬 전용 모드로 `localhost`만 허용됩니다.
+서버는 카메라 스트림을 로컬 MediaMTX의 `rtsp://127.0.0.1:8554/cam1`에서 읽습니다.
 
 ## VSCode DB 확장 접속(권장)
 
@@ -31,9 +30,7 @@ cd /home/iam/SFEPS/server
 ./tunnel_vscode_db.sh [pi-ip]
 ```
 
-
-`[pi-ip]`가 생략되면 기본 `192.168.0.101`로 실행됩니다.
-
+`[pi-ip]`를 생략하면 스크립트 기본 호스트값으로 실행됩니다.
 
 ### 2) VSCode 연결 정보
 
@@ -68,8 +65,6 @@ export SFEPS_AUTH_MAX_BYTES=256
 export SFEPS_AUDIO_MAX_BYTES=4194304
 export SFEPS_ALERT_MAX_CLIENTS=64
 export SFEPS_SOCKET_READ_TIMEOUT_MS=5000
-export SFEPS_RTSPS_VERIFYHOST=192.168.0.101
-
 
 export SFEPS_APP_TLS_ENABLE=0
 export SFEPS_APP_PLAINTEXT_ENABLE=1
@@ -82,7 +77,8 @@ export SFEPS_APP_TLS_HANDSHAKE_TIMEOUT_MS=3000
 # export SFEPS_APP_TLS_KEY_FILE=/etc/sfeps/pki/server.key
 ```
 
-- `SFEPS_RTSPS_VERIFYHOST` 미설정 시 `RTSP_URL` 호스트를 자동 사용합니다.
+- `smart_server -> MediaMTX`는 로컬 루프백 `127.0.0.1:8554` 평문 RTSP를 사용합니다.
+- Qt 등 외부 앱이 서버에 붙는 구간은 `SFEPS_APP_TLS_ENABLE=1`일 때 TLS로 보호됩니다.
 - 메타데이터 XML은 packet 단위가 아닌 document 단위로 재조립 후 파싱합니다.
 - `SFEPS_META_XML_DOC_MAX_BYTES`는 `SFEPS_META_XML_BUFFER_MAX` 이하로 설정하세요.
 
@@ -214,15 +210,19 @@ sudo vi /etc/default/sfeps-rfid
 sudo cp hardware/Raspi-driver/RC522_RFID/systemd/sfeps-rfid-module.service /etc/systemd/system/sfeps-rfid-module.service
 sudo cp hardware/Raspi-driver/RC522_RFID/systemd/sfeps-rfid.service /etc/systemd/system/sfeps-rfid.service
 
-# 3) server 본 유닛 + drop-in 설치
+# 3) image processing 서비스 설치
+sudo cp server/systemd/sfeps-image-processing.service /etc/systemd/system/sfeps-image-processing.service
+
+# 4) server 본 유닛 + drop-in 설치
 sudo cp server/systemd/sfeps-server.service /etc/systemd/system/sfeps-server.service
 sudo mkdir -p /etc/systemd/system/sfeps-server.service.d
 sudo cp server/systemd/sfeps-server.service.d/rfid.conf /etc/systemd/system/sfeps-server.service.d/rfid.conf
+sudo cp server/systemd/sfeps-server.service.d/image-processing.conf /etc/systemd/system/sfeps-server.service.d/image-processing.conf
 
-# 4) 반영
+# 5) 반영
 sudo systemctl daemon-reload
 
-# 5) 자동시작
+# 6) 자동시작
 sudo systemctl enable --now sfeps-rfid-module.service
 sudo systemctl enable --now sfeps-server.service
 ```
@@ -233,10 +233,11 @@ sudo systemctl enable --now sfeps-server.service
 systemctl is-active sfeps-rfid-module
 systemctl is-active sfeps-server
 systemctl is-active sfeps-rfid
+systemctl is-active sfeps-image-processing
 lsmod | grep rc522
 ls -l /dev/rc522
 ls -l /tmp/rc522_events.sock
-journalctl -u sfeps-rfid-module -u sfeps-rfid -u sfeps-server -b
+journalctl -u sfeps-rfid-module -u sfeps-rfid -u sfeps-image-processing -u sfeps-server -b
 ```
 
 ### 검증 시나리오

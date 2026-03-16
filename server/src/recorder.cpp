@@ -12,7 +12,6 @@
 #include <ctime>
 #include <iostream>
 #include <limits>
-#include <unistd.h>
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -21,7 +20,7 @@ extern "C" {
 }
 
 namespace {
-constexpr const char* kRtspUrl = "rtsp://192.168.0.101:8554/cam1";
+constexpr const char* kRtspUrl = "rtsp://127.0.0.1:8554/cam1";
 constexpr int kSegmentDurationSec = 60;
 constexpr const char* kXmlDeclStart = "<?xml";
 constexpr const char* kMetadataStreamStartTag = "<tt:MetadataStream";
@@ -81,24 +80,6 @@ bool should_sample(std::uint64_t counter, std::size_t interval) {
     return (counter % interval) == 0;
 }
 
-std::string derive_verify_host_from_url(const std::string& url) {
-    const std::size_t scheme_pos = url.find("://");
-    const std::size_t host_start = (scheme_pos == std::string::npos) ? 0 : scheme_pos + 3;
-    if (host_start >= url.size()) return std::string();
-
-    if (url[host_start] == '[') {
-        const std::size_t host_end = url.find(']', host_start + 1);
-        if (host_end == std::string::npos || host_end <= host_start + 1) return std::string();
-        return url.substr(host_start + 1, host_end - host_start - 1);
-    }
-
-    const std::size_t host_end = url.find_first_of(":/", host_start);
-    if (host_end == std::string::npos) {
-        return url.substr(host_start);
-    }
-    if (host_end <= host_start) return std::string();
-    return url.substr(host_start, host_end - host_start);
-}
 } // namespace
 
 namespace {
@@ -321,35 +302,6 @@ bool RTSPRecorder::connect_and_record() {
     AVDictionary* opts = nullptr;
     av_dict_set(&opts, "rtsp_transport", "tcp", 0);
     av_dict_set(&opts, "stimeout", "5000000", 0); 
-
-    const char* tls_ca = std::getenv("RTSPS_TLS_CA");
-    if (tls_ca == nullptr || tls_ca[0] == '\0') {
-        // std::cerr << "[Error] RTSPS_TLS_CA is not set (fail-closed)." << std::endl;
-        av_dict_free(&opts);
-        return false;
-    }
-    if (access(tls_ca, R_OK) != 0) {
-        // std::cerr << "[Error] RTSPS_TLS_CA is not readable: " << tls_ca << std::endl;
-        av_dict_free(&opts);
-        return false;
-    }
-
-    const char* verify_host_env = std::getenv("SFEPS_RTSPS_VERIFYHOST");
-    std::string verify_host;
-    if (verify_host_env != nullptr && verify_host_env[0] != '\0') {
-        verify_host = verify_host_env;
-    } else {
-        verify_host = derive_verify_host_from_url(kRtspUrl);
-    }
-    if (verify_host.empty()) {
-        // std::cerr << "[Error] Unable to resolve TLS verify host from RTSP_URL." << std::endl;
-        av_dict_free(&opts);
-        return false;
-    }
-
-    av_dict_set(&opts, "tls_verify", "1", 0);
-    av_dict_set(&opts, "ca_file", tls_ca, 0);
-    av_dict_set(&opts, "verifyhost", verify_host.c_str(), 0);
     
     input_ctx = avformat_alloc_context();
     if (!input_ctx) {

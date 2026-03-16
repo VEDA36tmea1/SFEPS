@@ -1,12 +1,12 @@
 # SFEPS Security Hardening Summary
 
-최종 갱신: 2026-02-25
+최종 갱신: 2026-03-16
 
 ## 1) 적용 목표
 
 현재 서버 보안 강화의 목적은 다음 3가지입니다.
 - DB 로컬 전용 접근 강제 (`localhost`만 허용)
-- RTSPS 인증서 검증 강제 (`tls_verify=0` 제거)
+- `smart_server -> MediaMTX` 로컬 전용 연결 고정 (`127.0.0.1`)
 - 로그인 보안 강화 (서버측 5회 실패 30초 락아웃)
 
 ## 2) 현재 적용된 보안 정책
@@ -17,13 +17,12 @@
   - `SFEPS_DB_HOST`는 `localhost`만 허용
   - 미설정 시 기본값 `localhost` 적용
 
-### B. RTSPS 인증서 검증 강제
+### B. MediaMTX 로컬 루프백 연결
 - 적용 코드: `server/src/recorder.cpp`
 - 핵심 동작:
-  - `RTSPS_TLS_CA` 미설정/읽기불가 시 즉시 실패
-  - `tls_verify=1`
-  - `ca_file=<RTSPS_TLS_CA>`
-  - `verifyhost=192.168.0.101`
+  - `smart_server`는 `rtsp://127.0.0.1:8554/cam1`로 로컬 MediaMTX에만 접속
+  - `smart_server -> MediaMTX` 구간은 루프백 내부 연결이라 별도 TLS 미사용
+  - 외부 Qt/앱 클라이언트 보호는 앱 포트 TLS(`SFEPS_APP_TLS_ENABLE`)로 분리 운영
 
 ### C. 로그인 락아웃 정책 (서버 측)
 - 적용 코드: `server/src/main.cpp` (`run_login_auth`)
@@ -59,9 +58,6 @@
 ## 4) 런타임 필수 환경변수
 
 ```bash
-# TLS 검증용
-RTSPS_TLS_CA=/etc/sfeps/pki/ca.crt
-
 # DB 접속정보 (fail-closed)
 SFEPS_DB_HOST=localhost
 SFEPS_DB_USER=pi
@@ -75,7 +71,6 @@ SFEPS_DB_NAME_ANALYTICS=CCgbd
 ### 실행 스크립트
 - 파일: `server/run_server.sh`
 - 역할:
-  - RTSPS TLS env 검사
   - DB host 로컬 전용 정책 검사
   - DB env 필수값 검사
   - 누락 시 즉시 종료(fail-closed)
@@ -119,7 +114,6 @@ mysql -h localhost -u pi -p -e "SELECT 1;"
 ### fail-closed 오류 예시
 - `missing required env: SFEPS_DB_PASS`
 - `SFEPS_DB_HOST must be localhost (local-only mode)`
-- `RTSPS_TLS_CA is not readable`
 
 이 경우는 보안 정책상 정상 동작입니다.
 
