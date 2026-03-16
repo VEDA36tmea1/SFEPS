@@ -1,54 +1,31 @@
 #ifndef POSITIONMANAGER_H
 #define POSITIONMANAGER_H
 
-#include <QByteArray>
 #include <QObject>
-#include <QProcessEnvironment>
-#include <QSslSocket>
-#include <QString>
-#include <QTimer>
 #include <QTcpSocket>
+#include <QTimer>
+#include <QByteArray>
+#include <QVariant>
 
-class PositionManager : public QObject
-{
+class PositionManager : public QObject {
     Q_OBJECT
 public:
     explicit PositionManager(QObject *parent = nullptr);
-    ~PositionManager() override;
+    ~PositionManager();
 
-    Q_INVOKABLE void connectToServer(const QString &host = "192.168.0.80", int port = 5558);
-    Q_INVOKABLE void disconnectFromServer();
+    Q_INVOKABLE void connectPositionServer(const QString &host = "192.168.0.101", int port = 5558);
+    Q_INVOKABLE void sendPositionCommand(const QString &msg);
 
 signals:
-    void objectPositionReceived(const QString &objectId,
-                                double left,
-                                double top,
-                                double right,
-                                double bottom,
-                                double x,
-                                double y,
-                                bool isFraud,
-                                const QString &tagTime);
-    void objectEnded(const QString &objectId, const QString &reason);
-
-private slots:
-    void onReadyRead();
-    void onConnected();
-    void onDisconnected();
-    void retryConnection();
-    void onSocketError(QAbstractSocket::SocketError socketError);
-    void onSslErrors(const QList<QSslError> &errors);
+    void positionsUpdated(const QVariantList &list);
 
 private:
-    void attachSocketSignals();
-    bool resolvePositionTlsEnabled() const;
+    void attachPosSocketSignals();
 
-    QTcpSocket *socket;
-    QTimer *retryTimer;
-    QString lastHost;
-    int lastPort;
-    QByteArray recvBuffer;
-    bool m_positionTlsEnabled = false;
+    QTcpSocket *posSocket = nullptr;
+    QByteArray posRecvBuffer;
+    QString lastPosHost;
+    int lastPosPort = 0;
 };
 
 #endif // POSITIONMANAGER_H
