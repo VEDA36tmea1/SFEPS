@@ -38,6 +38,9 @@ pipeline {
         SFEPS_REMOTE_MYSQL_SOCK_DIR = "${env.SFEPS_REMOTE_MYSQL_SOCK_DIR ?: '/run/mysqld'}"
         SFEPS_VIDEO_DIR = "${env.SFEPS_VIDEO_DIR ?: '/home/iam/SFEPS/videos'}"
         SFEPS_HEALTH_PORT = "${env.SFEPS_HEALTH_PORT ?: '5555'}"
+        SFEPS_SLACK_NOTIFY = "${env.SFEPS_SLACK_NOTIFY ?: '1'}"
+        SFEPS_SLACK_WEBHOOK_CREDENTIALS_ID = "${env.SFEPS_SLACK_WEBHOOK_CREDENTIALS_ID ?: 'sfeps-slack-webhook'}"
+        SFEPS_SLACK_CHANNEL = "${env.SFEPS_SLACK_CHANNEL ?: ''}"
 
     }
 
@@ -630,6 +633,88 @@ PY
             '''
             junit testResults: 'reports/*.xml', allowEmptyResults: true
             archiveArtifacts artifacts: 'reports/*.xml,reports/test-report.html,reports/test-report.pdf,reports/test-report.xls,reports/test-report.xlsx,tests/real_server.log,.ci-mediamtx.log,.ci-ffmpeg-publisher.log', allowEmptyArchive: true
+
+            script {
+                def notifyFlag = (env.SFEPS_SLACK_NOTIFY ?: '0').trim().toLowerCase()
+                if (!(notifyFlag in ['1', 'true', 'yes', 'on'])) {
+                    echo "Slack notification disabled (SFEPS_SLACK_NOTIFY=${env.SFEPS_SLACK_NOTIFY})."
+                    return
+                }
+
+                def status = currentBuild.currentResult ?: 'UNKNOWN'
+                def emoji = '[INFO]'
+                if (status == 'SUCCESS') {
+                    emoji = '[SUCCESS]'
+                } else if (status == 'FAILURE') {
+                    emoji = '[FAILURE]'
+                } else if (status == 'UNSTABLE') {
+                    emoji = '[UNSTABLE]'
+                } else if (status == 'ABORTED') {
+                    emoji = '[ABORTED]'
+                }
+
+                env.SFEPS_NOTIFY_STATUS = status
+                env.SFEPS_NOTIFY_EMOJI = emoji
+
+                try {
+                    withCredentials([
+                        string(
+                            credentialsId: "${env.SFEPS_SLACK_WEBHOOK_CREDENTIALS_ID}",
+                            variable: 'SLACK_WEBHOOK_URL'
+                        )
+                    ]) {
+                        sh '''
+                            set +e
+                            python3 - <<'PY'
+import json
+import os
+import urllib.request
+
+webhook = os.environ.get("SLACK_WEBHOOK_URL", "").strip()
+if not webhook:
+    raise SystemExit(0)
+
+status = os.environ.get("SFEPS_NOTIFY_STATUS", "UNKNOWN")
+emoji = os.environ.get("SFEPS_NOTIFY_EMOJI", "[INFO]")
+job = os.environ.get("JOB_NAME", "unknown-job")
+build_no = os.environ.get("BUILD_NUMBER", "?")
+branch = os.environ.get("SFEPS_CI_BRANCH") or os.environ.get("BRANCH_NAME", "unknown")
+build_url = os.environ.get("BUILD_URL", "")
+image_ref = os.environ.get("SFEPS_IMAGE_REF", "")
+channel = os.environ.get("SFEPS_SLACK_CHANNEL", "").strip()
+
+lines = [
+    f"{emoji} *{status}* `{job} #{build_no}`",
+    f"- branch: `{branch}`",
+]
+if image_ref:
+    lines.append(f"- image: `{image_ref}`")
+if build_url:
+    lines.append(f"- build: <{build_url}|Open Jenkins Build>")
+
+payload = {"text": "\n".join(lines)}
+if channel:
+    payload["channel"] = channel
+
+req = urllib.request.Request(
+    webhook,
+    data=json.dumps(payload).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+)
+with urllib.request.urlopen(req, timeout=10) as resp:
+    resp.read()
+PY
+                            rc=$?
+                            if [ "$rc" -ne 0 ]; then
+                              echo "Slack notification failed (non-fatal), exit=$rc"
+                            fi
+                            exit 0
+                        '''
+                    }
+                } catch (err) {
+                    echo "Slack notification skipped (non-fatal): ${err}"
+                }
+            }
         }
     }
 }
