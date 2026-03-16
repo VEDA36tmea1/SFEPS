@@ -480,15 +480,10 @@ PY
                             '${SFEPS_IMAGE_REF}'"
 
                         ssh ${SSH_OPTS} "${REMOTE}" "set -eu
-                          i=1
-                          while [ \"\$i\" -le 45 ]; do
-                            if timeout 1 bash -lc 'cat </dev/null >/dev/tcp/127.0.0.1/${SFEPS_HEALTH_PORT}' 2>/dev/null; then
-                              echo 'test deploy health check OK on port ${SFEPS_HEALTH_PORT}'
-                              exit 0
-                            fi
-                            i=\$((i + 1))
-                            sleep 2
-                          done
+                          if timeout 90 bash -lc 'while ! cat </dev/null >/dev/tcp/127.0.0.1/${SFEPS_HEALTH_PORT} 2>/dev/null; do sleep 2; done'; then
+                            echo 'test deploy health check OK on port ${SFEPS_HEALTH_PORT}'
+                            exit 0
+                          fi
                           echo 'test deploy health check FAILED' >&2
                           docker logs --tail 120 '${SFEPS_TEST_CONTAINER_NAME}' || true
                           exit 1"
@@ -549,15 +544,10 @@ PY
                             '${SFEPS_IMAGE_REF}'"
 
                         ssh ${SSH_OPTS} "${REMOTE}" "set -eu
-                          i=1
-                          while [ \"\$i\" -le 45 ]; do
-                            if timeout 1 bash -lc 'cat </dev/null >/dev/tcp/127.0.0.1/${SFEPS_HEALTH_PORT}' 2>/dev/null; then
-                              echo 'production deploy health check OK on port ${SFEPS_HEALTH_PORT}'
-                              exit 0
-                            fi
-                            i=\$((i + 1))
-                            sleep 2
-                          done
+                          if timeout 90 bash -lc 'while ! cat </dev/null >/dev/tcp/127.0.0.1/${SFEPS_HEALTH_PORT} 2>/dev/null; do sleep 2; done'; then
+                            echo 'production deploy health check OK on port ${SFEPS_HEALTH_PORT}'
+                            exit 0
+                          fi
                           echo 'production deploy health check FAILED' >&2
                           docker logs --tail 120 '${SFEPS_PROD_CONTAINER_NAME}' || true
                           exit 1"
