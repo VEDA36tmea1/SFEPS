@@ -10,6 +10,7 @@
 #include <functional>
 #include <iostream>
 #include <limits>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -37,10 +38,54 @@ constexpr int AUTH_PORT = 5555;
 constexpr int AUDIO_PORT = 5556;
 constexpr int ALERT_PORT = 5557;
 constexpr int POSITION_PORT = 5558;
+constexpr const char* FRAUD_IMAGE_SOURCE_PATH =
+    "/home/iam/SFEPS/Camera/image_processing/3_best_shot.jpg";
+constexpr const char* FRAUD_IMAGE_SAVE_DIR = "/home/iam/SFEPS/event_images";
 
 std::atomic<bool> g_running(true);
 
 namespace {
+
+std::string sanitize_filename_token(const std::string& raw) {
+    std::string out;
+    out.reserve(raw.size());
+    for (unsigned char c : raw) {
+        if (std::isalnum(c) != 0 || c == '-' || c == '_') {
+            out.push_back(static_cast<char>(c));
+        } else {
+            out.push_back('_');
+        }
+    }
+    return out.empty() ? "unknown" : out;
+}
+
+void save_fraud_event_image(const AnalyticsProcessor::FraudBBoxPayload& payload) {
+    static std::mutex save_mutex;
+    std::lock_guard<std::mutex> lock(save_mutex);
+
+    try {
+        const fs::path source(FRAUD_IMAGE_SOURCE_PATH);
+        if (!fs::exists(source) || !fs::is_regular_file(source)) {
+            std::cout << "[main.cpp] [FraudImage] source image missing: " << source << std::endl;
+            return;
+        }
+
+        const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::system_clock::now().time_since_epoch())
+                                .count();
+        const fs::path target =
+            fs::path(FRAUD_IMAGE_SAVE_DIR) /
+            ("fraud_" + std::to_string(now_ms) + "_" +
+             sanitize_filename_token(payload.object_id) + ".jpg");
+
+        fs::copy_file(source, target, fs::copy_options::overwrite_existing);
+        std::cout << "[main.cpp] [FraudImage] saved event image: " << target
+                  << " (object_id=" << payload.object_id << ")" << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "[main.cpp] [FraudImage] failed to save event image: " << e.what()
+                  << " (object_id=" << payload.object_id << ")" << std::endl;
+    }
+}
 
 std::string trim_copy(const std::string& s) {
     size_t start = 0;
@@ -378,8 +423,11 @@ int main() {
         if (!fs::exists(VIDEO_SAVE_DIR)) {
             fs::create_directories(VIDEO_SAVE_DIR);
         }
+        if (!fs::exists(FRAUD_IMAGE_SAVE_DIR)) {
+            fs::create_directories(FRAUD_IMAGE_SAVE_DIR);
+        }
     } catch (const std::exception& e) {
-        std::cerr << "[Fatal] Failed to create video directory: " << e.what() << std::endl;
+        std::cerr << "[Fatal] Failed to create runtime media directory: " << e.what() << std::endl;
         return -1;
     }
 
@@ -414,6 +462,7 @@ int main() {
         esp_payload.right = payload.right;
         esp_payload.bottom = payload.bottom;
         esp_manager.publishFraudBbox(esp_payload);
+        save_fraud_event_image(payload);
     });
     if (sec_cfg.esp_tcp_enable && !esp_manager.start(g_running)) {
         std::cerr << "[Fatal] ESP manager startup failed." << std::endl;

@@ -20,7 +20,7 @@ extern "C" {
 }
 
 namespace {
-constexpr const char* kRtspUrl = "rtsp://127.0.0.1:8554/cam1";
+constexpr const char* kDefaultRtspUrl = "rtsp://127.0.0.1:8554/cam1";
 constexpr int kSegmentDurationSec = 60;
 constexpr const char* kXmlDeclStart = "<?xml";
 constexpr const char* kMetadataStreamStartTag = "<tt:MetadataStream";
@@ -72,6 +72,12 @@ std::size_t load_env_size_t(const char* name, std::size_t default_value, std::si
         return default_value;
     }
     return static_cast<std::size_t>(parsed);
+}
+
+std::string load_env_string(const char* name, const char* default_value) {
+    const char* raw = std::getenv(name);
+    if (raw == nullptr || raw[0] == '\0') return std::string(default_value);
+    return std::string(raw);
 }
 
 bool should_sample(std::uint64_t counter, std::size_t interval) {
@@ -284,6 +290,7 @@ void RTSPRecorder::close_current_file() {
 }
 
 bool RTSPRecorder::connect_and_record() {
+    const std::string rtsp_url = load_env_string("SFEPS_RTSP_URL", kDefaultRtspUrl);
     const std::size_t max_meta_packet_bytes = load_env_size_t("SFEPS_META_MAX_PACKET_BYTES", 65536, 1);
     const std::size_t bad_meta_streak_limit = load_env_size_t("SFEPS_META_BAD_STREAK_LIMIT", 20, 1);
     const std::size_t drop_log_interval = load_env_size_t("SFEPS_DROP_LOG_INTERVAL", 100, 1);
@@ -310,9 +317,9 @@ bool RTSPRecorder::connect_and_record() {
     }
     input_ctx->interrupt_callback.callback = ffmpeg_interrupt_cb;
     input_ctx->interrupt_callback.opaque = &running_flag;
-    // std::cout << "[recorder.cpp] " << "[System] Connecting to " << kRtspUrl << " (Secure Mode)..." << std::endl;
+    // std::cout << "[recorder.cpp] " << "[System] Connecting to " << rtsp_url << " ..." << std::endl;
     
-    if (avformat_open_input(&input_ctx, kRtspUrl, nullptr, &opts) != 0) {
+    if (avformat_open_input(&input_ctx, rtsp_url.c_str(), nullptr, &opts) != 0) {
         av_dict_free(&opts);
         // std::cerr << "[Error] Failed to connect! Check IP, Port(8332), or Cert." << std::endl;
         if (input_ctx) {

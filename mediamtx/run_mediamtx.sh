@@ -33,7 +33,26 @@ Options:
 
 Env:
   SFEPS_MTX_DEBUG_SOURCE=1 enables source debug by default.
+  SFEPS_MTX_ENV_FILE=/path/to/.env
+  SFEPS_MTX_CAM1_SOURCE=rtsp://user:pass@ip/path
 EOF
+}
+
+# Auto-load env file(s) from mediamtx directory.
+# Priority:
+# 1) SFEPS_MTX_ENV_FILE (if explicitly provided)
+# 2) .env.local (optional)
+# 3) .env (optional)
+load_env_file() {
+  local env_file="$1"
+  if [[ ! -r "${env_file}" ]]; then
+    return 1
+  fi
+  set -a
+  # shellcheck disable=SC1090
+  source "${env_file}"
+  set +a
+  return 0
 }
 
 parse_source_values() {
@@ -293,6 +312,21 @@ done
 
 if [[ -n "${POSITIONAL_CONFIG}" ]]; then
   CONFIG_PATH="${POSITIONAL_CONFIG}"
+fi
+
+if [[ -n "${SFEPS_MTX_ENV_FILE:-}" ]]; then
+  if ! load_env_file "${SFEPS_MTX_ENV_FILE}"; then
+    echo "[run_mediamtx] SFEPS_MTX_ENV_FILE is not readable: ${SFEPS_MTX_ENV_FILE}" >&2
+    exit 1
+  fi
+else
+  load_env_file "${SCRIPT_DIR}/.env.local" || true
+  load_env_file "${SCRIPT_DIR}/.env" || true
+fi
+
+if [[ -n "${SFEPS_MTX_CAM1_SOURCE:-}" ]]; then
+  export MTX_PATHS_CAM1_SOURCE="${SFEPS_MTX_CAM1_SOURCE}"
+  echo "[run_mediamtx] overriding cam1 source from SFEPS_MTX_CAM1_SOURCE"
 fi
 
 if [[ ! -x "${BIN_PATH}" ]]; then
