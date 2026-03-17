@@ -261,6 +261,14 @@ void AnalyticsProcessor::setFraudBBoxCallback(FraudBBoxCallback callback) {
     fraud_bbox_callback = std::move(callback);
 }
 
+void AnalyticsProcessor::setRfidPairedCallback(RfidPairedCallback callback) {
+    rfid_paired_callback = std::move(callback);
+}
+
+void AnalyticsProcessor::setOutlineDecisionCallback(OutlineDecisionCallback callback) {
+    outline_decision_callback = std::move(callback);
+}
+
 bool AnalyticsProcessor::getObjectPositionSnapshot(const std::string& object_id,
                                                    ObjectPositionSnapshot& out) const {
     constexpr std::size_t kMaxObjectIdBytes = 128;
@@ -437,12 +445,7 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
         search_pos = msg_end;
     }
 
-    const std::uint64_t parsed_ok = ++parsed_xml_ok_count;
-    if (should_sample(parsed_ok, std::max<std::size_t>(1000, drop_log_interval))) {
-        std::cout << "[analytics.cpp] [MetaXML] parsed_ok=" << parsed_ok
-                  << ", human_object_candidates=" << parsed_objects.size()
-                  << ", events=" << parsed_events.size() << std::endl;
-    }
+    ++parsed_xml_ok_count;
 
     if (parsed_objects.empty() && parsed_events.empty()) return;
 
@@ -452,6 +455,7 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
     const auto now = std::chrono::steady_clock::now();
     std::vector<std::string> outbound_alerts;
     std::vector<FraudBBoxPayload> outbound_esp_bbox;
+    std::vector<OutlineDecisionPayload> outbound_outline_decisions;
 
     {
         std::lock_guard<std::mutex> lock(mtx);
@@ -615,6 +619,14 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
                 outbound_alerts.emplace_back(merged_line, static_cast<std::size_t>(n));
             }
 
+            OutlineDecisionPayload outline_payload;
+            outline_payload.object_id = final_out.object_id;
+            outline_payload.card_age_text = final_out.card_age_text;
+            outline_payload.age = final_out.age;
+            outline_payload.is_fraud = final_out.is_fraud;
+            outline_payload.tag_time = final_out.outline_tag_time;
+            outbound_outline_decisions.push_back(std::move(outline_payload));
+
             if (final_out.is_fraud &&
                 final_out.bbox_left >= 0.0f && final_out.bbox_top >= 0.0f &&
                 final_out.bbox_right >= final_out.bbox_left &&
@@ -646,6 +658,11 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
     if (fraud_bbox_callback) {
         for (const auto& payload : outbound_esp_bbox) {
             fraud_bbox_callback(payload);
+        }
+    }
+    if (outline_decision_callback) {
+        for (const auto& payload : outbound_outline_decisions) {
+            outline_decision_callback(payload);
         }
     }
     if (should_notify_worker) {
@@ -691,6 +708,9 @@ void AnalyticsProcessor::onRfidRead(const std::string& card_age_text_raw) {
         std::cout << "[analytics.cpp] [Matcher] RFID paired with enterline object_id="
                   << paired_object_id << ", card_age_text=" << card_age.canonical_text
                   << ", paired_count=" << paired_count << std::endl;
+    }
+    if (rfid_paired_callback && !paired_object_id.empty()) {
+        rfid_paired_callback(paired_object_id);
     }
 }
 

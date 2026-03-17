@@ -250,33 +250,15 @@ void DBLogger::processQueue() {
                       << deleted_analytics << std::endl;
         }
 
-        my_ulonglong deleted_login = 0;
-        if (execute_delete(kLoginLogRetentionDeleteQuery, "login_logs(created_at)",
-                           &deleted_login) == 0 &&
-            deleted_login > 0) {
-            std::cout << "[log.cpp] [Cleanup] deleted login_logs rows: "
-                      << deleted_login << std::endl;
-        }
+        execute_delete(kLoginLogRetentionDeleteQuery, "login_logs(created_at)", nullptr);
 
-        my_ulonglong deleted_recordings = 0;
         int recording_cleanup_err = execute_delete(
             kRecordingRetentionDeleteByCreatedAtQuery, "recordings(created_at)",
-            &deleted_recordings);
-        if (recording_cleanup_err == 0) {
-            if (deleted_recordings > 0) {
-                std::cout << "[log.cpp] [Cleanup] deleted recordings rows: "
-                          << deleted_recordings << std::endl;
-            }
-        } else if (recording_cleanup_err == 1054) {
-            deleted_recordings = 0;
-            if (execute_delete(kRecordingRetentionDeleteByFilenameQuery,
-                               "recordings(filename timestamp fallback)",
-                               &deleted_recordings) == 0 &&
-                deleted_recordings > 0) {
-                std::cout << "[log.cpp] [Cleanup] deleted recordings rows (filename fallback): "
-                          << deleted_recordings << std::endl;
-            }
-        } else {
+            nullptr);
+        if (recording_cleanup_err == 1054) {
+            execute_delete(kRecordingRetentionDeleteByFilenameQuery,
+                           "recordings(filename timestamp fallback)", nullptr);
+        } else if (recording_cleanup_err != 0) {
             std::cerr
                 << "[log.cpp] [DB Error] recordings cleanup skipped due to non-recoverable error."
                 << std::endl;

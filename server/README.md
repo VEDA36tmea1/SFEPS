@@ -292,7 +292,9 @@ journalctl -u sfeps-server -f
 ## 주요 경로
 
 - 영상 저장: `/home/iam/SFEPS/videos`
-- 부정승차 이벤트 이미지 저장: `/home/iam/SFEPS/event_images`
+- 부정승차 이벤트 이미지 pending: `/home/iam/SFEPS/event_images/pending`
+- 부정승차 이벤트 이미지 keep(fraud): `/home/iam/SFEPS/event_images/fraud`
+- 부정승차 이벤트 이미지 failed(예외): `/home/iam/SFEPS/event_images/failed`
 - RFID 소켓: `/tmp/rc522_events.sock`
 
 ## 주요 기능
@@ -308,6 +310,9 @@ journalctl -u sfeps-server -f
 - 메타데이터 패킷/큐 상한 및 XML 재조립 제한 + 샘플링 드롭 로그 (`SFEPS_META_*`, `SFEPS_ANALYTICS_QUEUE_MAX`)
 - XML 메타데이터에서 `Type=Human` 객체 `ObjectId`를 pending으로 등록하고 RFID와 FIFO 매칭
 - RFID `text`가 `성인/adult`가 아니면 부정승차(`fraud=Y`)로 판정
+- RFID 매칭 시점에 `3_best_shot.jpg`를 `object_id` 기반 파일명으로 pending 스냅샷 보관
+- outline 판정 시 `fraud=N`은 pending 즉시 삭제, `fraud=Y`는 fraud 디렉터리로 이동 보존
+- 이미지 운영 로그 키워드: `RFID_IMAGE_SNAP`, `RFID_IMAGE_DELETE`, `RFID_IMAGE_KEEP`
 - `fraud=Y` 건만 `analytics_logs(object_id, card_age_text, age, is_fraud, created_at)`에 저장
 - 알림 포맷: `FRAUD|object_id|card_age_text|age_group|is_fraud`
 - 음성 RAW PCM 수신 후 `AudioRingBuffer + AudioPlayback(ALSA)` 경로로 재생

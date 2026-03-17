@@ -223,11 +223,6 @@ void RTSPRecorder::process_meta_xml_chunk(const std::uint8_t* data,
         std::string xml_doc(meta_xml_buffer.data() + start_pos, doc_size);
         analytics.publishRaw(xml_doc);
         ++meta_xml_extracted_docs;
-        if (should_sample(meta_xml_extracted_docs, std::max<std::size_t>(1000, drop_log_interval))) {
-            std::cout << "[recorder.cpp] [MetaXML] extracted_docs=" << meta_xml_extracted_docs
-                      << ", buffer_bytes=" << meta_xml_buffer.size()
-                      << ", dropped_docs=" << meta_xml_dropped_docs << std::endl;
-        }
         meta_xml_read_pos = doc_end;
         if (meta_xml_read_pos >= kMetaXmlCompactionThreshold) {
             compact_meta_xml_buffer();
