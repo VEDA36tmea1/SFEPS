@@ -65,6 +65,7 @@ export SFEPS_AUTH_MAX_BYTES=256
 export SFEPS_AUDIO_MAX_BYTES=4194304
 export SFEPS_ALERT_MAX_CLIENTS=64
 export SFEPS_SOCKET_READ_TIMEOUT_MS=5000
+export SFEPS_AUTH_DEAUTH_GRACE_MS=3000
 
 export SFEPS_APP_TLS_ENABLE=0
 export SFEPS_APP_PLAINTEXT_ENABLE=1
@@ -79,6 +80,7 @@ export SFEPS_APP_TLS_HANDSHAKE_TIMEOUT_MS=3000
 
 - `smart_server -> MediaMTX`는 로컬 루프백 `127.0.0.1:8554` 평문 RTSP를 사용합니다.
 - Qt 등 외부 앱이 서버에 붙는 구간은 `SFEPS_APP_TLS_ENABLE=1`일 때 TLS로 보호됩니다.
+- `SFEPS_AUTH_DEAUTH_GRACE_MS`는 Position 연결 종료 후 인증 IP 해제까지의 유예 시간(ms)입니다.
 - 메타데이터 XML은 packet 단위가 아닌 document 단위로 재조립 후 파싱합니다.
 - `SFEPS_META_XML_DOC_MAX_BYTES`는 `SFEPS_META_XML_BUFFER_MAX` 이하로 설정하세요.
 
