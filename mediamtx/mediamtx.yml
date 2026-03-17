@@ -22,6 +22,7 @@ paths:
   # [카메라 1] 설정
   cam1:
     # 소스: 실제 IP 카메라 주소
+    # run_mediamtx.sh에서 SFEPS_MTX_CAM1_SOURCE로 덮어쓸 수 있습니다.
     source: rtsp://admin:CCgbdCCgbd@192.168.0.84/profile2/media.smp
     
     # 필요할 때만 카메라와 연결 (대역폭 절약)

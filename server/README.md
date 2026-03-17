@@ -290,6 +290,7 @@ journalctl -u sfeps-server -f
 ## 주요 경로
 
 - 영상 저장: `/home/iam/SFEPS/videos`
+- 부정승차 이벤트 이미지 저장: `/home/iam/SFEPS/event_images`
 - RFID 소켓: `/tmp/rc522_events.sock`
 
 ## 주요 기능
