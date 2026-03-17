@@ -75,6 +75,13 @@ void mark_ip_authenticated(const std::string& ip) {
     sessions.ips.insert(ip);
 }
 
+bool unmark_ip_authenticated(const std::string& ip) {
+    if (ip.empty()) return false;
+    auto& sessions = authenticated_ip_sessions();
+    std::lock_guard<std::mutex> lock(sessions.mtx);
+    return sessions.ips.erase(ip) > 0;
+}
+
 bool is_ip_authenticated(const std::string& ip) {
     if (ip.empty()) return false;
     auto& sessions = authenticated_ip_sessions();
@@ -446,12 +453,14 @@ void run_position_stream_service(std::atomic<bool>& running,
                                  EspManager& esp_manager) {
     struct PlainClientState {
         int fd = -1;
+        std::string client_ip;
         std::string recv_buffer;
         std::string active_object_id;
     };
 
     struct TlsClientState {
         TlsClientConnection conn {};
+        std::string client_ip;
         std::string recv_buffer;
         std::string active_object_id;
     };
@@ -529,9 +538,62 @@ void run_position_stream_service(std::atomic<bool>& running,
     std::unordered_map<std::string, ObjLastSentState> obj_last_sent;
     std::vector<AnalyticsProcessor::ObjectPositionSnapshot> obj_snapshots;
     std::unordered_set<std::string> obj_ids_this_tick;
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> pending_deauth;
+    const auto deauth_grace =
+        std::chrono::milliseconds(std::max(0, sec_cfg.auth_deauth_grace_ms));
     constexpr std::size_t kMaxRecvBuffer = 16 * 1024;
     constexpr std::size_t kReadBufferSize = 4096;
     char read_buffer[kReadBufferSize];
+    const auto active_position_connections_for_ip = [&](const std::string& ip) -> std::size_t {
+        if (ip.empty()) return 0;
+
+        std::size_t count = 0;
+        for (const auto& c : plain_clients) {
+            if (c.client_ip == ip) ++count;
+        }
+        for (const auto& c : tls_clients) {
+            if (c.client_ip == ip) ++count;
+        }
+        return count;
+    };
+    const auto schedule_deauth = [&](const std::string& ip, const char* reason) {
+        if (ip.empty()) return;
+        const auto due = std::chrono::steady_clock::now() + deauth_grace;
+        pending_deauth[ip] = due;
+        std::cout << "[main.cpp] [Auth] deauth scheduled: ip=" << ip
+                  << ", grace_ms=" << sec_cfg.auth_deauth_grace_ms
+                  << ", reason=" << (reason ? reason : "disconnect") << std::endl;
+    };
+    const auto cancel_pending_deauth = [&](const std::string& ip) {
+        if (ip.empty()) return;
+        if (pending_deauth.erase(ip) > 0) {
+            std::cout << "[main.cpp] [Auth] deauth canceled (reconnect): ip=" << ip
+                      << std::endl;
+        }
+    };
+    const auto run_pending_deauth = [&]() {
+        const auto now = std::chrono::steady_clock::now();
+        for (auto it = pending_deauth.begin(); it != pending_deauth.end();) {
+            const std::string ip = it->first;
+            if (it->second > now) {
+                ++it;
+                continue;
+            }
+
+            if (active_position_connections_for_ip(ip) > 0) {
+                std::cout << "[main.cpp] [Auth] deauth skipped (active position connection): ip="
+                          << ip << std::endl;
+                it = pending_deauth.erase(it);
+                continue;
+            }
+
+            const bool removed = unmark_ip_authenticated(ip);
+            if (removed) {
+                std::cout << "[main.cpp] [Auth] auth session released: ip=" << ip << std::endl;
+            }
+            it = pending_deauth.erase(it);
+        }
+    };
     const auto switch_esp_track_target = [&](const std::string& requested_id) {
         if (requested_id.empty()) return;
         if (!esp_active_object_id.empty() && esp_active_object_id != requested_id) {
@@ -639,6 +701,8 @@ void run_position_stream_service(std::atomic<bool>& running,
 
                     PlainClientState state;
                     state.fd = client_fd;
+                    state.client_ip = client_ip;
+                    cancel_pending_deauth(client_ip);
                     plain_clients.push_back(std::move(state));
                     std::cout << "[main.cpp] [Position] plain client connected: " << client_ip << ":"
                               << ntohs(peer_addr.sin_port) << " (fd=" << client_fd << ")"
@@ -686,6 +750,8 @@ void run_position_stream_service(std::atomic<bool>& running,
 
                     TlsClientState state;
                     state.conn = std::move(client);
+                    state.client_ip = client_ip;
+                    cancel_pending_deauth(client_ip);
                     tls_clients.push_back(std::move(state));
                     std::cout << "[main.cpp] [Position] TLS client connected: " << client_ip << ":"
                               << ntohs(peer_addr.sin_port) << " (fd=" << client_fd << ")"
@@ -809,16 +875,20 @@ void run_position_stream_service(std::atomic<bool>& running,
             unique_descending(remove_plain);
             for (const std::size_t idx : remove_plain) {
                 if (idx >= plain_clients.size()) continue;
+                const std::string disconnected_ip = plain_clients[idx].client_ip;
                 if (plain_clients[idx].fd >= 0) close(plain_clients[idx].fd);
                 plain_clients.erase(plain_clients.begin() + static_cast<std::ptrdiff_t>(idx));
+                schedule_deauth(disconnected_ip, "position_plain_disconnect");
             }
             remove_plain.clear();
 
             unique_descending(remove_tls);
             for (const std::size_t idx : remove_tls) {
                 if (idx >= tls_clients.size()) continue;
+                const std::string disconnected_ip = tls_clients[idx].client_ip;
                 close_tls_client(tls_clients[idx].conn);
                 tls_clients.erase(tls_clients.begin() + static_cast<std::ptrdiff_t>(idx));
+                schedule_deauth(disconnected_ip, "position_tls_disconnect");
             }
             remove_tls.clear();
         };
@@ -934,6 +1004,7 @@ void run_position_stream_service(std::atomic<bool>& running,
         }
 
         erase_removed_clients();
+        run_pending_deauth();
     }
 
     for (auto& client : plain_clients) {

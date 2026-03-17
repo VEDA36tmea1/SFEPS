@@ -22,6 +22,7 @@ struct SecurityRuntimeOptions {
     int socket_read_timeout_ms = 5000;
     int position_stream_tick_ms = 100;
     int position_min_send_ms = 500;
+    int auth_deauth_grace_ms = 3000;
     std::size_t position_stale_seconds = 3;
 
     bool app_tls_enable = false;

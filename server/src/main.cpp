@@ -211,6 +211,7 @@ SecurityRuntimeOptions load_security_runtime_options() {
     cfg.socket_read_timeout_ms = load_env_int("SFEPS_SOCKET_READ_TIMEOUT_MS", 5000, 1);
     cfg.position_stream_tick_ms = load_env_int("SFEPS_POSITION_TICK_MS", 100, 1);
     cfg.position_min_send_ms = load_env_int("SFEPS_POSITION_MIN_SEND_MS", 1000, 1);
+    cfg.auth_deauth_grace_ms = load_env_int("SFEPS_AUTH_DEAUTH_GRACE_MS", 3000, 0);
     cfg.position_stale_seconds = load_env_size_t("SFEPS_POSITION_STALE_SEC", 3, 1);
 
     cfg.app_tls_enable = load_env_bool("SFEPS_APP_TLS_ENABLE", false);
@@ -413,6 +414,7 @@ int main() {
               << ", alert_max_clients=" << sec_cfg.alert_max_clients
               << ", position_max_clients=" << sec_cfg.position_max_clients
               << ", position_tick_ms=" << sec_cfg.position_stream_tick_ms
+              << ", auth_deauth_grace_ms=" << sec_cfg.auth_deauth_grace_ms
               << ", position_stale_sec=" << sec_cfg.position_stale_seconds
               << ", socket_read_timeout_ms=" << sec_cfg.socket_read_timeout_ms << std::endl;
 
