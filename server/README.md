@@ -30,7 +30,7 @@ cd /home/iam/SFEPS/server
 ./tunnel_vscode_db.sh [pi-ip]
 ```
 
-`[pi-ip]`를 생략하면 스크립트 기본 호스트값으로 실행됩니다.
+`[pi-ip]`가 생략되면 기본 `192.168.0.101`로 실행됩니다.
 
 ### 2) VSCode 연결 정보
 

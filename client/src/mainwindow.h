@@ -6,9 +6,11 @@
 #include <QThread>
 #include <QMutex>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <opencv2/opencv.hpp>
 #include <QVariant>
 #include <QVariantList>
+#include <atomic>
 
 // 프레임 캡처를 위한 워커 스레드
 class VideoCaptureWorker : public QThread {
@@ -31,25 +33,51 @@ protected:
         running = true;
         cv::Mat frame;
         int failCount = 0;
+        QElapsedTimer emitTimer;
+        emitTimer.start();
+        qint64 lastEmitMs = 0;
+        constexpr qint64 kMinEmitIntervalMs = 33; // ~30 FPS
         while (running) {
-            if (cap && cap->isOpened() && cap->read(frame) && !frame.empty()) {
-                emit newFrame(frame);
-                failCount = 0;
-                QThread::msleep(10);
+            if (cap && cap->isOpened()) {
+                bool ok = cap->grab();
+                if (ok) {
+                    // Drop queued frames so UI stays near live edge.
+                    for (int i = 0; i < 2; ++i) {
+                        if (!cap->grab()) break;
+                    }
+                    ok = cap->retrieve(frame) && !frame.empty();
+                }
+
+                if (ok) {
+                    const qint64 now = emitTimer.elapsed();
+                    if (now - lastEmitMs >= kMinEmitIntervalMs) {
+                        emit newFrame(frame.clone());
+                        lastEmitMs = now;
+                    }
+                    failCount = 0;
+                    QThread::msleep(1);
+                } else {
+                    ++failCount;
+                    if (failCount >= 20) {
+                        emit readFailed();
+                        failCount = 0;
+                    }
+                    QThread::msleep(20);
+                }
             } else {
                 ++failCount;
                 if (failCount >= 20) {
                     emit readFailed();
                     failCount = 0;
                 }
-                QThread::msleep(100);
+                QThread::msleep(20);
             }
         }
     }
 
 private:
     cv::VideoCapture *cap;
-    bool running;
+    std::atomic_bool running;
 };
 
 class MainWindow : public QQuickPaintedItem
@@ -118,18 +146,24 @@ private:
 
     cv::VideoCapture cap;
     VideoCaptureWorker *worker;
-    cv::Mat currentFrame;
     QImage m_image;
     mutable QMutex m_mutex;
     QTimer *m_reconnectTimer;
+    QTimer *m_updateTimer;
 
     bool m_running;
     int m_brightness;
     QRectF m_zoomRect;
     QString m_streamStatus;
     bool m_streamConnected;
+    QSize m_lastImageSize;
     QVariantList m_detections;
+    QVariantList m_pendingDetections;
+    bool m_hasPendingDetections;
     QString m_selectedDetectionId;
+    
+private slots:
+    void onUpdateTimerTimeout();
 };
 
 #endif // MAINWINDOW_H

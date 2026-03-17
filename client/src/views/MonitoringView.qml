@@ -14,6 +14,18 @@ Page {
     // Properties for live stats
     property int alertsToday: 0
     property real detectionRate: 94.2
+    property var pendingDetections: []
+
+    Timer {
+        id: detectionFlushTimer
+        interval: 66
+        repeat: false
+        onTriggered: {
+            if (videoDisplay) {
+                videoDisplay.setDetections(pendingDetections)
+            }
+        }
+    }
 
     // Main Layout...
     RowLayout {
@@ -768,7 +780,14 @@ Page {
                         var it = list[i];
                         // if already in expected format
                         if (it.x !== undefined && it.w !== undefined && it.id !== undefined) {
-                            out.push({ id: it.id, x: it.x, y: it.y, w: it.w, h: it.h });
+                            var aFlag = false;
+                            if (it.alert !== undefined) aFlag = !!it.alert;
+                            if (!aFlag && it.FRAUD !== undefined) {
+                                var fv2 = ("" + it.FRAUD).toUpperCase();
+                                if (fv2 === "Y" || fv2 === "1" || fv2 === "TRUE") aFlag = true;
+                            }
+                            var dtype2 = (it.type !== undefined) ? it.type : (it.TYPE !== undefined ? it.TYPE : "");
+                            out.push({ id: it.id, x: it.x, y: it.y, w: it.w, h: it.h, alert: aFlag, type: dtype2 });
                             continue;
                         }
                         // POS format fields L,T,R,B
@@ -791,17 +810,23 @@ Page {
                                     nh = nh / videoDisplay.imageHeight;
                                 }
                             }
-                            out.push({ id: id, x: nx, y: ny, w: nw, h: nh });
+                            // Preserve alert/type fields if present on incoming POS map
+                            var alertFlag = false;
+                            if (it.alert !== undefined) alertFlag = !!it.alert;
+                            if (!alertFlag && it.FRAUD !== undefined) {
+                                var fv = ("" + it.FRAUD).toUpperCase();
+                                if (fv === "Y" || fv === "1" || fv === "TRUE") alertFlag = true;
+                            }
+                            var dtype = (it.type !== undefined) ? it.type : (it.TYPE !== undefined ? it.TYPE : "");
+                            out.push({ id: id, x: nx, y: ny, w: nw, h: nh, alert: alertFlag, type: dtype });
                         } else {
                             // unknown format, skip
                         }
                     }
-                    // debug: log converted detections to QML console
-                    console.log("[QML] positionsUpdated -> converted count:", out.length);
-                    for (var j=0;j<out.length;j++) {
-                        console.log("[QML] det", out[j].id, "->", out[j].x, out[j].y, out[j].w, out[j].h);
+                    pendingDetections = out;
+                    if (!detectionFlushTimer.running) {
+                        detectionFlushTimer.start();
                     }
-                    videoDisplay.setDetections(out);
                 }
             }
         }
