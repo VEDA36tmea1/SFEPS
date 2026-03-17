@@ -84,7 +84,6 @@ void send_alert_to_clients(const std::string& msg) {
               << ", len=" << payload_len << std::endl;
 
     if (total_clients == 0) {
-        std::cout << "[alert.cpp] [Alert] No connected clients. Skip sending." << std::endl;
         return;
     }
 

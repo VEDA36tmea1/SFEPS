@@ -45,7 +45,17 @@ public:
         float bottom = -1.0f;
     };
 
+    struct OutlineDecisionPayload {
+        std::string object_id;
+        std::string card_age_text;
+        std::string age;
+        bool is_fraud = false;
+        std::string tag_time;
+    };
+
     using FraudBBoxCallback = std::function<void(const FraudBBoxPayload&)>;
+    using RfidPairedCallback = std::function<void(const std::string&)>;
+    using OutlineDecisionCallback = std::function<void(const OutlineDecisionPayload&)>;
 
     AnalyticsProcessor(const char* host,
                        const char* user,
@@ -65,6 +75,8 @@ public:
                                    ObjectPositionSnapshot& out) const;
     void getAllObjectSnapshots(std::vector<ObjectPositionSnapshot>& out) const;
     void setFraudBBoxCallback(FraudBBoxCallback callback);
+    void setRfidPairedCallback(RfidPairedCallback callback);
+    void setOutlineDecisionCallback(OutlineDecisionCallback callback);
 
 private:
     struct PendingObject {
@@ -142,6 +154,8 @@ private:
     std::atomic<std::uint64_t> dropped_pending_overflow_count;
     std::atomic<std::uint64_t> parsed_xml_ok_count;
     FraudBBoxCallback fraud_bbox_callback;
+    RfidPairedCallback rfid_paired_callback;
+    OutlineDecisionCallback outline_decision_callback;
     XMLParser xml_parser;
 };
 

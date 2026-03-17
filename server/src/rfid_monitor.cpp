@@ -143,8 +143,8 @@ std::string RfidMonitor::extract_json_value(const std::string& json, const std::
 void RfidMonitor::process_rfid_tag(const std::string& uid,
                                    const std::string& card_age_text,
                                    const std::string& time_str) {
-    std::cout << "[rfid_monitor.cpp] " << "[RFID] uid=" << uid
-              << ", card_age_text=" << card_age_text << ", time=" << time_str << std::endl;
+    (void)uid;
+    (void)time_str;
     m_analytics.onRfidRead(card_age_text);
 }
 
@@ -213,21 +213,8 @@ void RfidMonitor::run_loop() {
                             std::string device_id = extract_json_value(json_line, "device_id");
                             std::string tag_timestamp = extract_json_value(json_line, "timestamp");
                             std::string now = get_current_datetime();
-                            auto display = [](const std::string& value) {
-                                return value.empty() ? std::string("<empty>")
-                                                     : sanitize_for_log(value);
-                            };
-
-                            std::cout << "[rfid_monitor.cpp] " << "[RFID RAW] "
-                                      << sanitize_for_log(json_line) << std::endl;
-                            std::cout << "[rfid_monitor.cpp] "
-                                      << "[RFID Parsed] uid=" << display(uid)
-                                      << ", text=" << display(card_age_text)
-                                      << ", device_id=" << display(device_id)
-                                      << ", timestamp=" << display(tag_timestamp) << std::endl;
-
-                            std::cout << "[rfid_monitor.cpp] " << ">>> [RFID Tag] UID: " << uid
-                                      << " (" << card_age_text << ") Time: " << now << std::endl;
+                            (void)device_id;
+                            (void)tag_timestamp;
 
                             if (uid.empty() || card_age_text.empty()) {
                                 std::cerr << "[rfid_monitor.cpp] "

@@ -11,6 +11,7 @@
 #include <iostream>
 #include <limits>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -38,13 +39,33 @@ constexpr int AUTH_PORT = 5555;
 constexpr int AUDIO_PORT = 5556;
 constexpr int ALERT_PORT = 5557;
 constexpr int POSITION_PORT = 5558;
-constexpr const char* FRAUD_IMAGE_SOURCE_PATH =
+constexpr const char* RFID_IMAGE_SOURCE_PATH =
     "/home/iam/SFEPS/Camera/image_processing/3_best_shot.jpg";
-constexpr const char* FRAUD_IMAGE_SAVE_DIR = "/home/iam/SFEPS/event_images";
+constexpr const char* EVENT_IMAGE_BASE_DIR = "/home/iam/SFEPS/event_images";
+constexpr const char* EVENT_IMAGE_PENDING_DIR = "/home/iam/SFEPS/event_images/pending";
+constexpr const char* EVENT_IMAGE_FRAUD_DIR = "/home/iam/SFEPS/event_images/fraud";
+constexpr const char* EVENT_IMAGE_FAILED_DIR = "/home/iam/SFEPS/event_images/failed";
 
 std::atomic<bool> g_running(true);
 
 namespace {
+
+struct EventImageRegistry {
+    std::mutex mutex;
+    std::unordered_map<std::string, fs::path> pending_by_object_id;
+};
+
+EventImageRegistry& event_image_registry() {
+    static EventImageRegistry registry;
+    return registry;
+}
+
+std::uint64_t unix_epoch_ms_now() {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+}
 
 std::string sanitize_filename_token(const std::string& raw) {
     std::string out;
@@ -59,31 +80,133 @@ std::string sanitize_filename_token(const std::string& raw) {
     return out.empty() ? "unknown" : out;
 }
 
-void save_fraud_event_image(const AnalyticsProcessor::FraudBBoxPayload& payload) {
-    static std::mutex save_mutex;
-    std::lock_guard<std::mutex> lock(save_mutex);
+fs::path make_unique_path(const fs::path& preferred) {
+    if (!fs::exists(preferred)) return preferred;
 
+    const fs::path dir = preferred.parent_path();
+    const std::string stem = preferred.stem().string();
+    const std::string ext = preferred.extension().string();
+    for (int i = 0; i < 1000; ++i) {
+        fs::path candidate = dir / (stem + "_" + std::to_string(unix_epoch_ms_now()) + "_" +
+                                    std::to_string(i) + ext);
+        if (!fs::exists(candidate)) return candidate;
+    }
+    return dir / (stem + "_" + std::to_string(unix_epoch_ms_now()) + "_overflow" + ext);
+}
+
+fs::path move_file_to_dir(const fs::path& source, const fs::path& target_dir) {
+    const fs::path target = make_unique_path(target_dir / source.filename());
+    std::error_code ec;
+    fs::rename(source, target, ec);
+    if (!ec) return target;
+
+    ec.clear();
+    if (fs::copy_file(source, target, fs::copy_options::overwrite_existing, ec)) {
+        std::error_code remove_ec;
+        fs::remove(source, remove_ec);
+        return target;
+    }
+
+    throw std::runtime_error("failed to move image file: " + source.string() + " -> " +
+                             target.string() + " (" + ec.message() + ")");
+}
+
+void snapshot_rfid_image_for_object(const std::string& object_id) {
+    if (object_id.empty()) return;
+
+    auto& registry = event_image_registry();
+    std::lock_guard<std::mutex> lock(registry.mutex);
     try {
-        const fs::path source(FRAUD_IMAGE_SOURCE_PATH);
+        const fs::path source(RFID_IMAGE_SOURCE_PATH);
         if (!fs::exists(source) || !fs::is_regular_file(source)) {
-            std::cout << "[main.cpp] [FraudImage] source image missing: " << source << std::endl;
+            std::cout << "[main.cpp] [RFID_IMAGE_SNAP] source image missing: " << source
+                      << ", object_id=" << object_id << std::endl;
             return;
         }
 
-        const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::system_clock::now().time_since_epoch())
-                                .count();
-        const fs::path target =
-            fs::path(FRAUD_IMAGE_SAVE_DIR) /
-            ("fraud_" + std::to_string(now_ms) + "_" +
-             sanitize_filename_token(payload.object_id) + ".jpg");
+        const auto existing = registry.pending_by_object_id.find(object_id);
+        if (existing != registry.pending_by_object_id.end()) {
+            std::error_code remove_ec;
+            fs::remove(existing->second, remove_ec);
+        }
+
+        const fs::path target = make_unique_path(
+            fs::path(EVENT_IMAGE_PENDING_DIR) /
+            ("rfid_" + std::to_string(unix_epoch_ms_now()) + "_" +
+             sanitize_filename_token(object_id) + ".jpg"));
 
         fs::copy_file(source, target, fs::copy_options::overwrite_existing);
-        std::cout << "[main.cpp] [FraudImage] saved event image: " << target
-                  << " (object_id=" << payload.object_id << ")" << std::endl;
+        registry.pending_by_object_id[object_id] = target;
+        std::cout << "[main.cpp] [RFID_IMAGE_SNAP] object_id=" << object_id
+                  << ", source=" << source << ", saved=" << target << std::endl;
     } catch (const std::exception& e) {
-        std::cerr << "[main.cpp] [FraudImage] failed to save event image: " << e.what()
-                  << " (object_id=" << payload.object_id << ")" << std::endl;
+        std::cerr << "[main.cpp] [RFID_IMAGE_SNAP] failed: object_id=" << object_id
+                  << ", err=" << e.what() << std::endl;
+    }
+}
+
+void finalize_outline_image_for_object(
+    const AnalyticsProcessor::OutlineDecisionPayload& payload) {
+    if (payload.object_id.empty()) return;
+
+    auto& registry = event_image_registry();
+    std::lock_guard<std::mutex> lock(registry.mutex);
+
+    const auto it = registry.pending_by_object_id.find(payload.object_id);
+    if (it == registry.pending_by_object_id.end()) {
+        std::cout << "[main.cpp] [" << (payload.is_fraud ? "RFID_IMAGE_KEEP" : "RFID_IMAGE_DELETE")
+                  << "] no pending image: object_id=" << payload.object_id
+                  << ", tag_time=" << payload.tag_time << std::endl;
+        return;
+    }
+
+    const fs::path pending_path = it->second;
+    registry.pending_by_object_id.erase(it);
+
+    if (!fs::exists(pending_path)) {
+        std::cout << "[main.cpp] [" << (payload.is_fraud ? "RFID_IMAGE_KEEP" : "RFID_IMAGE_DELETE")
+                  << "] pending image missing on disk: object_id=" << payload.object_id
+                  << ", path=" << pending_path << ", tag_time=" << payload.tag_time << std::endl;
+        return;
+    }
+
+    if (!payload.is_fraud) {
+        std::error_code remove_ec;
+        if (fs::remove(pending_path, remove_ec)) {
+            std::cout << "[main.cpp] [RFID_IMAGE_DELETE] object_id=" << payload.object_id
+                      << ", path=" << pending_path << ", tag_time=" << payload.tag_time
+                      << std::endl;
+            return;
+        }
+
+        try {
+            const fs::path moved = move_file_to_dir(pending_path, fs::path(EVENT_IMAGE_FAILED_DIR));
+            std::cerr << "[main.cpp] [RFID_IMAGE_DELETE] failed to delete pending image, moved to"
+                      << " failed dir: object_id=" << payload.object_id << ", moved=" << moved
+                      << ", err=" << remove_ec.message() << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "[main.cpp] [RFID_IMAGE_DELETE] failed: object_id=" << payload.object_id
+                      << ", path=" << pending_path << ", err=" << e.what() << std::endl;
+        }
+        return;
+    }
+
+    try {
+        const fs::path kept = move_file_to_dir(pending_path, fs::path(EVENT_IMAGE_FRAUD_DIR));
+        std::cout << "[main.cpp] [RFID_IMAGE_KEEP] object_id=" << payload.object_id
+                  << ", from=" << pending_path << ", to=" << kept
+                  << ", tag_time=" << payload.tag_time << std::endl;
+    } catch (const std::exception& keep_err) {
+        try {
+            const fs::path failed = move_file_to_dir(pending_path, fs::path(EVENT_IMAGE_FAILED_DIR));
+            std::cerr << "[main.cpp] [RFID_IMAGE_KEEP] failed to keep in fraud dir, moved to failed"
+                      << ": object_id=" << payload.object_id << ", moved=" << failed
+                      << ", err=" << keep_err.what() << std::endl;
+        } catch (const std::exception& failed_err) {
+            std::cerr << "[main.cpp] [RFID_IMAGE_KEEP] failed: object_id=" << payload.object_id
+                      << ", path=" << pending_path << ", err=" << keep_err.what()
+                      << ", failed_err=" << failed_err.what() << std::endl;
+        }
     }
 }
 
@@ -425,9 +548,10 @@ int main() {
         if (!fs::exists(VIDEO_SAVE_DIR)) {
             fs::create_directories(VIDEO_SAVE_DIR);
         }
-        if (!fs::exists(FRAUD_IMAGE_SAVE_DIR)) {
-            fs::create_directories(FRAUD_IMAGE_SAVE_DIR);
-        }
+        fs::create_directories(EVENT_IMAGE_BASE_DIR);
+        fs::create_directories(EVENT_IMAGE_PENDING_DIR);
+        fs::create_directories(EVENT_IMAGE_FRAUD_DIR);
+        fs::create_directories(EVENT_IMAGE_FAILED_DIR);
     } catch (const std::exception& e) {
         std::cerr << "[Fatal] Failed to create runtime media directory: " << e.what() << std::endl;
         return -1;
@@ -442,6 +566,13 @@ int main() {
 
     AnalyticsProcessor analytics(cfg.db_host.c_str(), cfg.db_user.c_str(), cfg.db_pass.c_str(),
                                  cfg.db_name_analytics.c_str());
+    analytics.setRfidPairedCallback([](const std::string& object_id) {
+        snapshot_rfid_image_for_object(object_id);
+    });
+    analytics.setOutlineDecisionCallback(
+        [](const AnalyticsProcessor::OutlineDecisionPayload& payload) {
+            finalize_outline_image_for_object(payload);
+        });
     if (!analytics.start()) {
         std::cerr << "[Fatal] AnalyticsProcessor startup failed (fail-closed)." << std::endl;
         return -1;
@@ -464,7 +595,6 @@ int main() {
         esp_payload.right = payload.right;
         esp_payload.bottom = payload.bottom;
         esp_manager.publishFraudBbox(esp_payload);
-        save_fraud_event_image(payload);
     });
     if (sec_cfg.esp_tcp_enable && !esp_manager.start(g_running)) {
         std::cerr << "[Fatal] ESP manager startup failed." << std::endl;
