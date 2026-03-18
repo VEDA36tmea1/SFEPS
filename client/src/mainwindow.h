@@ -17,11 +17,15 @@ class VideoCaptureWorker : public QThread {
     Q_OBJECT
 public:
     VideoCaptureWorker(cv::VideoCapture *cap, QObject *parent = nullptr) 
-        : QThread(parent), cap(cap), running(false) {}
+        : QThread(parent), cap(cap), running(false), framePending(false) {}
     
     void stop() { 
         running = false; 
         wait(); 
+    }
+
+    void markFrameConsumed() {
+        framePending.store(false, std::memory_order_release);
     }
 
 signals:
@@ -36,7 +40,7 @@ protected:
         QElapsedTimer emitTimer;
         emitTimer.start();
         qint64 lastEmitMs = 0;
-        constexpr qint64 kMinEmitIntervalMs = 33; // ~30 FPS
+        constexpr qint64 kMinEmitIntervalMs = 66; // ~15 FPS
         while (running) {
             if (cap && cap->isOpened()) {
                 bool ok = cap->grab();
@@ -51,8 +55,11 @@ protected:
                 if (ok) {
                     const qint64 now = emitTimer.elapsed();
                     if (now - lastEmitMs >= kMinEmitIntervalMs) {
-                        emit newFrame(frame.clone());
-                        lastEmitMs = now;
+                        // Keep at most one queued frame; drop extras under UI load.
+                        if (!framePending.exchange(true, std::memory_order_acq_rel)) {
+                            emit newFrame(frame.clone());
+                            lastEmitMs = now;
+                        }
                     }
                     failCount = 0;
                     QThread::msleep(1);
@@ -78,6 +85,7 @@ protected:
 private:
     cv::VideoCapture *cap;
     std::atomic_bool running;
+    std::atomic_bool framePending;
 };
 
 class MainWindow : public QQuickPaintedItem

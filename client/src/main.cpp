@@ -156,6 +156,17 @@ int main(int argc, char *argv[]) {
                      << (posTlsEnabled ? "(TLS)" : "(Plain)");
     // Position connection is started after successful login to avoid unauthenticated connects.
 
+    bool authLoginSucceeded = false;
+    bool alertLoginAckReceived = false;
+    bool positionConnectIssued = false;
+    auto tryStartPositionConnection = [&]() {
+            if (positionConnectIssued) return;
+            if (!authLoginSucceeded || !alertLoginAckReceived) return;
+            positionConnectIssued = true;
+            qDebug() << "[Main] login+ack ready: initiating Position connection to" << posHost << posPort;
+            positionManager.connectPositionServer(posHost, posPort);
+    };
+
     // Expose RTSP stream URL to QML so QML MediaPlayer can use it
     const QString rtspStreamUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.101:8554/cam1");
     engine.rootContext()->setContextProperty("rtspStreamUrl", rtspStreamUrl);
@@ -200,17 +211,24 @@ int main(int argc, char *argv[]) {
       }
   });
 
-  // Start Position connection after login success (move from startup)
-  QObject::connect(&authManager, &AuthManager::loginSuccess, [&engine, mainUrl, &positionManager, posHost, posPort](){
-      Q_UNUSED(mainUrl);
-      Q_UNUSED(engine);
-      qDebug() << "[Main] loginSuccess: initiating Position connection to" << posHost << posPort;
-      positionManager.connectPositionServer(posHost, posPort);
+  // Position connection gate: require both local auth success and server TEST|LOGIN_OK ack.
+  QObject::connect(&authManager, &AuthManager::loginSuccess, [&]() {
+      authLoginSucceeded = true;
+      tryStartPositionConnection();
+  });
+
+  QObject::connect(&fraudManager, &FraudManager::loginAckReceived, [&](const QString &userId) {
+      Q_UNUSED(userId);
+      alertLoginAckReceived = true;
+      tryStartPositionConnection();
   });
 
   // When logout is requested, close main windows and show Login view again
-  QObject::connect(&authManager, &AuthManager::logoutRequested, [&engine, loginUrl, &positionManager](){
+    QObject::connect(&authManager, &AuthManager::logoutRequested, [&engine, loginUrl, &positionManager, &authLoginSucceeded, &alertLoginAckReceived, &positionConnectIssued](){
       qDebug() << "[Main] logoutRequested: closing main windows, disconnecting Position and loading login view";
+      authLoginSucceeded = false;
+      alertLoginAckReceived = false;
+      positionConnectIssued = false;
       // Ensure Position socket is closed so server stops sending POS events
       positionManager.disconnectPositionServer();
       const auto rootObjects = engine.rootObjects();
@@ -222,14 +240,6 @@ int main(int argc, char *argv[]) {
           }
       }
       engine.load(loginUrl);
-  });
-
-  // Start Position connection after login success (move from startup)
-  QObject::connect(&authManager, &AuthManager::loginSuccess, [&engine, mainUrl, &positionManager, posHost, posPort](){
-      Q_UNUSED(mainUrl);
-      Q_UNUSED(engine);
-      qDebug() << "[Main] loginSuccess: initiating Position connection to" << posHost << posPort;
-      positionManager.connectPositionServer(posHost, posPort);
   });
 
   // On app exit, try to notify auth server to logout so server can immediately cleanup sessions

@@ -15,10 +15,11 @@ Page {
     property int alertsToday: 0
     property real detectionRate: 94.2
     property var pendingDetections: []
+    property string currentTrackedId: ""
 
     Timer {
         id: detectionFlushTimer
-        interval: 66
+        interval: 180
         repeat: false
         onTriggered: {
             if (videoDisplay) {
@@ -114,7 +115,7 @@ Page {
                     property bool selecting: false
                     property bool zoomedIn: false
                         property real lastClickX: 0
-                        property real lastClickY: 0
+                            property real lastClickY: 0
 
                     Rectangle {
                         id: selectionRect
@@ -217,33 +218,35 @@ Page {
                                 Button {
                                     Layout.preferredWidth: 100
                                     text: "Track"
-                                    enabled: videoDisplay.selectedDetection !== ""
+                                    enabled: videoDisplay.selectedDetection !== "" && currentTrackedId === ""
                                     onClicked: {
                                         if (videoDisplay.selectedDetection !== "") {
                                             positionManager.sendPositionCommand("SUB_POS|" + videoDisplay.selectedDetection)
+                                            currentTrackedId = videoDisplay.selectedDetection
+                                            videoDisplay.externalTrackedId = currentTrackedId
                                         }
-                                        trackPopup.visible = false
                                     }
                                 }
 
                                 Button {
                                     Layout.preferredWidth: 100
                                     text: "Untrack"
-                                    enabled: videoDisplay.selectedDetection !== ""
+                                    enabled: currentTrackedId === videoDisplay.selectedDetection && currentTrackedId !== ""
                                     onClicked: {
                                         if (videoDisplay.selectedDetection !== "") {
                                             positionManager.sendPositionCommand("UNSUB_POS|" + videoDisplay.selectedDetection)
+                                            currentTrackedId = ""
+                                            videoDisplay.externalTrackedId = ""
                                             videoDisplay.setSelectedDetection("")
                                         }
-                                        trackPopup.visible = false
                                     }
                                 }
                             }
                         }
                     }
-
-                    onVisibleChanged: if (!visible) videoDisplay.setSelectedDetection("")
                 }
+
+                
 
                 // Camera ID & Name Overlay
                 RowLayout {
@@ -776,8 +779,10 @@ Page {
                 function onPositionsUpdated(list) {
                     if (!videoDisplay) return;
                     var out = [];
+                    var maxRender = 20
                     for (var i=0;i<list.length;i++) {
                         var it = list[i];
+                        var incomingId = it.id !== undefined ? it.id : (it.ID !== undefined ? it.ID : "")
                         // if already in expected format
                         if (it.x !== undefined && it.w !== undefined && it.id !== undefined) {
                             var aFlag = false;
@@ -788,10 +793,11 @@ Page {
                             }
                             var dtype2 = (it.type !== undefined) ? it.type : (it.TYPE !== undefined ? it.TYPE : "");
                             out.push({ id: it.id, x: it.x, y: it.y, w: it.w, h: it.h, alert: aFlag, type: dtype2 });
+                            if (out.length >= maxRender) break;
                             continue;
                         }
                         // POS format fields L,T,R,B
-                        var id = it.id !== undefined ? it.id : (it.ID !== undefined ? it.ID : "");
+                        var id = incomingId;
                         var L = it.L !== undefined ? it.L : (it.l !== undefined ? it.l : undefined);
                         var T = it.T !== undefined ? it.T : (it.t !== undefined ? it.t : undefined);
                         var R = it.R !== undefined ? it.R : (it.r !== undefined ? it.r : undefined);
@@ -819,6 +825,7 @@ Page {
                             }
                             var dtype = (it.type !== undefined) ? it.type : (it.TYPE !== undefined ? it.TYPE : "");
                             out.push({ id: id, x: nx, y: ny, w: nw, h: nh, alert: alertFlag, type: dtype });
+                            if (out.length >= maxRender) break;
                         } else {
                             // unknown format, skip
                         }

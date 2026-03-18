@@ -24,6 +24,7 @@ signals:
                        const QString &cardAgeText,
                        const QString &age,
                        bool isFraud);
+    void loginAckReceived(const QString &userId);
     void serverDisconnected();
     void serverConnected();
     void forceLogoutEvent(const QString &rawMsg);

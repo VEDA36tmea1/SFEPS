@@ -108,23 +108,24 @@ void MainWindow::setZoomFromItem(const QRectF &itemRect, const QSizeF &itemSize)
 
 void MainWindow::processFrame(const cv::Mat &frame)
 {
-    if (!m_running) return;
+    if (!m_running) {
+        if (worker) worker->markFrameConsumed();
+        return;
+    }
     updateStreamStatus("ONLINE", true);
 
     if (m_reconnectTimer->isActive()) {
         m_reconnectTimer->stop();
     }
 
-    QMutexLocker locker(&m_mutex);
-
-    // 화면 표시를 위한 가공 (single deep copy)
-    cv::Mat displayMat = frame.clone();
-
-    // 1. 밝기 조절
+    // Build display mat with minimal copying to reduce memory pressure.
+    cv::Mat displayMat;
     if (m_brightness != 0) {
-        displayMat.convertTo(displayMat, -1, 1, m_brightness);
+        frame.convertTo(displayMat, -1, 1, m_brightness);
+    } else {
+        displayMat = frame;
     }
-    
+
     // 2. 줌(Zoom) 처리
     // 여기서는 단순히 원본 비율 유지를 위해 전체를 처리하고 paint()에서 자를 수도 있지만,
     // 데이터 처리 단계에서 미리 자르는 것이 효율적일 수 있습니다.
@@ -136,52 +137,77 @@ void MainWindow::processFrame(const cv::Mat &frame)
     }
 
     // Qt 표시를 위해 RGB로 변환
-    cv::cvtColor(displayMat, displayMat, cv::COLOR_BGR2RGB);
+    cv::Mat rgbMat;
+    cv::cvtColor(displayMat, rgbMat, cv::COLOR_BGR2RGB);
     
     // QImage 생성
-    m_image = QImage((const unsigned char*)displayMat.data, 
-                     displayMat.cols, displayMat.rows, 
-                     displayMat.step, 
-                     QImage::Format_RGB888).copy(); 
+    QImage nextImage = QImage((const unsigned char*)rgbMat.data,
+                              rgbMat.cols, rgbMat.rows,
+                              rgbMat.step,
+                              QImage::Format_RGB888).copy();
                      // Mat 데이터가 소멸될 수 있으므로 깊은 복사(Deep Copy) 필요
 
-    // notify image size changes only when dimensions actually changed
-    const QSize newSize(m_image.width(), m_image.height());
-    if (m_lastImageSize != newSize) {
-        m_lastImageSize = newSize;
-        emit imageSizeChanged();
+    bool sizeChanged = false;
+    {
+        QMutexLocker locker(&m_mutex);
+        m_image = std::move(nextImage);
+        const QSize newSize(m_image.width(), m_image.height());
+        if (m_lastImageSize != newSize) {
+            m_lastImageSize = newSize;
+            sizeChanged = true;
+        }
     }
+
+    if (sizeChanged) emit imageSizeChanged();
                      
     // 메인 스레드에 화면 갱신 요청
     update();
+
+    if (worker) {
+        worker->markFrameConsumed();
+    }
 }
 
 void MainWindow::paint(QPainter *painter)
 {
-    QMutexLocker locker(&m_mutex);
-    if (m_image.isNull()) {
+    QImage image;
+    QVariantList detections;
+    QString selectedId;
+    QRectF zoomRect;
+    QString streamStatus;
+
+    {
+        QMutexLocker locker(&m_mutex);
+        image = m_image;
+        detections = m_detections;
+        selectedId = m_selectedDetectionId;
+        zoomRect = m_zoomRect;
+        streamStatus = m_streamStatus;
+    }
+
+    if (image.isNull()) {
         painter->fillRect(boundingRect(), Qt::black);
         painter->setPen(Qt::white);
-        painter->drawText(boundingRect(), Qt::AlignCenter, m_streamStatus == "DISCONNECTED" ? "STREAM DISCONNECTED" : "WAITING FOR STREAM...");
+        painter->drawText(boundingRect(), Qt::AlignCenter, streamStatus == "DISCONNECTED" ? "STREAM DISCONNECTED" : "WAITING FOR STREAM...");
         return;
     }
 
     // 줌/크롭 처리
-    QRectF sourceRect(0, 0, m_image.width(), m_image.height());
+    QRectF sourceRect(0, 0, image.width(), image.height());
     
-    if (!m_zoomRect.isEmpty()) {
+    if (!zoomRect.isEmpty()) {
         // 만약 m_zoomRect가 설정되어 있다면 해당 영역만 그립니다.
         // (단, QML에서 전달받은 좌표계와 이미지 좌표계의 매핑이 필요할 수 있음)
         // 여기서는 단순화를 위해 넘겨받은 rect를 그대로 사용합니다.
-        sourceRect = m_zoomRect;
+        sourceRect = zoomRect;
     }
 
-    painter->drawImage(boundingRect(), m_image, sourceRect);
+    painter->drawImage(boundingRect(), image, sourceRect);
 
     // Draw detections (expected as QVariantList of maps: {id: string, x: double, y: double, w: double, h: double}
     // Coordinates are normalized to image size (0..1). Map image coords -> item coords using sourceRect -> boundingRect mapping.
     QRectF itemRect = boundingRect();
-    for (const QVariant &v : m_detections) {
+    for (const QVariant &v : detections) {
         if (!v.canConvert<QVariantMap>()) continue;
         const QVariantMap m = v.toMap();
         const QString id = m.value("id").toString();
@@ -191,8 +217,8 @@ void MainWindow::paint(QPainter *painter)
         const double nh = m.value("h").toDouble();
 
         // Image coordinates (within full image)
-        const double imgW = m_image.width();
-        const double imgH = m_image.height();
+        const double imgW = image.width();
+        const double imgH = image.height();
         const double imgX = nx * imgW;
         const double imgY = ny * imgH;
         const double imgBoxW = nw * imgW;
@@ -242,7 +268,7 @@ void MainWindow::paint(QPainter *painter)
         if (suspected) {
             pen.setColor(Qt::red);
             pen.setWidth(3);
-        } else if (!m_selectedDetectionId.isEmpty() && m_selectedDetectionId == id) {
+        } else if (!selectedId.isEmpty() && selectedId == id) {
             pen.setColor(Qt::yellow);
             pen.setWidth(3);
         }
@@ -266,7 +292,7 @@ void MainWindow::setDetections(const QVariantList &list)
     m_hasPendingDetections = true;
     // Coalesce multiple rapid detection updates.
     if (m_updateTimer && !m_updateTimer->isActive()) {
-        m_updateTimer->start(66);
+        m_updateTimer->start(120);
     }
 }
 
@@ -400,6 +426,10 @@ bool MainWindow::openStream()
     }
 
     cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
+    // Conservative decode size to avoid FFmpeg/OpenCV allocation spikes.
+    cap.set(cv::CAP_PROP_FRAME_WIDTH, 1280);
+    cap.set(cv::CAP_PROP_FRAME_HEIGHT, 720);
+    cap.set(cv::CAP_PROP_FPS, 15);
     // Log stream and source frame size for diagnosing image-size/resolution
     double srcW = cap.get(cv::CAP_PROP_FRAME_WIDTH);
     double srcH = cap.get(cv::CAP_PROP_FRAME_HEIGHT);
