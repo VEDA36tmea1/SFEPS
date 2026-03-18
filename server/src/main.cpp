@@ -331,6 +331,7 @@ SecurityRuntimeOptions load_security_runtime_options() {
     cfg.audio_max_bytes = load_env_size_t("SFEPS_AUDIO_MAX_BYTES", 4 * 1024 * 1024, 1024);
     cfg.alert_max_clients = load_env_size_t("SFEPS_ALERT_MAX_CLIENTS", 64, 1);
     cfg.position_max_clients = load_env_size_t("SFEPS_POSITION_MAX_CLIENTS", 64, 1);
+    cfg.video_max_clients = load_env_size_t("SFEPS_VIDEO_MAX_CLIENTS", 32, 1);
     cfg.socket_read_timeout_ms = load_env_int("SFEPS_SOCKET_READ_TIMEOUT_MS", 5000, 1);
     cfg.position_stream_tick_ms = load_env_int("SFEPS_POSITION_TICK_MS", 100, 1);
     cfg.position_min_send_ms = load_env_int("SFEPS_POSITION_MIN_SEND_MS", 1000, 1);
@@ -343,6 +344,8 @@ SecurityRuntimeOptions load_security_runtime_options() {
     cfg.audio_tls_port = load_env_port("SFEPS_AUDIO_TLS_PORT", 6556);
     cfg.alert_tls_port = load_env_port("SFEPS_ALERT_TLS_PORT", 6557);
     cfg.position_tls_port = load_env_port("SFEPS_POSITION_TLS_PORT", 6558);
+    cfg.video_catalog_port = load_env_port("SFEPS_VIDEO_CATALOG_PORT", 5559);
+    cfg.video_catalog_tls_port = load_env_port("SFEPS_VIDEO_CATALOG_TLS_PORT", 6559);
     cfg.app_tls_handshake_timeout_ms =
         load_env_int("SFEPS_APP_TLS_HANDSHAKE_TIMEOUT_MS", 3000, 1);
     const char* bind_ip = std::getenv("SFEPS_APP_BIND_IP");
@@ -358,6 +361,11 @@ SecurityRuntimeOptions load_security_runtime_options() {
     const char* key_file = std::getenv("SFEPS_APP_TLS_KEY_FILE");
     if (key_file != nullptr && key_file[0] != '\0') {
         cfg.app_tls_key_file = key_file;
+    }
+
+    const char* video_http_base_url = std::getenv("SFEPS_VIDEO_HTTP_BASE_URL");
+    if (video_http_base_url != nullptr && video_http_base_url[0] != '\0') {
+        cfg.video_http_base_url = trim_copy(video_http_base_url);
     }
 
     cfg.esp_tcp_enable = load_env_bool("SFEPS_ESP_TCP_ENABLE", false);
@@ -416,18 +424,30 @@ bool validate_security_runtime_options(const SecurityRuntimeOptions& cfg, std::s
         cfg.audio_tls_port,
         cfg.alert_tls_port,
         cfg.position_tls_port,
+        cfg.video_catalog_tls_port,
     };
-    if (tls_ports.size() != 4) {
-        err = "invalid TLS port config: SFEPS_AUTH/AUDIO/ALERT/POSITION_TLS_PORT must be unique";
+    if (tls_ports.size() != 5) {
+        err =
+            "invalid TLS port config: SFEPS_AUTH/AUDIO/ALERT/POSITION/VIDEO_CATALOG_TLS_PORT "
+            "must be unique";
         return false;
     }
 
     if (cfg.app_plaintext_enable) {
-        std::unordered_set<int> plain_ports = {AUTH_PORT, AUDIO_PORT, ALERT_PORT, POSITION_PORT};
+        std::unordered_set<int> plain_ports = {
+            AUTH_PORT, AUDIO_PORT, ALERT_PORT, POSITION_PORT, cfg.video_catalog_port};
+        if (plain_ports.size() != 5) {
+            err = "invalid plaintext port config: SFEPS_VIDEO_CATALOG_PORT must not collide with "
+                  "5555/5556/5557/5558";
+            return false;
+        }
         if (plain_ports.count(cfg.auth_tls_port) > 0 || plain_ports.count(cfg.audio_tls_port) > 0 ||
             plain_ports.count(cfg.alert_tls_port) > 0 ||
-            plain_ports.count(cfg.position_tls_port) > 0) {
-            err = "invalid TLS port config: TLS ports collide with plaintext ports (5555/5556/5557/5558)";
+            plain_ports.count(cfg.position_tls_port) > 0 ||
+            plain_ports.count(cfg.video_catalog_tls_port) > 0) {
+            err =
+                "invalid TLS port config: TLS ports collide with plaintext ports "
+                "(5555/5556/5557/5558/5559)";
             return false;
         }
     }
@@ -470,11 +490,16 @@ void log_transport_mode(const SecurityRuntimeOptions& cfg) {
     }
 
     if (cfg.app_tls_enable) {
-        std::cout << "[main.cpp] [Security] TLS ports auth/audio/alert/position="
+        std::cout << "[main.cpp] [Security] TLS ports auth/audio/alert/position/video_catalog="
                   << cfg.auth_tls_port << "/" << cfg.audio_tls_port << "/" << cfg.alert_tls_port
-                  << "/" << cfg.position_tls_port
+                  << "/" << cfg.position_tls_port << "/" << cfg.video_catalog_tls_port
                   << ", handshake_timeout_ms=" << cfg.app_tls_handshake_timeout_ms << std::endl;
         std::cout << "[main.cpp] [Security] TLS cert file=" << cfg.app_tls_cert_file << std::endl;
+    }
+    if (cfg.app_plaintext_enable) {
+        std::cout << "[main.cpp] [Security] Plain ports auth/audio/alert/position/video_catalog="
+                  << AUTH_PORT << "/" << AUDIO_PORT << "/" << ALERT_PORT << "/" << POSITION_PORT
+                  << "/" << cfg.video_catalog_port << std::endl;
     }
     std::cout << "[main.cpp] [Security] Bind IP=" << cfg.app_bind_ip << std::endl;
 }
@@ -536,6 +561,7 @@ int main() {
               << ", audio_max_bytes=" << sec_cfg.audio_max_bytes
               << ", alert_max_clients=" << sec_cfg.alert_max_clients
               << ", position_max_clients=" << sec_cfg.position_max_clients
+              << ", video_max_clients=" << sec_cfg.video_max_clients
               << ", position_tick_ms=" << sec_cfg.position_stream_tick_ms
               << ", auth_deauth_grace_ms=" << sec_cfg.auth_deauth_grace_ms
               << ", position_stale_sec=" << sec_cfg.position_stale_seconds
@@ -617,6 +643,8 @@ int main() {
     std::thread t_alert(run_fraud_notifier, std::ref(g_running), std::cref(sec_cfg));
     std::thread t_position(run_position_stream_service, std::ref(g_running), std::cref(sec_cfg),
                            std::ref(analytics), std::ref(esp_manager));
+    std::thread t_video_catalog(run_video_catalog_service, std::ref(g_running), std::cref(cfg),
+                                std::cref(sec_cfg));
 
     RfidMonitor rfid_monitor(g_running, analytics);
     std::thread t_rfid(&RfidMonitor::start, &rfid_monitor);
@@ -634,6 +662,7 @@ int main() {
     if (t_alert.joinable()) t_alert.join();
     if (t_audio.joinable()) t_audio.join();
     if (t_auth.joinable()) t_auth.join();
+    if (t_video_catalog.joinable()) t_video_catalog.join();
     if (t_db_cleanup.joinable()) t_db_cleanup.join();
     if (t_file_cleanup.joinable()) t_file_cleanup.join();
 
