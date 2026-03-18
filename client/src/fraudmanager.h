@@ -17,13 +17,16 @@ public:
     explicit FraudManager(QObject *parent = nullptr);
     ~FraudManager();
 
-    Q_INVOKABLE void connectToServer(const QString &host = "192.168.0.82", int port = 5557);
+    Q_INVOKABLE void connectToServer(const QString &host = "192.168.0.101", int port = 5557);
 
 signals:
     void fraudDetected(const QString &objectId,
                        const QString &cardAgeText,
                        const QString &age,
                        bool isFraud);
+    void serverDisconnected();
+    void serverConnected();
+    void forceLogoutEvent(const QString &rawMsg);
     
 
 private slots:

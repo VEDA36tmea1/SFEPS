@@ -15,6 +15,8 @@ public:
 
     Q_INVOKABLE void login(const QString &id, const QString &pw);
     Q_INVOKABLE void sendLogout();
+    Q_INVOKABLE void clearCurrentUser();
+    Q_INVOKABLE void notifyLocalLogout();
     QString currentUserId() const { return m_currentUserId; }
 
 signals:

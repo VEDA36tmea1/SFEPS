@@ -392,7 +392,7 @@ bool MainWindow::openStream()
         qputenv("OPENCV_FFMPEG_CAPTURE_OPTIONS",
             QByteArray("rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0"));
 
-    const QString rtspUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.82:8554/cam1");
+    const QString rtspUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.101:8554/cam1");
     cap.open(rtspUrl.toStdString(), cv::CAP_FFMPEG);
     if (!cap.isOpened()) {
         qWarning() << "[MainWindow] Failed to open stream:" << rtspUrl;
