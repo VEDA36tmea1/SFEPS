@@ -13,6 +13,7 @@ Item {
     property real lastClickX: 0
     property real lastClickY: 0
     property string selectedDetection: ""
+    property string externalTrackedId: ""
     property var detections: []
 
     // Expose image size reported by MediaPlayer
@@ -93,19 +94,44 @@ Item {
             model: detections.length
             Rectangle {
                 id: box
+                property bool isTracked: root.externalTrackedId !== "" && root.externalTrackedId === detections[index].id
                 visible: modelData !== undefined
                 color: "transparent"
-                border.width: 2
-                border.color: root.selectedDetection === detections[index].id ? "yellow" : "green"
+                border.width: isTracked ? 3 : 2
+                border.color: isTracked ? "#1e90ff"
+                    : root.selectedDetection === detections[index].id ? "yellow"
+                    : "green"
                 x: videoOutput.x + detections[index].x * videoOutput.width
                 y: videoOutput.y + detections[index].y * videoOutput.height
                 width: Math.max(2, detections[index].w * videoOutput.width)
                 height: Math.max(2, detections[index].h * videoOutput.height)
+                Rectangle {
+                    visible: box.isTracked
+                    x: 0
+                    y: -26
+                    width: trackingLabel.implicitWidth + 14
+                    height: 22
+                    radius: 11
+                    color: "#1e90ff"
+                    border.width: 1
+                    border.color: "#bfe1ff"
+
+                    Text {
+                        id: trackingLabel
+                        anchors.centerIn: parent
+                        text: "Tracking"
+                        color: "white"
+                        font.pixelSize: 11
+                        font.bold: true
+                    }
+                }
+
                 Text {
                     text: detections[index].id
                     color: "white"
                     anchors.top: parent.top
                     anchors.left: parent.left
+                    anchors.topMargin: box.isTracked ? 4 : 0
                     font.pixelSize: 12
                 }
             }

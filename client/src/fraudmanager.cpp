@@ -250,6 +250,15 @@ void FraudManager::onReadyRead()
         QString msg = QString::fromUtf8(line);
         qDebug() << "[FraudManager] Received:" << msg;
 
+        if (msg.startsWith("TEST|LOGIN_OK|")) {
+            const QString userId = msg.section('|', 2, 2).trimmed();
+            if (!userId.isEmpty()) {
+                qInfo() << "[FraudManager] login ack received for user:" << userId;
+                emit loginAckReceived(userId);
+            }
+            continue;
+        }
+
         // Detect server-enforced force logout alerts
         if (msg.startsWith("AUTH|FORCE_LOGOUT|")) {
             qInfo() << "[FraudManager] force logout event received:" << msg;
@@ -275,6 +284,15 @@ void FraudManager::onReadyRead()
         bool isFraud = false;
         if (!s.isEmpty()) {
             qDebug() << "[FraudManager] Received (no-nl fallback):" << s;
+            if (s.startsWith("TEST|LOGIN_OK|")) {
+                const QString userId = s.section('|', 2, 2).trimmed();
+                if (!userId.isEmpty()) {
+                    qInfo() << "[FraudManager] login ack received (fallback) for user:" << userId;
+                    emit loginAckReceived(userId);
+                }
+                recvBuffer.clear();
+                return;
+            }
             if (parseFraudMessage(s, objectId, cardAgeText, age, isFraud)) {
                 emit fraudDetected(objectId, cardAgeText, age, isFraud);
                 recvBuffer.clear();
