@@ -24,6 +24,8 @@ pipeline {
         SFEPS_DB_USER = "${env.SFEPS_DB_USER ?: 'pi'}"
         SFEPS_DB_PASS = "${env.SFEPS_DB_PASS ?: 'raspberry'}"
         SFEPS_DB_NAME_ANALYTICS = "${env.SFEPS_DB_NAME_ANALYTICS ?: 'CCgbd'}"
+        SFEPS_ESP_TCP_ENABLE = "${env.SFEPS_ESP_TCP_ENABLE ?: '0'}"
+        SFEPS_ESP_TCP_BIND_IP = "${env.SFEPS_ESP_TCP_BIND_IP ?: '127.0.0.1'}"
 
         // Performance tests are opt-in in pytest; force-enable in this dedicated pipeline.
         SFEPS_ENABLE_PERF_TESTS = "1"
