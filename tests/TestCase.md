@@ -335,9 +335,9 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ## 8) Non-Functional Test Cases — Recoverability
 
-### TC-NF-REC-01 네트워크 단절 후 복구 시 시스템 정상 동작 상태로 복귀
+### TC-NF-REC-01 네트워크 단절(5초 초과) 시 자동 로그아웃 후 재로그인으로 정상 복구
 - **Level/Type/Priority**: Integration/System / Non-Functional(Recoverability) / Low
-- **Execution**: Manual
+- **Execution**: Auto / Manual
 - **Pre-condition**
   - QT Client와 Server 정상 연결
   - 스트리밍 및 이벤트 수신 가능한 상태
@@ -345,11 +345,14 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   1. 정상 동작 상태 확인(연결 상태/스트리밍 등)
   2. 네트워크 단절 유도(10초)
   3. 단절 중 상태 표시/오류 처리 확인
-  4. 네트워크 복구
-  5. 시스템 기능 정상 복귀 확인(연결 상태, 스트리밍 재연결, 이벤트 수신 가능 여부)
+  4. 단절 5초 경과 시 로그인 화면으로 자동 전환되는지 확인
+  5. 네트워크 복구
+  6. 재로그인 수행
+  7. 시스템 기능 정상 복귀 확인(연결 상태, 스트리밍, 이벤트 수신 가능 여부)
 - **Expected Result**
-  - 복구 후 정상 상태로 돌아옴(재연결 및 기능 재개)
-  - 연결/단절/재연결 상태가 UI에 표시됨
+  - 단절이 5초를 초과하면 자동 로그아웃되어 로그인 화면으로 전환됨
+  - 네트워크 복구 후 재로그인하면 정상 상태로 복귀(기능 재개)
+  - 연결/단절/로그아웃/복귀 상태가 UI에 표시됨
 
 ---
 

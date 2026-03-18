@@ -156,6 +156,39 @@ SQL
             }
         }
 
+        stage('Run Recoverability Tests') {
+            steps {
+                sh '''
+                    set -eu
+                    export MYSQL_UNIX_PORT="$WORKSPACE/.ci-mariadb/mysqld.sock"
+                    mkdir -p reports
+                    python3 -m pytest -q tests/test_tc_nf_rec.py -r a --junitxml=reports/nf-rec-tests.xml
+
+                    python3 - <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+path = "reports/nf-rec-tests.xml"
+root = ET.parse(path).getroot()
+
+if root.tag == "testsuite":
+    tests = int(root.attrib.get("tests", "0"))
+    skipped = int(root.attrib.get("skipped", "0"))
+else:
+    tests = 0
+    skipped = 0
+    for suite in root.findall("testsuite"):
+        tests += int(suite.attrib.get("tests", "0"))
+        skipped += int(suite.attrib.get("skipped", "0"))
+
+if tests == 0 or skipped == tests:
+    print(f"All recoverability tests skipped ({skipped}/{tests}). Marking build as failed.")
+    sys.exit(2)
+PY
+                '''
+            }
+        }
+
         stage('Start Local MediaMTX') {
             steps {
                 sh '''
@@ -325,7 +358,7 @@ PY
                 fi
                 exit 0
             '''
-            junit testResults: 'reports/nf-perf-tests.xml', allowEmptyResults: true
+            junit testResults: 'reports/nf-rec-tests.xml,reports/nf-perf-tests.xml', allowEmptyResults: true
             archiveArtifacts artifacts: 'reports/*.xml,reports/test-report.html,reports/test-report.pdf,reports/test-report.xls,reports/test-report.xlsx,tests/real_server.log,.ci-mariadb/mysqld.log,.ci-mediamtx.log,.ci-ffmpeg-publisher.log', allowEmptyArchive: true
         }
     }
