@@ -792,6 +792,9 @@ void run_position_stream_service(std::atomic<bool>& running,
                             const std::string requested_id = normalize_object_id_token(line.substr(8));
                             if (requested_id.empty()) continue;
 
+                            std::cout << "[main.cpp] [Position] SUB_POS received: ip="
+                                      << client.client_ip << ", object_id=" << requested_id
+                                      << std::endl;
                             client.active_object_id = requested_id;
                             switch_esp_track_target(requested_id);
                             continue;
@@ -800,6 +803,9 @@ void run_position_stream_service(std::atomic<bool>& running,
                         if (line.rfind("UNSUB_POS|", 0) == 0) {
                             const std::string requested_id = normalize_object_id_token(line.substr(10));
                             if (requested_id.empty()) continue;
+                            std::cout << "[main.cpp] [Position] UNSUB_POS received: ip="
+                                      << client.client_ip << ", object_id=" << requested_id
+                                      << std::endl;
                             if (client.active_object_id == requested_id) {
                                 client.active_object_id.clear();
                                 clear_esp_track_target(requested_id, "UNSUB");
@@ -848,6 +854,9 @@ void run_position_stream_service(std::atomic<bool>& running,
                             const std::string requested_id = normalize_object_id_token(line.substr(8));
                             if (requested_id.empty()) continue;
 
+                            std::cout << "[main.cpp] [Position] SUB_POS received: ip="
+                                      << client.client_ip << ", object_id=" << requested_id
+                                      << std::endl;
                             client.active_object_id = requested_id;
                             switch_esp_track_target(requested_id);
                             continue;
@@ -856,6 +865,9 @@ void run_position_stream_service(std::atomic<bool>& running,
                         if (line.rfind("UNSUB_POS|", 0) == 0) {
                             const std::string requested_id = normalize_object_id_token(line.substr(10));
                             if (requested_id.empty()) continue;
+                            std::cout << "[main.cpp] [Position] UNSUB_POS received: ip="
+                                      << client.client_ip << ", object_id=" << requested_id
+                                      << std::endl;
                             if (client.active_object_id == requested_id) {
                                 client.active_object_id.clear();
                                 clear_esp_track_target(requested_id, "UNSUB");
