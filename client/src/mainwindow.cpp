@@ -173,6 +173,7 @@ void MainWindow::paint(QPainter *painter)
     QImage image;
     QVariantList detections;
     QString selectedId;
+    QString trackedId;
     QRectF zoomRect;
     QString streamStatus;
 
@@ -181,6 +182,7 @@ void MainWindow::paint(QPainter *painter)
         image = m_image;
         detections = m_detections;
         selectedId = m_selectedDetectionId;
+        trackedId = m_externalTrackedId;
         zoomRect = m_zoomRect;
         streamStatus = m_streamStatus;
     }
@@ -265,7 +267,12 @@ void MainWindow::paint(QPainter *painter)
             if (m.value("alert").toBool()) suspected = true;
         }
 
-        if (suspected) {
+        const bool tracked = !trackedId.isEmpty() && trackedId == id;
+
+        if (tracked) {
+            pen.setColor(QColor("#1e90ff"));
+            pen.setWidth(3);
+        } else if (suspected) {
             pen.setColor(Qt::red);
             pen.setWidth(3);
         } else if (!selectedId.isEmpty() && selectedId == id) {
@@ -281,7 +288,21 @@ void MainWindow::paint(QPainter *painter)
         QFont f = painter->font();
         f.setPointSize(10);
         painter->setFont(f);
-        painter->drawText(drawRect.topLeft() + QPointF(4, 14), id);
+        if (tracked) {
+            painter->setPen(QColor("#60a5fa"));
+            QFont tf = painter->font();
+            tf.setPointSize(10);
+            tf.setBold(true);
+            painter->setFont(tf);
+            painter->drawText(drawRect.topLeft() + QPointF(4, -4), "Tracking");
+        }
+
+        painter->setPen(Qt::white);
+        QFont idf = painter->font();
+        idf.setPointSize(10);
+        idf.setBold(false);
+        painter->setFont(idf);
+        painter->drawText(drawRect.topLeft() + QPointF(4, tracked ? 16 : 14), id);
     }
 }
 
@@ -361,6 +382,15 @@ void MainWindow::setSelectedDetection(const QString &id)
     if (m_selectedDetectionId == id) return;
     m_selectedDetectionId = id;
     emit selectedDetectionChanged();
+    update();
+}
+
+void MainWindow::setExternalTrackedId(const QString &id)
+{
+    QMutexLocker locker(&m_mutex);
+    if (m_externalTrackedId == id) return;
+    m_externalTrackedId = id;
+    emit externalTrackedIdChanged();
     update();
 }
 

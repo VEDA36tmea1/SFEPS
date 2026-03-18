@@ -98,6 +98,7 @@ class MainWindow : public QQuickPaintedItem
     Q_PROPERTY(bool streamConnected READ streamConnected NOTIFY streamConnectedChanged)
     Q_PROPERTY(QVariantList detections READ detections NOTIFY detectionsChanged)
     Q_PROPERTY(QString selectedDetection READ selectedDetection NOTIFY selectedDetectionChanged)
+    Q_PROPERTY(QString externalTrackedId READ externalTrackedId WRITE setExternalTrackedId NOTIFY externalTrackedIdChanged)
     Q_PROPERTY(int imageWidth READ imageWidth NOTIFY imageSizeChanged)
     Q_PROPERTY(int imageHeight READ imageHeight NOTIFY imageSizeChanged)
 
@@ -124,9 +125,11 @@ public:
     Q_INVOKABLE QString detectionAt(qreal x, qreal y);
     Q_INVOKABLE void clearDetections();
     Q_INVOKABLE void setSelectedDetection(const QString &id);
+    void setExternalTrackedId(const QString &id);
 
     QVariantList detections() const { return m_detections; }
     QString selectedDetection() const { return m_selectedDetectionId; }
+    QString externalTrackedId() const { return m_externalTrackedId; }
     int imageWidth() const;
     int imageHeight() const;
 
@@ -145,6 +148,7 @@ private slots:
 signals:
     void detectionsChanged();
     void selectedDetectionChanged();
+    void externalTrackedIdChanged();
     void imageSizeChanged();
 
 private:
@@ -169,6 +173,7 @@ private:
     QVariantList m_pendingDetections;
     bool m_hasPendingDetections;
     QString m_selectedDetectionId;
+    QString m_externalTrackedId;
     
 private slots:
     void onUpdateTimerTimeout();

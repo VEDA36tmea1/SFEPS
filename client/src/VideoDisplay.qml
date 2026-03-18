@@ -35,7 +35,7 @@ Item {
         for (var i = 0; i < detections.length; ++i) {
             var d = detections[i];
             if (d === undefined) continue;
-            var id = d.id;
+            var id = String(d.id);
             var nx = d.x, ny = d.y, nw = d.w, nh = d.h;
             var boxX = nx * imageWidth;
             var boxY = ny * imageHeight;
@@ -94,36 +94,26 @@ Item {
             model: detections.length
             Rectangle {
                 id: box
-                property bool isTracked: root.externalTrackedId !== "" && root.externalTrackedId === detections[index].id
+                property bool isTracked: root.externalTrackedId !== "" && root.externalTrackedId === String(detections[index].id)
                 visible: modelData !== undefined
                 color: "transparent"
                 border.width: isTracked ? 3 : 2
                 border.color: isTracked ? "#1e90ff"
-                    : root.selectedDetection === detections[index].id ? "yellow"
+                    : root.selectedDetection === String(detections[index].id) ? "yellow"
                     : "green"
                 x: videoOutput.x + detections[index].x * videoOutput.width
                 y: videoOutput.y + detections[index].y * videoOutput.height
                 width: Math.max(2, detections[index].w * videoOutput.width)
                 height: Math.max(2, detections[index].h * videoOutput.height)
-                Rectangle {
+                Text {
                     visible: box.isTracked
-                    x: 0
-                    y: -26
-                    width: trackingLabel.implicitWidth + 14
-                    height: 22
-                    radius: 11
-                    color: "#1e90ff"
-                    border.width: 1
-                    border.color: "#bfe1ff"
-
-                    Text {
-                        id: trackingLabel
-                        anchors.centerIn: parent
-                        text: "Tracking"
-                        color: "white"
-                        font.pixelSize: 11
-                        font.bold: true
-                    }
+                    text: "Tracking"
+                    color: "#60a5fa"
+                    anchors.left: parent.left
+                    anchors.top: parent.top
+                    anchors.topMargin: -16
+                    font.pixelSize: 12
+                    font.bold: true
                 }
 
                 Text {
@@ -131,7 +121,7 @@ Item {
                     color: "white"
                     anchors.top: parent.top
                     anchors.left: parent.left
-                    anchors.topMargin: box.isTracked ? 4 : 0
+                    anchors.topMargin: box.isTracked ? 2 : 0
                     font.pixelSize: 12
                 }
             }

@@ -16,6 +16,7 @@ Page {
     property real detectionRate: 94.2
     property var pendingDetections: []
     property string currentTrackedId: ""
+    property string visualTrackedId: ""
 
     Timer {
         id: detectionFlushTimer
@@ -211,33 +212,84 @@ Page {
                                 elide: Text.ElideRight
                             }
 
+                            Text {
+                                text: visualTrackedId !== "" ? "Tracking: " + visualTrackedId : "Tracking: -"
+                                color: visualTrackedId !== "" ? "#60a5fa" : "#9ca3af"
+                                font.pixelSize: 11
+                                elide: Text.ElideRight
+                            }
+
                             RowLayout {
                                 spacing: 8
                                 anchors.horizontalCenter: parent.horizontalCenter
 
                                 Button {
+                                    id: trackBtn
                                     Layout.preferredWidth: 100
+                                    Layout.preferredHeight: 34
                                     text: "Track"
-                                    enabled: videoDisplay.selectedDetection !== "" && currentTrackedId === ""
+                                    flat: true
+                                    enabled: videoDisplay.selectedDetection !== ""
+                                             && currentTrackedId === ""
+                                    background: Rectangle {
+                                        radius: 6
+                                        color: !trackBtn.enabled ? "#1f1f1f"
+                                              : trackBtn.down ? "#cf5a28"
+                                              : trackBtn.hovered ? AppTheme.accentHover
+                                              : AppTheme.accent
+                                        border.width: 1
+                                        border.color: !trackBtn.enabled ? AppTheme.borderCard : "transparent"
+                                    }
+                                    contentItem: Text {
+                                        text: trackBtn.text
+                                        color: trackBtn.enabled ? "white" : AppTheme.textDisabled
+                                        font.pixelSize: 12
+                                        font.bold: true
+                                        horizontalAlignment: Text.AlignHCenter
+                                        verticalAlignment: Text.AlignVCenter
+                                    }
                                     onClicked: {
                                         if (videoDisplay.selectedDetection !== "") {
-                                            positionManager.sendPositionCommand("SUB_POS|" + videoDisplay.selectedDetection)
-                                            currentTrackedId = videoDisplay.selectedDetection
-                                            videoDisplay.externalTrackedId = currentTrackedId
+                                            var targetId = String(videoDisplay.selectedDetection)
+                                            positionManager.sendPositionCommand("SUB_POS|" + targetId)
+                                            currentTrackedId = targetId
+                                            visualTrackedId = targetId
+                                            videoDisplay.externalTrackedId = visualTrackedId
                                         }
                                     }
                                 }
 
                                 Button {
+                                    id: untrackBtn
                                     Layout.preferredWidth: 100
+                                    Layout.preferredHeight: 34
                                     text: "Untrack"
-                                    enabled: currentTrackedId === videoDisplay.selectedDetection && currentTrackedId !== ""
+                                    flat: true
+                                    enabled: currentTrackedId !== ""
+                                             && String(videoDisplay.selectedDetection) === currentTrackedId
+                                    background: Rectangle {
+                                        radius: 6
+                                        color: !untrackBtn.enabled ? "transparent"
+                                              : untrackBtn.down ? "#1a1a1a"
+                                              : untrackBtn.hovered ? "#2b2b2b"
+                                              : "transparent"
+                                        border.width: 1
+                                        border.color: !untrackBtn.enabled ? AppTheme.borderCard : AppTheme.inputBorder
+                                    }
+                                    contentItem: Text {
+                                        text: untrackBtn.text
+                                        color: untrackBtn.enabled ? "white" : AppTheme.textDisabled
+                                        font.pixelSize: 12
+                                        font.bold: true
+                                        horizontalAlignment: Text.AlignHCenter
+                                        verticalAlignment: Text.AlignVCenter
+                                    }
                                     onClicked: {
-                                        if (videoDisplay.selectedDetection !== "") {
-                                            positionManager.sendPositionCommand("UNSUB_POS|" + videoDisplay.selectedDetection)
+                                        if (currentTrackedId !== "") {
+                                            positionManager.sendPositionCommand("UNSUB_POS|" + currentTrackedId)
                                             currentTrackedId = ""
+                                            visualTrackedId = ""
                                             videoDisplay.externalTrackedId = ""
-                                            videoDisplay.setSelectedDetection("")
                                         }
                                     }
                                 }
@@ -783,6 +835,7 @@ Page {
                     for (var i=0;i<list.length;i++) {
                         var it = list[i];
                         var incomingId = it.id !== undefined ? it.id : (it.ID !== undefined ? it.ID : "")
+                        var normalizedId = String(incomingId)
                         // if already in expected format
                         if (it.x !== undefined && it.w !== undefined && it.id !== undefined) {
                             var aFlag = false;
@@ -792,12 +845,12 @@ Page {
                                 if (fv2 === "Y" || fv2 === "1" || fv2 === "TRUE") aFlag = true;
                             }
                             var dtype2 = (it.type !== undefined) ? it.type : (it.TYPE !== undefined ? it.TYPE : "");
-                            out.push({ id: it.id, x: it.x, y: it.y, w: it.w, h: it.h, alert: aFlag, type: dtype2 });
+                            out.push({ id: String(it.id), x: it.x, y: it.y, w: it.w, h: it.h, alert: aFlag, type: dtype2 });
                             if (out.length >= maxRender) break;
                             continue;
                         }
                         // POS format fields L,T,R,B
-                        var id = incomingId;
+                        var id = normalizedId;
                         var L = it.L !== undefined ? it.L : (it.l !== undefined ? it.l : undefined);
                         var T = it.T !== undefined ? it.T : (it.t !== undefined ? it.t : undefined);
                         var R = it.R !== undefined ? it.R : (it.r !== undefined ? it.r : undefined);
