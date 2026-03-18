@@ -31,6 +31,10 @@ endif()
 # 4. 실행 파일 (오디오 모듈 소스 포함)
 add_executable(smart_server
     src/main.cpp
+    src/text_utils.cpp
+    src/env_utils.cpp
+    src/security_runtime.cpp
+    src/rfid_image_pipeline.cpp
     src/log.cpp
     src/recorder.cpp
     src/analytics.cpp
@@ -39,8 +43,14 @@ add_executable(smart_server
     src/runtime_config.cpp
     src/net_utils.cpp
     src/app_services.cpp
+    src/services/service_shared.cpp
+    src/services/transport_utils.cpp
+    src/services/audio_service.cpp
+    src/services/alert_service.cpp
+    src/services/video_catalog_service.cpp
+    src/services/position_service.cpp
+    src/services/auth_service.cpp
     src/rfid_monitor.cpp
-    # src/event_matcher.cpp  # disabled: legacy matcher module (not used in runtime path)
     src/alert.cpp
     src/esp_manager.cpp
     src/tls_server.cpp

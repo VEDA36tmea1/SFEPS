@@ -13,48 +13,7 @@
 #include <unistd.h>
 
 #include "analytics.h"
-
-namespace {
-
-std::string trim_copy(const std::string& input) {
-    std::size_t begin = 0;
-    while (begin < input.size() &&
-           std::isspace(static_cast<unsigned char>(input[begin]))) {
-        ++begin;
-    }
-
-    std::size_t end = input.size();
-    while (end > begin &&
-           std::isspace(static_cast<unsigned char>(input[end - 1]))) {
-        --end;
-    }
-
-    return input.substr(begin, end - begin);
-}
-
-std::string sanitize_for_log(const std::string& input) {
-    std::string out;
-    out.reserve(input.size());
-    for (char ch : input) {
-        switch (ch) {
-            case '\n':
-                out += "\\n";
-                break;
-            case '\r':
-                out += "\\r";
-                break;
-            case '\t':
-                out += "\\t";
-                break;
-            default:
-                out += ch;
-                break;
-        }
-    }
-    return out;
-}
-
-}  // namespace
+#include "text_utils.h"
 
 RfidMonitor::RfidMonitor(std::atomic<bool>& running_flag, AnalyticsProcessor& analytics)
     : m_running(running_flag), m_analytics(analytics), m_socket_path("/tmp/rc522_events.sock") {}

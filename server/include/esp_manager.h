@@ -53,6 +53,7 @@ private:
     void acceptLoop();
     void sendStartupReadyAfterDelay();
     bool sendLineLocked(int fd, const char* data, std::size_t len);
+    bool broadcastLineLocked(const char* data, std::size_t len, bool verbose_error_log);
 
     Config config_;
     std::atomic<bool>* app_running_flag_ = nullptr;

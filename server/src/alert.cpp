@@ -27,6 +27,27 @@ std::vector<PlainAlertClient> g_plain_clients;
 std::vector<TlsAlertClient> g_tls_clients;
 std::mutex g_alert_clients_mutex;
 
+struct AlertDispatchStats {
+    size_t target_count = 0;
+    size_t sent_count = 0;
+    size_t fail_count = 0;
+};
+
+bool matches_target_ip(const std::string& client_ip, const std::string* target_ip) {
+    return target_ip == nullptr || client_ip == *target_ip;
+}
+
+size_t count_targets(const std::string* target_ip) {
+    size_t count = 0;
+    for (const auto& client : g_plain_clients) {
+        if (matches_target_ip(client.client_ip, target_ip)) ++count;
+    }
+    for (const auto& client : g_tls_clients) {
+        if (matches_target_ip(client.client_ip, target_ip)) ++count;
+    }
+    return count;
+}
+
 std::string describe_plain_peer(const PlainAlertClient& client) {
     sockaddr_in addr {};
     socklen_t addrlen = sizeof(addr);
@@ -54,6 +75,52 @@ std::string describe_tls_peer(const TlsAlertClient& client) {
                 std::to_string(ntohs(addr.sin_port));
     }
     return peer;
+}
+
+void dispatch_plain_alerts(const std::string& msg,
+                           const std::string* target_ip,
+                           AlertDispatchStats& stats,
+                           const char* fail_prefix) {
+    for (auto it = g_plain_clients.begin(); it != g_plain_clients.end();) {
+        if (!matches_target_ip(it->client_ip, target_ip)) {
+            ++it;
+            continue;
+        }
+        ++stats.target_count;
+        if (!send_all_plain(it->fd, msg.data(), msg.size())) {
+            std::cout << "[alert.cpp] [Alert] " << fail_prefix << " (" << describe_plain_peer(*it)
+                      << ") err=" << errno << " (" << std::strerror(errno) << ")" << std::endl;
+            close(it->fd);
+            it = g_plain_clients.erase(it);
+            ++stats.fail_count;
+            continue;
+        }
+        ++stats.sent_count;
+        ++it;
+    }
+}
+
+void dispatch_tls_alerts(const std::string& msg,
+                         const std::string* target_ip,
+                         AlertDispatchStats& stats,
+                         const char* fail_prefix) {
+    for (auto it = g_tls_clients.begin(); it != g_tls_clients.end();) {
+        if (!matches_target_ip(it->client_ip, target_ip)) {
+            ++it;
+            continue;
+        }
+        ++stats.target_count;
+        if (!send_all_tls(it->conn, msg.data(), msg.size())) {
+            std::cout << "[alert.cpp] [Alert] " << fail_prefix << " (" << describe_tls_peer(*it)
+                      << ") err=" << errno << " (" << std::strerror(errno) << ")" << std::endl;
+            close_tls_client(it->conn);
+            it = g_tls_clients.erase(it);
+            ++stats.fail_count;
+            continue;
+        }
+        ++stats.sent_count;
+        ++it;
+    }
 }
 
 }  // namespace
@@ -100,51 +167,26 @@ void send_alert_to_clients(const std::string& msg) {
     if (msg.empty()) return;
 
     std::lock_guard<std::mutex> lock(g_alert_clients_mutex);
-    const size_t payload_len = msg.size();
-    const size_t total_clients = g_plain_clients.size() + g_tls_clients.size();
+    const size_t total_clients_before = g_plain_clients.size() + g_tls_clients.size();
 
-    std::cout << "[alert.cpp] [Alert] Dispatch start: clients=" << total_clients
-              << ", len=" << payload_len << std::endl;
+    std::cout << "[alert.cpp] [Alert] Dispatch start: clients=" << total_clients_before
+              << ", len=" << msg.size() << std::endl;
 
-    if (total_clients == 0) {
+    if (total_clients_before == 0) {
         return;
     }
 
-    size_t sent_cnt = 0;
-    size_t fail_cnt = 0;
+    AlertDispatchStats stats;
+    dispatch_plain_alerts(msg, nullptr, stats, "send failed");
+    dispatch_tls_alerts(msg, nullptr, stats, "TLS send failed");
 
-    for (auto it = g_plain_clients.begin(); it != g_plain_clients.end();) {
-        if (!send_all_plain(it->fd, msg.data(), payload_len)) {
-            std::cout << "[alert.cpp] [Alert] send failed (" << describe_plain_peer(*it)
-                      << ") err=" << errno << " (" << std::strerror(errno) << ")" << std::endl;
-            close(it->fd);
-            it = g_plain_clients.erase(it);
-            ++fail_cnt;
-            continue;
-        }
-        ++sent_cnt;
-        ++it;
-    }
-
-    for (auto it = g_tls_clients.begin(); it != g_tls_clients.end();) {
-        if (!send_all_tls(it->conn, msg.data(), payload_len)) {
-            std::cout << "[alert.cpp] [Alert] TLS send failed (" << describe_tls_peer(*it)
-                      << ") err=" << errno << " (" << std::strerror(errno) << ")" << std::endl;
-            close_tls_client(it->conn);
-            it = g_tls_clients.erase(it);
-            ++fail_cnt;
-            continue;
-        }
-        ++sent_cnt;
-        ++it;
-    }
-
-    if (sent_cnt == 0) {
-        std::cout << "[alert.cpp] [Alert] No data delivered. success=" << sent_cnt
-                  << ", fail=" << fail_cnt << ", payload_len=" << payload_len << std::endl;
+    if (stats.sent_count == 0) {
+        std::cout << "[alert.cpp] [Alert] No data delivered. success=" << stats.sent_count
+                  << ", fail=" << stats.fail_count << ", payload_len=" << msg.size()
+                  << std::endl;
     } else {
-        std::cout << "[alert.cpp] [Alert] Sent to clients: success=" << sent_cnt
-                  << ", fail=" << fail_cnt << ", payload='" << msg << "'" << std::endl;
+        std::cout << "[alert.cpp] [Alert] Sent to clients: success=" << stats.sent_count
+                  << ", fail=" << stats.fail_count << ", payload='" << msg << "'" << std::endl;
     }
 }
 
@@ -152,60 +194,17 @@ void send_alert_to_ip_clients(const std::string& ip, const std::string& msg) {
     if (ip.empty() || msg.empty()) return;
 
     std::lock_guard<std::mutex> lock(g_alert_clients_mutex);
-    const size_t payload_len = msg.size();
-    size_t target_clients = 0;
-    for (const auto& client : g_plain_clients) {
-        if (client.client_ip == ip) ++target_clients;
-    }
-    for (const auto& client : g_tls_clients) {
-        if (client.client_ip == ip) ++target_clients;
-    }
+    const size_t target_clients = count_targets(&ip);
 
     std::cout << "[alert.cpp] [Alert] Target dispatch start: ip=" << ip
-              << ", targets=" << target_clients << ", len=" << payload_len << std::endl;
+              << ", targets=" << target_clients << ", len=" << msg.size() << std::endl;
+    if (target_clients == 0) return;
 
-    if (target_clients == 0) {
-        return;
-    }
-
-    size_t sent_cnt = 0;
-    size_t fail_cnt = 0;
-
-    for (auto it = g_plain_clients.begin(); it != g_plain_clients.end();) {
-        if (it->client_ip != ip) {
-            ++it;
-            continue;
-        }
-        if (!send_all_plain(it->fd, msg.data(), payload_len)) {
-            std::cout << "[alert.cpp] [Alert] target send failed (" << describe_plain_peer(*it)
-                      << ") err=" << errno << " (" << std::strerror(errno) << ")" << std::endl;
-            close(it->fd);
-            it = g_plain_clients.erase(it);
-            ++fail_cnt;
-            continue;
-        }
-        ++sent_cnt;
-        ++it;
-    }
-
-    for (auto it = g_tls_clients.begin(); it != g_tls_clients.end();) {
-        if (it->client_ip != ip) {
-            ++it;
-            continue;
-        }
-        if (!send_all_tls(it->conn, msg.data(), payload_len)) {
-            std::cout << "[alert.cpp] [Alert] target TLS send failed (" << describe_tls_peer(*it)
-                      << ") err=" << errno << " (" << std::strerror(errno) << ")" << std::endl;
-            close_tls_client(it->conn);
-            it = g_tls_clients.erase(it);
-            ++fail_cnt;
-            continue;
-        }
-        ++sent_cnt;
-        ++it;
-    }
+    AlertDispatchStats stats;
+    dispatch_plain_alerts(msg, &ip, stats, "target send failed");
+    dispatch_tls_alerts(msg, &ip, stats, "target TLS send failed");
 
     std::cout << "[alert.cpp] [Alert] Target dispatch done: ip=" << ip
-              << ", success=" << sent_cnt << ", fail=" << fail_cnt
+              << ", success=" << stats.sent_count << ", fail=" << stats.fail_count
               << ", payload='" << msg << "'" << std::endl;
 }

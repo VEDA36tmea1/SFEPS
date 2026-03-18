@@ -1,17 +1,16 @@
 #include "recorder.h"
 
 #include "analytics.h"
+#include "env_utils.h"
 #include "log.h"
+#include "sample_utils.h"
 
 #include <algorithm>
-#include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
-#include <cstdlib>
-#include <chrono>
 #include <ctime>
 #include <iostream>
-#include <limits>
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -29,6 +28,37 @@ constexpr const char* kMetadataStreamEndTag = "</tt:MetadataStream>";
 constexpr const char* kMetadataStreamEndTagNoNs = "</MetadataStream>";
 constexpr std::size_t kMetaXmlCompactionThreshold = 64 * 1024;
 constexpr std::size_t kMetaXmlStartOverlapBytes = 32;
+constexpr const char* kRecorderLogPrefix = "[recorder.cpp]";
+
+struct RecorderRuntimeLimits {
+    std::size_t max_meta_packet_bytes = 65536;
+    std::size_t bad_meta_streak_limit = 20;
+    std::size_t drop_log_interval = 100;
+    std::size_t meta_xml_buffer_max = 1024 * 1024;
+    std::size_t meta_xml_doc_max_bytes = 256 * 1024;
+};
+
+RecorderRuntimeLimits load_recorder_runtime_limits() {
+    RecorderRuntimeLimits out;
+    out.max_meta_packet_bytes =
+        load_env_size_t("SFEPS_META_MAX_PACKET_BYTES", 65536, 1, kRecorderLogPrefix);
+    out.bad_meta_streak_limit =
+        load_env_size_t("SFEPS_META_BAD_STREAK_LIMIT", 20, 1, kRecorderLogPrefix);
+    out.drop_log_interval =
+        load_env_size_t("SFEPS_DROP_LOG_INTERVAL", 100, 1, kRecorderLogPrefix);
+    out.meta_xml_buffer_max =
+        load_env_size_t("SFEPS_META_XML_BUFFER_MAX", 1024 * 1024, 1024, kRecorderLogPrefix);
+    out.meta_xml_doc_max_bytes =
+        load_env_size_t("SFEPS_META_XML_DOC_MAX_BYTES", 256 * 1024, 1024, kRecorderLogPrefix);
+    if (out.meta_xml_doc_max_bytes > out.meta_xml_buffer_max) {
+        std::cout << "[recorder.cpp] Invalid env relationship: SFEPS_META_XML_DOC_MAX_BYTES("
+                  << out.meta_xml_doc_max_bytes << ") > SFEPS_META_XML_BUFFER_MAX("
+                  << out.meta_xml_buffer_max << "), clamping doc max to buffer max."
+                  << std::endl;
+        out.meta_xml_doc_max_bytes = out.meta_xml_buffer_max;
+    }
+    return out;
+}
 
 std::size_t choose_earlier_pos(std::size_t lhs, std::size_t rhs) {
     if (lhs == std::string::npos) return rhs;
@@ -56,34 +86,6 @@ bool find_next_metadata_end(const std::string& buffer,
     end_len = (pos == namespaced) ? std::strlen(kMetadataStreamEndTag)
                                   : std::strlen(kMetadataStreamEndTagNoNs);
     return true;
-}
-
-std::size_t load_env_size_t(const char* name, std::size_t default_value, std::size_t min_value) {
-    const char* raw = std::getenv(name);
-    if (raw == nullptr || raw[0] == '\0') return default_value;
-
-    errno = 0;
-    char* end = nullptr;
-    unsigned long long parsed = std::strtoull(raw, &end, 10);
-    if (errno != 0 || end == raw || (end != nullptr && *end != '\0') || parsed < min_value ||
-        parsed > static_cast<unsigned long long>(std::numeric_limits<std::size_t>::max())) {
-        std::cerr << "[recorder.cpp] " << "Invalid env " << name << "=" << raw
-                  << ", using default=" << default_value << std::endl;
-        return default_value;
-    }
-    return static_cast<std::size_t>(parsed);
-}
-
-std::string load_env_string(const char* name, const char* default_value) {
-    const char* raw = std::getenv(name);
-    if (raw == nullptr || raw[0] == '\0') return std::string(default_value);
-    return std::string(raw);
-}
-
-bool should_sample(std::uint64_t counter, std::size_t interval) {
-    if (counter == 1) return true;
-    if (interval == 0) return false;
-    return (counter % interval) == 0;
 }
 
 } // namespace
@@ -286,19 +288,7 @@ void RTSPRecorder::close_current_file() {
 
 bool RTSPRecorder::connect_and_record() {
     const std::string rtsp_url = load_env_string("SFEPS_RTSP_URL", kDefaultRtspUrl);
-    const std::size_t max_meta_packet_bytes = load_env_size_t("SFEPS_META_MAX_PACKET_BYTES", 65536, 1);
-    const std::size_t bad_meta_streak_limit = load_env_size_t("SFEPS_META_BAD_STREAK_LIMIT", 20, 1);
-    const std::size_t drop_log_interval = load_env_size_t("SFEPS_DROP_LOG_INTERVAL", 100, 1);
-    const std::size_t meta_xml_buffer_max =
-        load_env_size_t("SFEPS_META_XML_BUFFER_MAX", 1024 * 1024, 1024);
-    std::size_t meta_xml_doc_max_bytes =
-        load_env_size_t("SFEPS_META_XML_DOC_MAX_BYTES", 256 * 1024, 1024);
-    if (meta_xml_doc_max_bytes > meta_xml_buffer_max) {
-        std::cout << "[recorder.cpp] Invalid env relationship: SFEPS_META_XML_DOC_MAX_BYTES("
-                  << meta_xml_doc_max_bytes << ") > SFEPS_META_XML_BUFFER_MAX("
-                  << meta_xml_buffer_max << "), clamping doc max to buffer max." << std::endl;
-        meta_xml_doc_max_bytes = meta_xml_buffer_max;
-    }
+    const RecorderRuntimeLimits limits = load_recorder_runtime_limits();
     reset_meta_xml_reassembly();
 
     AVDictionary* opts = nullptr;
@@ -390,19 +380,21 @@ bool RTSPRecorder::connect_and_record() {
             }
         } else if (pkt.stream_index == meta_stream_idx) {
             bool valid_meta = true;
-            if (pkt.data == nullptr || pkt.size <= 0 || static_cast<std::size_t>(pkt.size) > max_meta_packet_bytes) {
+            if (pkt.data == nullptr || pkt.size <= 0 ||
+                static_cast<std::size_t>(pkt.size) > limits.max_meta_packet_bytes) {
                 valid_meta = false;
                 ++bad_meta_streak;
                 std::uint64_t dropped = ++dropped_meta_packets;
-                if (should_sample(dropped, drop_log_interval)) {
+                if (should_sample(dropped, limits.drop_log_interval)) {
                     std::cout << "[recorder.cpp] " << "[Drop] metadata packet rejected: size=" << pkt.size
-                              << ", max=" << max_meta_packet_bytes
+                              << ", max=" << limits.max_meta_packet_bytes
                               << ", bad_streak=" << bad_meta_streak
                               << ", dropped_count=" << dropped << std::endl;
                 }
-                if (bad_meta_streak >= bad_meta_streak_limit) {
+                if (bad_meta_streak >= limits.bad_meta_streak_limit) {
                     std::cerr << "[recorder.cpp] " << "[Security] metadata bad streak reached limit ("
-                              << bad_meta_streak_limit << "), reconnecting RTSP session." << std::endl;
+                              << limits.bad_meta_streak_limit
+                              << "), reconnecting RTSP session." << std::endl;
                     force_reconnect = true;
                 }
             }
@@ -411,9 +403,9 @@ bool RTSPRecorder::connect_and_record() {
                 bad_meta_streak = 0;
                 process_meta_xml_chunk(reinterpret_cast<const std::uint8_t*>(pkt.data),
                                        static_cast<std::size_t>(pkt.size),
-                                       meta_xml_buffer_max,
-                                       meta_xml_doc_max_bytes,
-                                       drop_log_interval);
+                                       limits.meta_xml_buffer_max,
+                                       limits.meta_xml_doc_max_bytes,
+                                       limits.drop_log_interval);
             }
         }
         av_packet_unref(&pkt);
