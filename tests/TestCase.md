@@ -284,22 +284,22 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 - **Expected Result**
   - 경과 시간 ≤ 1.0초
 
-### TC-NF-PERF-02 1분 내 20건 이상 의심 이벤트 처리(생성/전달/표시)
+### TC-NF-PERF-02 1분 내 50건 이상 의심 이벤트 처리(생성/전달/표시)
 - **Level/Type/Priority**: System / Non-Functional(Performance) / High
 - **Execution**: Auto
 - **Pre-condition**
-  - 의심 이벤트를 자동/시뮬레이션으로 20건 이상 생성 가능
+  - 의심 이벤트를 자동/시뮬레이션으로 50건 이상 생성 가능
 - **Steps**
-  1. 60초 동안 의심 이벤트 20건 이상 발생시키기(시뮬레이터/모킹)
+  1. 60초 동안 의심 이벤트 50건 이상 발생시키기(시뮬레이터/모킹)
   2. 서버 처리 성공 수/실패 수 확인
   3. QT Client 이벤트 목록 표시 수 확인
 - **Expected Result**
-  - 60초 내 20건 이상 처리 완료
-  - 누락/중복이 허용 범위를 벗어나지 않음(정량 기준은 팀 정책에 따름)
+  - 60초 내 50건 이상 처리 완료
+  - 누락/중복이 허용 범위를 벗어나지 않음
 
 ### TC-NF-PERF-03 1시간 연속 스트리밍 유지(중단 시 자동 복구 포함 가능)
 - **Level/Type/Priority**: System / Non-Functional(Performance) / Low
-- **Execution**: Manual
+- **Execution**: Auto
 - **Pre-condition**: 스트리밍 정상 상태
 - **Steps**
   1. 스트리밍을 1시간 연속 실행
