@@ -24,7 +24,7 @@ pipeline {
         // Single-job fallback branch (set to main when running main in a single Pipeline job)
         SFEPS_SINGLE_JOB_BRANCH = "${env.SFEPS_SINGLE_JOB_BRANCH ?: 'develop'}"
 
-        SFEPS_TEST_HOST = "${env.SFEPS_TEST_HOST ?: ''}"
+        SFEPS_TEST_HOST = "${env.SFEPS_TEST_HOST ?: '192.168.0.82'}"
         SFEPS_TEST_SSH_CREDENTIALS_ID = "${env.SFEPS_TEST_SSH_CREDENTIALS_ID ?: 'sfeps-test-ssh'}"
         SFEPS_TEST_CONTAINER_NAME = "${env.SFEPS_TEST_CONTAINER_NAME ?: 'sfeps-server-test'}"
 
