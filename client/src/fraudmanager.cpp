@@ -151,11 +151,13 @@ void FraudManager::onConnected()
     qDebug() << "[FraudManager] Connected to fraud alert server.";
     socket->setSocketOption(QAbstractSocket::KeepAliveOption, 1);
     retryTimer->stop();
+    emit serverConnected();
 }
 void FraudManager::onDisconnected()
 {
     qDebug() << "[FraudManager] Disconnected from fraud alert server. Retrying in 1s...";
     retryTimer->start();
+    emit serverDisconnected();
 }
 
 void FraudManager::retryConnection()
@@ -248,13 +250,20 @@ void FraudManager::onReadyRead()
         QString msg = QString::fromUtf8(line);
         qDebug() << "[FraudManager] Received:" << msg;
 
+        // Detect server-enforced force logout alerts
+        if (msg.startsWith("AUTH|FORCE_LOGOUT|")) {
+            qInfo() << "[FraudManager] force logout event received:" << msg;
+            emit forceLogoutEvent(msg);
+            continue;
+        }
+
         QString objectId;
         QString cardAgeText;
         QString age;
         bool isFraud = false;
-        if (parseFraudMessage(msg, objectId, cardAgeText, age, isFraud)) {
-            emit fraudDetected(objectId, cardAgeText, age, isFraud);
-        }
+            if (parseFraudMessage(msg, objectId, cardAgeText, age, isFraud)) {
+                emit fraudDetected(objectId, cardAgeText, age, isFraud);
+            }
     }
 
     // 폴백: 개행이 없더라도 버퍼 내용이 완전한 메시지 형식이면 처리

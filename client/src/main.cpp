@@ -4,6 +4,7 @@
 #include <QtQuickControls2/QQuickStyle>
 #include <QQmlContext>
 #include <QWindow>
+#include <QTimer>
 #include <QCoreApplication>
 #include <QFile>
 #include <QTextStream>
@@ -82,7 +83,7 @@ int main(int argc, char *argv[]) {
       return parsed;
   };
 
-  const QString alertHost = env.value("FRAUD_SERVER_HOST", "192.168.0.82");
+  const QString alertHost = env.value("FRAUD_SERVER_HOST", "192.168.0.101");
   const bool clientTlsEnabled = parseEnvBool(env, "SFEPS_CLIENT_TLS_ENABLE", false);
   const bool alertTlsEnabled = parseEnvBool(env, "SFEPS_ALERT_TLS_ENABLE", clientTlsEnabled);
   const int alertPort = alertTlsEnabled
@@ -91,6 +92,59 @@ int main(int argc, char *argv[]) {
   qDebug() << "[Main] Fraud alert server:" << alertHost << ":" << alertPort
            << (alertTlsEnabled ? "(TLS)" : "(Plain)");
   fraudManager.connectToServer(alertHost, alertPort);
+
+  // Server-down detection and forced-logout handling
+  QTimer *serverDownTimer = new QTimer(&app);
+  serverDownTimer->setSingleShot(true);
+  serverDownTimer->setInterval(5000); // 5 seconds
+  bool isForceLogoutInProgress = false;
+
+  auto performForcedLogout = [&](const QString &reason) {
+      if (isForceLogoutInProgress) {
+          qDebug() << "[Main] forced logout already in progress, ignoring trigger:" << reason;
+          return;
+      }
+      isForceLogoutInProgress = true;
+      qDebug() << "[Main] performing forced logout (reason):" << reason;
+      // Ensure Position socket is closed and clear current user, then notify UI
+      positionManager.disconnectPositionServer();
+      authManager.clearCurrentUser();
+      authManager.notifyLocalLogout();
+  };
+
+  QObject::connect(serverDownTimer, &QTimer::timeout, [&]() {
+      performForcedLogout("server_down_timeout");
+  });
+
+  // Start server-down timer when either alert or position disconnects
+  QObject::connect(&fraudManager, &FraudManager::serverDisconnected, [&]() {
+      qDebug() << "[Main] fraudManager disconnected -> starting serverDownTimer";
+      if (!serverDownTimer->isActive()) serverDownTimer->start();
+  });
+  QObject::connect(&positionManager, &PositionManager::positionDisconnected, [&]() {
+      qDebug() << "[Main] positionManager disconnected -> starting serverDownTimer";
+      if (!serverDownTimer->isActive()) serverDownTimer->start();
+  });
+
+  // Cancel server-down timer when connections are restored
+  QObject::connect(&fraudManager, &FraudManager::serverConnected, [&]() {
+      if (serverDownTimer->isActive()) {
+          qDebug() << "[Main] fraudManager reconnected -> cancelling serverDownTimer";
+          serverDownTimer->stop();
+      }
+  });
+  QObject::connect(&positionManager, &PositionManager::positionConnected, [&]() {
+      if (serverDownTimer->isActive()) {
+          qDebug() << "[Main] positionManager reconnected -> cancelling serverDownTimer";
+          serverDownTimer->stop();
+      }
+  });
+
+  // Immediate forced logout when server sends AUTH|FORCE_LOGOUT
+  QObject::connect(&fraudManager, &FraudManager::forceLogoutEvent, [&](const QString &raw) {
+      qDebug() << "[Main] forceLogoutEvent received:" << raw;
+      performForcedLogout("force_logout_event");
+  });
 
     // Position channel (separate socket) for SUB_POS/UNSUB_POS and POS events
     const QString posHost = env.value("POS_SERVER_HOST", alertHost);
@@ -103,7 +157,7 @@ int main(int argc, char *argv[]) {
     // Position connection is started after successful login to avoid unauthenticated connects.
 
     // Expose RTSP stream URL to QML so QML MediaPlayer can use it
-    const QString rtspStreamUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.82:8554/cam1");
+    const QString rtspStreamUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.101:8554/cam1");
     engine.rootContext()->setContextProperty("rtspStreamUrl", rtspStreamUrl);
 
     // Auto-subscribe helper for testing: if SFEPS_AUTO_SUB_POS_ID env var is set,

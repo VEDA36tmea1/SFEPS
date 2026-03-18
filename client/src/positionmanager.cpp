@@ -162,14 +162,17 @@ void PositionManager::attachPosSocketSignals()
     });
     connect(posSocket, &QTcpSocket::connected, this, [this]() {
         qDebug() << "[PositionManager] Position socket connected to" << lastPosHost << ":" << lastPosPort;
+        emit positionConnected();
     });
     connect(posSocket, &QTcpSocket::disconnected, this, [this]() {
         qDebug() << "[PositionManager] Position socket disconnected.";
+        emit positionDisconnected();
         scheduleReconnect();
     });
     connect(posSocket, &QTcpSocket::connected, this, [this]() {
         qDebug() << "[PositionManager] Position socket connected to" << lastPosHost << ":" << lastPosPort;
         resetReconnectBackoff();
+        emit positionConnected();
     });
 }
 
