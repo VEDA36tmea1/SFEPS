@@ -215,6 +215,8 @@ void RfidMonitor::run_loop() {
                             std::string now = get_current_datetime();
                             (void)device_id;
                             (void)tag_timestamp;
+                            std::cout << "[rfid_monitor.cpp] " << ">>> [RFID Tag] UID: " << uid
+                                      << " (" << card_age_text << ") Time: " << now << std::endl;
 
                             if (uid.empty() || card_age_text.empty()) {
                                 std::cerr << "[rfid_monitor.cpp] "
