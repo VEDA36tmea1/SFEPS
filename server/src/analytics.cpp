@@ -2,60 +2,22 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cerrno>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <iostream>
-#include <limits>
 #include <string_view>
 #include <vector>
 
 #include "alert.h"
+#include "env_utils.h"
+#include "sample_utils.h"
+#include "text_utils.h"
 
 namespace {
 constexpr const char* kAnalyticsInsertQuery =
     "INSERT INTO analytics_logs (object_id, card_age_text, age, is_fraud, created_at) "
     "VALUES (?, ?, ?, ?, NOW())";
-
-std::size_t load_env_size_t(const char* name, std::size_t default_value, std::size_t min_value) {
-    const char* raw = std::getenv(name);
-    if (raw == nullptr || raw[0] == '\0') return default_value;
-
-    errno = 0;
-    char* end = nullptr;
-    unsigned long long parsed = std::strtoull(raw, &end, 10);
-    if (errno != 0 || end == raw || (end != nullptr && *end != '\0') || parsed < min_value ||
-        parsed > static_cast<unsigned long long>(std::numeric_limits<std::size_t>::max())) {
-        std::cerr << "[analytics.cpp] Invalid env " << name << "=" << raw
-                  << ", using default=" << default_value << std::endl;
-        return default_value;
-    }
-
-    return static_cast<std::size_t>(parsed);
-}
-
-std::string load_env_string(const char* name, const char* default_value) {
-    const char* raw = std::getenv(name);
-    if (raw == nullptr || raw[0] == '\0') {
-        return std::string(default_value != nullptr ? default_value : "");
-    }
-    return std::string(raw);
-}
-
-bool should_sample(std::uint64_t counter, std::size_t interval) {
-    if (counter == 1) return true;
-    if (interval == 0) return false;
-    return (counter % interval) == 0;
-}
-
-std::string trim(const std::string& s) {
-    std::size_t a = 0;
-    while (a < s.size() && std::isspace(static_cast<unsigned char>(s[a])) != 0) ++a;
-    std::size_t b = s.size();
-    while (b > a && std::isspace(static_cast<unsigned char>(s[b - 1])) != 0) --b;
-    return s.substr(a, b - a);
-}
+constexpr const char* kAnalyticsLogPrefix = "[analytics.cpp]";
 
 struct ParsedEventForAnalytics {
     std::string rule_name;
@@ -63,6 +25,80 @@ struct ParsedEventForAnalytics {
     std::string tag_time;
     bool is_active = false;
 };
+
+std::string extract_tag_time(const std::string& raw) {
+    constexpr const char* kUnknownTagTime = "Unknown";
+    const std::size_t utc_pos = raw.find("UtcTime=\"");
+    if (utc_pos == std::string::npos) return kUnknownTagTime;
+
+    const std::size_t start = utc_pos + 9;
+    const std::size_t end = raw.find("\"", start);
+    if (end == std::string::npos) return kUnknownTagTime;
+    return raw.substr(start, end - start);
+}
+
+std::vector<ParsedEventForAnalytics> parse_events_for_analytics(const std::string& raw,
+                                                                const std::string& tag_time) {
+    std::vector<ParsedEventForAnalytics> parsed_events;
+    parsed_events.reserve(4);
+
+    std::size_t search_pos = 0;
+    while (true) {
+        const std::size_t msg_start = raw.find("<wsnt:NotificationMessage", search_pos);
+        if (msg_start == std::string::npos) break;
+
+        const std::size_t msg_end = raw.find("</wsnt:NotificationMessage>", msg_start);
+        if (msg_end == std::string::npos) break;
+
+        const std::string message_block = raw.substr(msg_start, msg_end - msg_start);
+        ParsedEventForAnalytics event;
+        event.tag_time = tag_time;
+
+        const std::size_t name_item_pos = message_block.find("Name=\"RuleName\"");
+        if (name_item_pos != std::string::npos) {
+            const std::size_t val_pos = message_block.find("Value=\"", name_item_pos);
+            if (val_pos != std::string::npos) {
+                const std::size_t start = val_pos + 7;
+                const std::size_t end = message_block.find("\"", start);
+                if (end != std::string::npos) {
+                    event.rule_name = message_block.substr(start, end - start);
+                }
+            }
+        }
+
+        const std::size_t state_item_pos = message_block.find("Name=\"State\"");
+        if (state_item_pos != std::string::npos) {
+            const std::size_t val_pos = message_block.find("Value=\"", state_item_pos);
+            if (val_pos != std::string::npos) {
+                const std::size_t start = val_pos + 7;
+                const std::size_t end = message_block.find("\"", start);
+                if (end != std::string::npos) {
+                    const std::string state_val = message_block.substr(start, end - start);
+                    event.is_active = (state_val == "true" || state_val == "1");
+                }
+            }
+        }
+
+        const std::size_t id_item_pos = message_block.find("Name=\"ObjectId\"");
+        if (id_item_pos != std::string::npos) {
+            const std::size_t val_pos = message_block.find("Value=\"", id_item_pos);
+            if (val_pos != std::string::npos) {
+                const std::size_t start = val_pos + 7;
+                const std::size_t end = message_block.find("\"", start);
+                if (end != std::string::npos) {
+                    event.object_id = message_block.substr(start, end - start);
+                }
+            }
+        }
+
+        if (!event.rule_name.empty()) {
+            parsed_events.push_back(std::move(event));
+        }
+        search_pos = msg_end;
+    }
+
+    return parsed_events;
+}
 
 struct CardAgeDecision {
     const char* canonical_text;
@@ -76,14 +112,6 @@ enum AgeBucket {
     kAgeBucketAdult = 1,
     kAgeBucketSenior = 2
 };
-
-std::string to_lower_copy(std::string_view raw) {
-    std::string out(raw);
-    std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-    return out;
-}
 
 int extract_first_number(std::string_view raw) {
     std::size_t i = 0;
@@ -112,11 +140,7 @@ int age_bucket_from_age(std::string_view raw) {
 }
 
 CardAgeDecision evaluate_card_age(std::string_view raw) {
-    std::size_t begin = 0;
-    while (begin < raw.size() && std::isspace(static_cast<unsigned char>(raw[begin])) != 0) ++begin;
-    std::size_t end = raw.size();
-    while (end > begin && std::isspace(static_cast<unsigned char>(raw[end - 1])) != 0) --end;
-    const std::string normalized = to_lower_copy(raw.substr(begin, end - begin));
+    const std::string normalized = to_lower_copy(trim_copy(std::string(raw)));
 
     if (normalized == "adult") return {"Adult", kAgeBucketAdult, true};
     if (normalized == "senior") return {"Senior", kAgeBucketSenior, true};
@@ -137,7 +161,7 @@ std::string fraud_flag(bool is_fraud) {
 }
 
 std::string normalize_rule_name(std::string_view raw) {
-    return to_lower_copy(trim(std::string(raw)));
+    return to_lower_copy(trim_copy(std::string(raw)));
 }
 }  // namespace
 
@@ -152,11 +176,13 @@ AnalyticsProcessor::AnalyticsProcessor(const char* h,
       conn(nullptr),
       analyticsInsertStmt(nullptr),
       running(false),
-      max_lines_per_batch(load_env_size_t("SFEPS_META_MAX_LINES_PER_BATCH", 128, 1)),
-      max_queue_size(load_env_size_t("SFEPS_ANALYTICS_QUEUE_MAX", 200, 1)),
-      max_pending_size(load_env_size_t("SFEPS_META_PENDING_MAX", 2048, 1)),
-      pending_ttl_seconds(load_env_size_t("SFEPS_META_PENDING_TTL_SEC", 30, 1)),
-      drop_log_interval(load_env_size_t("SFEPS_DROP_LOG_INTERVAL", 100, 1)),
+      max_lines_per_batch(
+          load_env_size_t("SFEPS_META_MAX_LINES_PER_BATCH", 128, 1, kAnalyticsLogPrefix)),
+      max_queue_size(load_env_size_t("SFEPS_ANALYTICS_QUEUE_MAX", 200, 1, kAnalyticsLogPrefix)),
+      max_pending_size(load_env_size_t("SFEPS_META_PENDING_MAX", 2048, 1, kAnalyticsLogPrefix)),
+      pending_ttl_seconds(
+          load_env_size_t("SFEPS_META_PENDING_TTL_SEC", 30, 1, kAnalyticsLogPrefix)),
+      drop_log_interval(load_env_size_t("SFEPS_DROP_LOG_INTERVAL", 100, 1, kAnalyticsLogPrefix)),
       enter_rule_name(normalize_rule_name(load_env_string("SFEPS_META_ENTER_RULE", "enterline"))),
       outline_rule_name(normalize_rule_name(load_env_string("SFEPS_META_OUTLINE_RULE", "outline"))),
       dropped_line_limit_count(0),
@@ -273,7 +299,7 @@ bool AnalyticsProcessor::getObjectPositionSnapshot(const std::string& object_id,
                                                    ObjectPositionSnapshot& out) const {
     constexpr std::size_t kMaxObjectIdBytes = 128;
 
-    std::string key = trim(object_id);
+    std::string key = trim_copy(object_id);
     if (key.empty()) return false;
     if (key.size() > kMaxObjectIdBytes) {
         key.resize(kMaxObjectIdBytes);
@@ -376,74 +402,9 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
         xml_parser.parseHumanObjectsForAnalytics(raw);
     // Event fields are parsed here in server from NotificationMessage:
     // RuleName, State, ObjectId, and frame UtcTime(tag_time).
-    std::vector<ParsedEventForAnalytics> parsed_events;
-    parsed_events.reserve(4);
-
-    std::string tag_time = "Unknown";
-    const std::size_t utc_pos = raw.find("UtcTime=\"");
-    if (utc_pos != std::string::npos) {
-        const std::size_t start = utc_pos + 9;
-        const std::size_t end = raw.find("\"", start);
-        if (end != std::string::npos) {
-            tag_time = raw.substr(start, end - start);
-        }
-    }
-
-    std::size_t search_pos = 0;
-    while (true) {
-        const std::size_t msg_start = raw.find("<wsnt:NotificationMessage", search_pos);
-        if (msg_start == std::string::npos) break;
-
-        const std::size_t msg_end = raw.find("</wsnt:NotificationMessage>", msg_start);
-        if (msg_end == std::string::npos) break;
-
-        const std::string message_block = raw.substr(msg_start, msg_end - msg_start);
-        ParsedEventForAnalytics event;
-        event.tag_time = tag_time;
-
-        const std::size_t name_item_pos = message_block.find("Name=\"RuleName\"");
-        if (name_item_pos != std::string::npos) {
-            const std::size_t val_pos = message_block.find("Value=\"", name_item_pos);
-            if (val_pos != std::string::npos) {
-                const std::size_t start = val_pos + 7;
-                const std::size_t end = message_block.find("\"", start);
-                if (end != std::string::npos) {
-                    event.rule_name = message_block.substr(start, end - start);
-                }
-            }
-        }
-
-        const std::size_t state_item_pos = message_block.find("Name=\"State\"");
-        if (state_item_pos != std::string::npos) {
-            const std::size_t val_pos = message_block.find("Value=\"", state_item_pos);
-            if (val_pos != std::string::npos) {
-                const std::size_t start = val_pos + 7;
-                const std::size_t end = message_block.find("\"", start);
-                if (end != std::string::npos) {
-                    const std::string state_val = message_block.substr(start, end - start);
-                    event.is_active = (state_val == "true" || state_val == "1");
-                }
-            }
-        }
-
-        const std::size_t id_item_pos = message_block.find("Name=\"ObjectId\"");
-        if (id_item_pos != std::string::npos) {
-            const std::size_t val_pos = message_block.find("Value=\"", id_item_pos);
-            if (val_pos != std::string::npos) {
-                const std::size_t start = val_pos + 7;
-                const std::size_t end = message_block.find("\"", start);
-                if (end != std::string::npos) {
-                    event.object_id = message_block.substr(start, end - start);
-                }
-            }
-        }
-
-        if (!event.rule_name.empty()) {
-            parsed_events.push_back(std::move(event));
-        }
-
-        search_pos = msg_end;
-    }
+    const std::string tag_time = extract_tag_time(raw);
+    const std::vector<ParsedEventForAnalytics> parsed_events =
+        parse_events_for_analytics(raw, tag_time);
 
     ++parsed_xml_ok_count;
 
@@ -464,7 +425,7 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
 
         // Consume object values that already came from Camera/get_metadata parser.
         for (const auto& human_object : parsed_objects) {
-            std::string object_id = trim(human_object.id);
+            std::string object_id = trim_copy(human_object.id);
             if (object_id.empty()) continue;
             if (object_id.size() > kMaxObjectIdBytes) {
                 object_id.resize(kMaxObjectIdBytes);
@@ -489,7 +450,7 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
             if (!event.is_active) continue;
 
             const std::string rule_name = normalize_rule_name(event.rule_name);
-            std::string object_id = trim(event.object_id);
+            std::string object_id = trim_copy(event.object_id);
             if (object_id.empty()) continue;
             if (object_id.size() > kMaxObjectIdBytes) {
                 object_id.resize(kMaxObjectIdBytes);

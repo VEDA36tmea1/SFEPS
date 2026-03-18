@@ -131,18 +131,8 @@ bool EspManager::publishFraudBbox(const FraudBboxPayload& payload) {
         return false;
     }
 
-    bool delivered = false;
-    for (auto it = clients_.begin(); it != clients_.end();) {
-        if (!sendLineLocked(*it, line, static_cast<std::size_t>(line_len))) {
-            std::cout << "[esp_manager.cpp] [ESP] send failed, closing fd=" << *it
-                      << " err=" << errno << " (" << std::strerror(errno) << ")" << std::endl;
-            ::close(*it);
-            it = clients_.erase(it);
-            continue;
-        }
-        delivered = true;
-        ++it;
-    }
+    const bool delivered =
+        broadcastLineLocked(line, static_cast<std::size_t>(line_len), true);
 
     if (delivered) {
         std::cout << "[esp_manager.cpp] [ESP] sent fraud bbox: object_id=" << payload.object_id
@@ -171,18 +161,7 @@ bool EspManager::publishTrackPos(const TrackPosPayload& payload) {
 
     std::lock_guard<std::mutex> lock(clients_mutex_);
     if (clients_.empty()) return false;
-
-    bool delivered = false;
-    for (auto it = clients_.begin(); it != clients_.end();) {
-        if (!sendLineLocked(*it, line, static_cast<std::size_t>(line_len))) {
-            ::close(*it);
-            it = clients_.erase(it);
-            continue;
-        }
-        delivered = true;
-        ++it;
-    }
-    return delivered;
+    return broadcastLineLocked(line, static_cast<std::size_t>(line_len), false);
 }
 
 bool EspManager::publishTrackEnd(const std::string& object_id, const std::string& reason) {
@@ -194,10 +173,24 @@ bool EspManager::publishTrackEnd(const std::string& object_id, const std::string
 
     std::lock_guard<std::mutex> lock(clients_mutex_);
     if (clients_.empty()) return false;
+    return broadcastLineLocked(line.c_str(), line.size(), false);
+}
 
+bool EspManager::sendLineLocked(int fd, const char* data, std::size_t len) {
+    return send_all_plain(fd, data, len);
+}
+
+bool EspManager::broadcastLineLocked(const char* data,
+                                     std::size_t len,
+                                     bool verbose_error_log) {
     bool delivered = false;
     for (auto it = clients_.begin(); it != clients_.end();) {
-        if (!sendLineLocked(*it, line.c_str(), line.size())) {
+        if (!sendLineLocked(*it, data, len)) {
+            if (verbose_error_log) {
+                std::cout << "[esp_manager.cpp] [ESP] send failed, closing fd=" << *it
+                          << " err=" << errno << " (" << std::strerror(errno) << ")"
+                          << std::endl;
+            }
             ::close(*it);
             it = clients_.erase(it);
             continue;
@@ -206,10 +199,6 @@ bool EspManager::publishTrackEnd(const std::string& object_id, const std::string
         ++it;
     }
     return delivered;
-}
-
-bool EspManager::sendLineLocked(int fd, const char* data, std::size_t len) {
-    return send_all_plain(fd, data, len);
 }
 
 void EspManager::sendStartupReadyAfterDelay() {
@@ -235,16 +224,7 @@ void EspManager::sendStartupReadyAfterDelay() {
         return;
     }
 
-    for (auto it = clients_.begin(); it != clients_.end();) {
-        if (!sendLineLocked(*it, kStartupReadyMessage, std::strlen(kStartupReadyMessage))) {
-            std::cout << "[esp_manager.cpp] [ESP] startup ready send failed, closing fd=" << *it
-                      << " err=" << errno << " (" << std::strerror(errno) << ")" << std::endl;
-            ::close(*it);
-            it = clients_.erase(it);
-            continue;
-        }
-        ++it;
-    }
+    broadcastLineLocked(kStartupReadyMessage, std::strlen(kStartupReadyMessage), true);
 
     std::cout << "[esp_manager.cpp] [ESP] startup ready message sent." << std::endl;
 }
