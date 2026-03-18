@@ -100,7 +100,7 @@ int main(int argc, char *argv[]) {
                                                         : parseEnvPort(env, "POS_SERVER_PORT", 5558);
     qDebug() << "[Main] Position server:" << posHost << ":" << posPort
                      << (posTlsEnabled ? "(TLS)" : "(Plain)");
-    positionManager.connectPositionServer(posHost, posPort);
+    // Position connection is started after successful login to avoid unauthenticated connects.
 
     // Expose RTSP stream URL to QML so QML MediaPlayer can use it
     const QString rtspStreamUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.101:8554/cam1");
@@ -144,6 +144,44 @@ int main(int argc, char *argv[]) {
               win->deleteLater();
           }
       }
+  });
+
+  // Start Position connection after login success (move from startup)
+  QObject::connect(&authManager, &AuthManager::loginSuccess, [&engine, mainUrl, &positionManager, posHost, posPort](){
+      Q_UNUSED(mainUrl);
+      Q_UNUSED(engine);
+      qDebug() << "[Main] loginSuccess: initiating Position connection to" << posHost << posPort;
+      positionManager.connectPositionServer(posHost, posPort);
+  });
+
+  // When logout is requested, close main windows and show Login view again
+  QObject::connect(&authManager, &AuthManager::logoutRequested, [&engine, loginUrl, &positionManager](){
+      qDebug() << "[Main] logoutRequested: closing main windows, disconnecting Position and loading login view";
+      // Ensure Position socket is closed so server stops sending POS events
+      positionManager.disconnectPositionServer();
+      const auto rootObjects = engine.rootObjects();
+      for (auto obj : rootObjects) {
+          QWindow *win = qobject_cast<QWindow*>(obj);
+          if (win && win->title() == "Hanwha Vision SFEPS") {
+              win->close();
+              win->deleteLater();
+          }
+      }
+      engine.load(loginUrl);
+  });
+
+  // Start Position connection after login success (move from startup)
+  QObject::connect(&authManager, &AuthManager::loginSuccess, [&engine, mainUrl, &positionManager, posHost, posPort](){
+      Q_UNUSED(mainUrl);
+      Q_UNUSED(engine);
+      qDebug() << "[Main] loginSuccess: initiating Position connection to" << posHost << posPort;
+      positionManager.connectPositionServer(posHost, posPort);
+  });
+
+  // On app exit, try to notify auth server to logout so server can immediately cleanup sessions
+  QObject::connect(&app, &QCoreApplication::aboutToQuit, [&authManager]() {
+      qDebug() << "[Main] aboutToQuit: sending logout";
+      authManager.sendLogout();
   });
 
   // 필요한 경우 모듈 임포트 경로 추가

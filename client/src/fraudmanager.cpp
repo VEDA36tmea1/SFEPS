@@ -266,8 +266,8 @@ void FraudManager::onReadyRead()
         bool isFraud = false;
         if (!s.isEmpty()) {
             qDebug() << "[FraudManager] Received (no-nl fallback):" << s;
-            if (parseFraudMessage(s, objectId, cardAgeText, ageGroup, isFraud)) {
-                emit fraudDetected(objectId, cardAgeText, ageGroup, isFraud);
+            if (parseFraudMessage(s, objectId, cardAgeText, age, isFraud)) {
+                emit fraudDetected(objectId, cardAgeText, age, isFraud);
                 recvBuffer.clear();
             }
         }

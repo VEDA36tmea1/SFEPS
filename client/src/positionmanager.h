@@ -15,6 +15,7 @@ public:
 
     Q_INVOKABLE void connectPositionServer(const QString &host = "192.168.0.101", int port = 5558);
     Q_INVOKABLE void sendPositionCommand(const QString &msg);
+    Q_INVOKABLE void disconnectPositionServer();
 
 signals:
     void positionsUpdated(const QVariantList &list);
@@ -38,6 +39,13 @@ private:
     QHash<QString, qint64> m_lastSeen;
     int m_ttlMs = 2000; // milliseconds to keep an object without updates before dropping
     QSet<QString> m_suspected; // IDs currently marked as suspected/fraud
+    // reconnect/backoff
+    QTimer *m_reconnectTimer = nullptr;
+    int m_reconnectDelayMs = 1000;
+    const int m_reconnectMinMs = 1000;
+    const int m_reconnectMaxMs = 30000;
+    void scheduleReconnect();
+    void resetReconnectBackoff();
 };
 
 #endif // POSITIONMANAGER_H
