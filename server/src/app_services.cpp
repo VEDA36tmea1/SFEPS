@@ -397,7 +397,7 @@ void run_fraud_notifier(std::atomic<bool>& running, const SecurityRuntimeOptions
                     continue;
                 }
 
-                add_alert_plain_client(client_fd);
+                add_alert_plain_client(client_fd, client_ip);
                 std::cout << "[main.cpp] [Alert] plain client connected: " << client_ip << ":"
                           << ntohs(peer_addr.sin_port) << " (fd=" << client_fd << ")" << std::endl;
                 continue;
@@ -434,7 +434,7 @@ void run_fraud_notifier(std::atomic<bool>& running, const SecurityRuntimeOptions
                     continue;
                 }
 
-                add_alert_tls_client(std::move(client));
+                add_alert_tls_client(std::move(client), client_ip);
                 std::cout << "[main.cpp] [Alert] TLS client connected: " << client_ip << ":"
                           << ntohs(peer_addr.sin_port) << " (fd=" << client_fd << ")" << std::endl;
             }
@@ -539,8 +539,11 @@ void run_position_stream_service(std::atomic<bool>& running,
     std::vector<AnalyticsProcessor::ObjectPositionSnapshot> obj_snapshots;
     std::unordered_set<std::string> obj_ids_this_tick;
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> pending_deauth;
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point>
+        last_force_logout_sent_at;
     const auto deauth_grace =
         std::chrono::milliseconds(std::max(0, sec_cfg.auth_deauth_grace_ms));
+    const auto force_logout_cooldown = std::chrono::seconds(5);
     constexpr std::size_t kMaxRecvBuffer = 16 * 1024;
     constexpr std::size_t kReadBufferSize = 4096;
     char read_buffer[kReadBufferSize];
@@ -593,6 +596,25 @@ void run_position_stream_service(std::atomic<bool>& running,
             }
             it = pending_deauth.erase(it);
         }
+    };
+    const auto send_force_logout_event = [&](const std::string& ip, const char* proto) {
+        if (ip.empty()) return;
+
+        const auto now = std::chrono::steady_clock::now();
+        const auto sent_it = last_force_logout_sent_at.find(ip);
+        if (sent_it != last_force_logout_sent_at.end() &&
+            (now - sent_it->second) < force_logout_cooldown) {
+            std::cout << "[main.cpp] [Auth] force logout event skipped (cooldown): ip=" << ip
+                      << ", proto=" << (proto ? proto : "UNKNOWN") << std::endl;
+            return;
+        }
+
+        const std::string logout_msg = "AUTH|FORCE_LOGOUT|REASON=POSITION_UNAUTHENTICATED|PROTO=" +
+                                       std::string(proto ? proto : "UNKNOWN") + "\n";
+        send_alert_to_ip_clients(ip, logout_msg);
+        last_force_logout_sent_at[ip] = now;
+        std::cout << "[main.cpp] [Auth] force logout event dispatched: ip=" << ip
+                  << ", proto=" << (proto ? proto : "UNKNOWN") << std::endl;
     };
     const auto switch_esp_track_target = [&](const std::string& requested_id) {
         if (requested_id.empty()) return;
@@ -686,6 +708,7 @@ void run_position_stream_service(std::atomic<bool>& running,
                         std::cout
                             << "[main.cpp] [Position] Plain connection rejected: unauthenticated ip="
                             << client_ip << std::endl;
+                        send_force_logout_event(client_ip, "PLAIN");
                         close(client_fd);
                         continue;
                     }
@@ -735,6 +758,7 @@ void run_position_stream_service(std::atomic<bool>& running,
                         std::cout
                             << "[main.cpp] [Position] TLS connection rejected: unauthenticated ip="
                             << client_ip << std::endl;
+                        send_force_logout_event(client_ip, "TLS");
                         close_tls_client(client);
                         continue;
                     }
