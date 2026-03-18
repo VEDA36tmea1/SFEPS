@@ -14,7 +14,7 @@ constexpr int kDefaultAuthTlsPort = 6555;
 constexpr int kDefaultAuthPlainPort = 5555;
 constexpr bool kDefaultAuthTlsEnable = true;
 constexpr bool kDefaultPlainFallbackEnable = false;
-constexpr const char* kDefaultAuthHost = "192.168.0.82";
+constexpr const char* kDefaultAuthHost = "192.168.0.101";
 constexpr const char* kResourceCaPath = ":/certs/auth_ca.pem";
 
 QString maskUserId(const QString& userId)
@@ -405,5 +405,20 @@ void AuthManager::sendLogout()
 
     socket->disconnectFromHost();
     // Notify UI/main that logout was requested so app can show login view
+    emit logoutRequested();
+}
+
+void AuthManager::clearCurrentUser()
+{
+    if (!m_currentUserId.isEmpty()) {
+        m_currentUserId.clear();
+        emit currentUserIdChanged();
+        qDebug() << "[AuthManager] currentUserId cleared due to forced logout";
+    }
+}
+
+void AuthManager::notifyLocalLogout()
+{
+    qDebug() << "[AuthManager] notifyLocalLogout: emitting logoutRequested";
     emit logoutRequested();
 }
