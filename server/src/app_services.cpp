@@ -8,16 +8,20 @@
 #include <cerrno>
 #include <chrono>
 #include <cctype>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
-#include <iostream>
 #include <algorithm>
+#include <filesystem>
+#include <iostream>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+#include <mysql/mysql.h>
 
 #include "analytics.h"
 #include "alert.h"
@@ -37,6 +41,10 @@ constexpr int AUDIO_PORT = 5556;
 constexpr int ALERT_PORT = 5557;
 constexpr int POSITION_PORT = 5558;
 constexpr std::size_t kMaxObjectIdBytes = 128;
+constexpr std::size_t kMaxVideoCatalogRequestBytes = 4096;
+constexpr int kDefaultVideoPage = 1;
+constexpr int kDefaultVideoPageSize = 20;
+constexpr int kMaxVideoPageSize = 100;
 
 std::string trim_copy(const std::string& s) {
     std::size_t start = 0;
@@ -125,6 +133,148 @@ std::string normalize_object_id_token(const std::string& raw) {
         object_id.resize(kMaxObjectIdBytes);
     }
     return object_id;
+}
+
+struct VideoCatalogRequest {
+    std::string from;
+    std::string to;
+    std::string q;
+    int page = kDefaultVideoPage;
+    int size = kDefaultVideoPageSize;
+};
+
+std::string upper_copy(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::toupper(c));
+    });
+    return value;
+}
+
+bool parse_int_in_range(const std::string& raw, int min_value, int max_value, int& out) {
+    if (raw.empty()) return false;
+
+    errno = 0;
+    char* end = nullptr;
+    const long parsed = std::strtol(raw.c_str(), &end, 10);
+    if (errno != 0 || end == raw.c_str() || (end != nullptr && *end != '\0')) return false;
+    if (parsed < min_value || parsed > max_value) return false;
+
+    out = static_cast<int>(parsed);
+    return true;
+}
+
+std::string mysql_escape_literal(MYSQL* conn, const std::string& input) {
+    if (conn == nullptr || input.empty()) return input;
+
+    std::string escaped(input.size() * 2 + 1, '\0');
+    const auto escaped_len = mysql_real_escape_string(
+        conn, escaped.data(), input.c_str(), static_cast<unsigned long>(input.size()));
+    escaped.resize(static_cast<std::size_t>(escaped_len));
+    return escaped;
+}
+
+std::string normalize_to_iso8601(std::string timestamp) {
+    timestamp = trim_copy(timestamp);
+    if (timestamp.size() >= 19 && timestamp[10] == ' ') {
+        timestamp[10] = 'T';
+        timestamp.resize(19);
+    }
+    return timestamp;
+}
+
+std::string sanitize_error_field(std::string message) {
+    for (char& c : message) {
+        if (c == '\n' || c == '\r' || c == '|') c = ' ';
+    }
+    return trim_copy(message);
+}
+
+std::string join_http_url(const std::string& base, const std::string& filename) {
+    std::string normalized_base = trim_copy(base);
+    while (!normalized_base.empty() && normalized_base.back() == '/') {
+        normalized_base.pop_back();
+    }
+    if (normalized_base.empty()) return filename;
+    return normalized_base + "/" + filename;
+}
+
+bool parse_video_catalog_request(const std::string& line,
+                                 VideoCatalogRequest& out,
+                                 std::string& out_code,
+                                 std::string& out_msg) {
+    const std::string trimmed = trim_copy(line);
+    if (trimmed.empty()) {
+        out_code = "INVALID_REQUEST";
+        out_msg = "empty request";
+        return false;
+    }
+
+    std::vector<std::string> parts;
+    std::size_t start = 0;
+    while (start <= trimmed.size()) {
+        const std::size_t sep = trimmed.find('|', start);
+        if (sep == std::string::npos) {
+            parts.push_back(trimmed.substr(start));
+            break;
+        }
+        parts.push_back(trimmed.substr(start, sep - start));
+        start = sep + 1;
+    }
+
+    if (parts.empty() || trim_copy(parts[0]) != "LIST_REC") {
+        out_code = "INVALID_REQUEST";
+        out_msg = "expected LIST_REC command";
+        return false;
+    }
+
+    for (std::size_t i = 1; i < parts.size(); ++i) {
+        const std::string token = trim_copy(parts[i]);
+        if (token.empty()) continue;
+
+        const std::size_t eq = token.find('=');
+        if (eq == std::string::npos) {
+            out_code = "INVALID_REQUEST";
+            out_msg = "invalid token: " + token;
+            return false;
+        }
+
+        const std::string key = upper_copy(trim_copy(token.substr(0, eq)));
+        const std::string value = trim_copy(token.substr(eq + 1));
+        if (key == "FROM") {
+            out.from = value;
+            continue;
+        }
+        if (key == "TO") {
+            out.to = value;
+            continue;
+        }
+        if (key == "Q") {
+            out.q = value;
+            continue;
+        }
+        if (key == "PAGE") {
+            if (!parse_int_in_range(value, 1, 1000000, out.page)) {
+                out_code = "INVALID_REQUEST";
+                out_msg = "PAGE must be integer >= 1";
+                return false;
+            }
+            continue;
+        }
+        if (key == "SIZE") {
+            if (!parse_int_in_range(value, 1, kMaxVideoPageSize, out.size)) {
+                out_code = "INVALID_REQUEST";
+                out_msg = "SIZE must be integer in range 1..100";
+                return false;
+            }
+            continue;
+        }
+
+        out_code = "INVALID_REQUEST";
+        out_msg = "unsupported parameter: " + key;
+        return false;
+    }
+
+    return true;
 }
 
 }  // namespace
@@ -447,6 +597,389 @@ void run_fraud_notifier(std::atomic<bool>& running, const SecurityRuntimeOptions
     std::cout << "[main.cpp] [Alert] notifier thread stopped." << std::endl;
 }
 
+void run_video_catalog_service(std::atomic<bool>& running,
+                               const RuntimeConfig& cfg,
+                               const SecurityRuntimeOptions& sec_cfg) {
+    namespace fs = std::filesystem;
+
+    int plain_server_fd = -1;
+    if (sec_cfg.app_plaintext_enable) {
+        plain_server_fd =
+            create_listen_socket(sec_cfg.video_catalog_port, "VideoCatalog", sec_cfg.app_bind_ip);
+        if (plain_server_fd < 0) {
+            std::cerr << "[main.cpp] [VideoCatalog] plaintext listener disabled." << std::endl;
+        } else {
+            std::cout << "[main.cpp] [VideoCatalog] listening plaintext on port "
+                      << sec_cfg.video_catalog_port << std::endl;
+        }
+    }
+
+    TlsServer tls_server;
+    if (sec_cfg.app_tls_enable) {
+        std::string tls_err;
+        TlsServerConfig tls_cfg;
+        tls_cfg.port = sec_cfg.video_catalog_tls_port;
+        tls_cfg.cert_file = sec_cfg.app_tls_cert_file;
+        tls_cfg.key_file = sec_cfg.app_tls_key_file;
+        tls_cfg.handshake_timeout_ms = sec_cfg.app_tls_handshake_timeout_ms;
+        tls_cfg.bind_ip = sec_cfg.app_bind_ip;
+        tls_cfg.tag = "VideoCatalogTLS";
+
+        if (!init_tls_server(tls_server, tls_cfg, tls_err)) {
+            std::cerr << "[main.cpp] [VideoCatalog] failed to start TLS listener: " << tls_err
+                      << std::endl;
+        } else {
+            std::cout << "[main.cpp] [VideoCatalog] listening TLS on port "
+                      << sec_cfg.video_catalog_tls_port << std::endl;
+        }
+    }
+
+    if (plain_server_fd < 0 && tls_server.listen_fd < 0) {
+        std::cerr << "[main.cpp] [VideoCatalog] no listener available. service disabled."
+                  << std::endl;
+        return;
+    }
+
+    MYSQL* db_conn = nullptr;
+    auto close_db = [&]() {
+        if (db_conn != nullptr) {
+            mysql_close(db_conn);
+            db_conn = nullptr;
+        }
+    };
+    auto ensure_db = [&]() -> bool {
+        if (db_conn != nullptr) return true;
+
+        db_conn = mysql_init(nullptr);
+        if (db_conn == nullptr) {
+            std::cerr << "[main.cpp] [VideoCatalog] mysql_init failed." << std::endl;
+            return false;
+        }
+
+        if (mysql_real_connect(db_conn, cfg.db_host.c_str(), cfg.db_user.c_str(),
+                               cfg.db_pass.c_str(), cfg.db_name_analytics.c_str(), 3306, nullptr,
+                               0) == nullptr) {
+            std::cerr << "[main.cpp] [VideoCatalog] DB connect failed: " << mysql_error(db_conn)
+                      << std::endl;
+            close_db();
+            return false;
+        }
+        return true;
+    };
+
+    auto send_error_plain = [&](int fd, const std::string& code, const std::string& msg) {
+        const std::string line =
+            "REC_ERR|" + sanitize_error_field(code) + "|" + sanitize_error_field(msg) + "\n";
+        (void)send_all_plain(fd, line.data(), line.size());
+    };
+    auto send_error_tls = [&](const TlsClientConnection& conn, const std::string& code,
+                              const std::string& msg) {
+        const std::string line =
+            "REC_ERR|" + sanitize_error_field(code) + "|" + sanitize_error_field(msg) + "\n";
+        (void)send_all_tls(conn, line.data(), line.size());
+    };
+
+    auto read_request_plain = [&](int fd, std::string& out_request, bool& out_oversized) -> bool {
+        out_request.clear();
+        out_oversized = false;
+
+        char chunk[1024];
+        while (running.load()) {
+            const ssize_t n = read(fd, chunk, sizeof(chunk));
+            if (n > 0) {
+                out_request.append(chunk, static_cast<std::size_t>(n));
+                if (out_request.size() > kMaxVideoCatalogRequestBytes) {
+                    out_oversized = true;
+                    break;
+                }
+                if (out_request.find('\n') != std::string::npos) break;
+                continue;
+            }
+            if (n == 0) break;
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+            return false;
+        }
+
+        if (out_request.empty() && !out_oversized) return false;
+        const std::size_t newline = out_request.find('\n');
+        if (newline != std::string::npos) out_request.resize(newline);
+        out_request = trim_copy(out_request);
+        return true;
+    };
+
+    auto read_request_tls = [&](const TlsClientConnection& conn, std::string& out_request,
+                                bool& out_oversized) -> bool {
+        out_request.clear();
+        out_oversized = false;
+
+        char chunk[1024];
+        while (running.load()) {
+            const ssize_t n = tls_read(conn, chunk, sizeof(chunk));
+            if (n > 0) {
+                out_request.append(chunk, static_cast<std::size_t>(n));
+                if (out_request.size() > kMaxVideoCatalogRequestBytes) {
+                    out_oversized = true;
+                    break;
+                }
+                if (out_request.find('\n') != std::string::npos) break;
+                continue;
+            }
+            if (n == 0) break;
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+            return false;
+        }
+
+        if (out_request.empty() && !out_oversized) return false;
+        const std::size_t newline = out_request.find('\n');
+        if (newline != std::string::npos) out_request.resize(newline);
+        out_request = trim_copy(out_request);
+        return true;
+    };
+
+    auto handle_request = [&](auto send_line, const std::string& request_line,
+                              const std::string& client_ip) -> bool {
+        VideoCatalogRequest request;
+        std::string parse_code;
+        std::string parse_msg;
+        if (!parse_video_catalog_request(request_line, request, parse_code, parse_msg)) {
+            send_line("REC_ERR|" + sanitize_error_field(parse_code) + "|" +
+                      sanitize_error_field(parse_msg) + "\n");
+            return false;
+        }
+
+        if (!ensure_db()) {
+            send_line("REC_ERR|DB_UNAVAILABLE|database connection failed\n");
+            return false;
+        }
+
+        std::vector<std::string> filters;
+        filters.push_back("1=1");
+        if (!request.from.empty()) {
+            filters.push_back("created_at >= '" + mysql_escape_literal(db_conn, request.from) +
+                              "'");
+        }
+        if (!request.to.empty()) {
+            filters.push_back("created_at <= '" + mysql_escape_literal(db_conn, request.to) + "'");
+        }
+        if (!request.q.empty()) {
+            filters.push_back("filename LIKE '%" + mysql_escape_literal(db_conn, request.q) + "%'");
+        }
+
+        std::string where_sql;
+        for (std::size_t i = 0; i < filters.size(); ++i) {
+            if (i > 0) where_sql += " AND ";
+            where_sql += filters[i];
+        }
+
+        long long total_rows = 0;
+        const std::string count_sql =
+            "SELECT COUNT(*) FROM recordings WHERE " + where_sql;
+        if (mysql_query(db_conn, count_sql.c_str()) != 0) {
+            send_line("REC_ERR|DB_ERROR|" + sanitize_error_field(mysql_error(db_conn)) + "\n");
+            close_db();
+            return false;
+        }
+        MYSQL_RES* count_res = mysql_store_result(db_conn);
+        if (count_res == nullptr) {
+            send_line("REC_ERR|DB_ERROR|failed to fetch count result\n");
+            close_db();
+            return false;
+        }
+        MYSQL_ROW count_row = mysql_fetch_row(count_res);
+        if (count_row != nullptr && count_row[0] != nullptr) {
+            total_rows = std::strtoll(count_row[0], nullptr, 10);
+            if (total_rows < 0) total_rows = 0;
+        }
+        mysql_free_result(count_res);
+
+        const long long offset =
+            static_cast<long long>(request.page - 1) * static_cast<long long>(request.size);
+        const std::string list_sql =
+            "SELECT id, filename, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') "
+            "FROM recordings WHERE " +
+            where_sql + " ORDER BY created_at DESC LIMIT " + std::to_string(offset) + ", " +
+            std::to_string(request.size);
+
+        if (mysql_query(db_conn, list_sql.c_str()) != 0) {
+            send_line("REC_ERR|DB_ERROR|" + sanitize_error_field(mysql_error(db_conn)) + "\n");
+            close_db();
+            return false;
+        }
+
+        MYSQL_RES* list_res = mysql_store_result(db_conn);
+        if (list_res == nullptr) {
+            send_line("REC_ERR|DB_ERROR|failed to fetch recordings result\n");
+            close_db();
+            return false;
+        }
+
+        std::size_t sent_records = 0;
+        while (running.load()) {
+            MYSQL_ROW row = mysql_fetch_row(list_res);
+            if (row == nullptr) break;
+            if (row[0] == nullptr || row[1] == nullptr || row[2] == nullptr) continue;
+
+            const std::string id = row[0];
+            const std::string filename = row[1];
+            const std::string created_at = row[2];
+
+            std::error_code ec;
+            if (!fs::exists(filename, ec) || !fs::is_regular_file(filename, ec)) {
+                continue;
+            }
+
+            const std::string play_url = join_http_url(
+                sec_cfg.video_http_base_url, fs::path(filename).filename().string());
+            const std::string rec_line =
+                "REC|" + id + "|" + normalize_to_iso8601(created_at) + "|0|" + play_url + "\n";
+            if (!send_line(rec_line)) {
+                mysql_free_result(list_res);
+                return false;
+            }
+            ++sent_records;
+        }
+        mysql_free_result(list_res);
+
+        const int has_next =
+            (offset + static_cast<long long>(request.size) < total_rows) ? 1 : 0;
+        const std::string end_line = "REC_END|PAGE=" + std::to_string(request.page) +
+                                     "|SIZE=" + std::to_string(request.size) +
+                                     "|TOTAL=" + std::to_string(total_rows) +
+                                     "|HAS_NEXT=" + std::to_string(has_next) + "\n";
+        if (!send_line(end_line)) return false;
+
+        std::cout << "[main.cpp] [VideoCatalog] served request: ip=" << client_ip
+                  << ", page=" << request.page << ", size=" << request.size
+                  << ", sent=" << sent_records << ", total=" << total_rows << std::endl;
+        return true;
+    };
+
+    std::size_t active_requests = 0;
+    while (running.load()) {
+        std::vector<pollfd> pfds;
+        if (plain_server_fd >= 0) pfds.push_back(pollfd {plain_server_fd, POLLIN, 0});
+        if (tls_server.listen_fd >= 0) pfds.push_back(pollfd {tls_server.listen_fd, POLLIN, 0});
+        if (pfds.empty()) break;
+
+        const int poll_ret = poll(pfds.data(), pfds.size(), 1000);
+        if (poll_ret < 0) {
+            if (errno == EINTR) continue;
+            std::cerr << "[VideoCatalog] poll() failed: " << std::strerror(errno) << std::endl;
+            break;
+        }
+        if (poll_ret == 0) continue;
+
+        for (const auto& pfd : pfds) {
+            if ((pfd.revents & POLLIN) == 0) continue;
+
+            if (pfd.fd == plain_server_fd) {
+                sockaddr_in peer_addr {};
+                socklen_t peer_len = sizeof(peer_addr);
+                const int client_fd =
+                    accept(plain_server_fd, reinterpret_cast<sockaddr*>(&peer_addr), &peer_len);
+                if (client_fd < 0) {
+                    if (!running.load()) break;
+                    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+                    std::cerr << "[VideoCatalog] accept() failed: " << std::strerror(errno)
+                              << std::endl;
+                    continue;
+                }
+
+                const std::string client_ip = peer_ip_to_string(peer_addr);
+                if (!is_ip_allowed(sec_cfg.alert_allow_ips, client_ip)) {
+                    std::cout << "[main.cpp] [VideoCatalog] Plain connection rejected by allowlist: ip="
+                              << client_ip << std::endl;
+                    close(client_fd);
+                    continue;
+                }
+                if (active_requests >= sec_cfg.video_max_clients) {
+                    send_error_plain(client_fd, "MAX_CLIENTS", "video catalog max clients reached");
+                    close(client_fd);
+                    continue;
+                }
+                apply_socket_read_timeout(client_fd, sec_cfg.socket_read_timeout_ms);
+
+                std::string request_line;
+                bool oversized = false;
+                if (!read_request_plain(client_fd, request_line, oversized)) {
+                    close(client_fd);
+                    continue;
+                }
+                if (oversized) {
+                    send_error_plain(client_fd, "PAYLOAD_TOO_LARGE",
+                                     "request exceeds maximum size");
+                    close(client_fd);
+                    continue;
+                }
+
+                auto send_plain_line = [&](const std::string& line) -> bool {
+                    return send_all_plain(client_fd, line.data(), line.size());
+                };
+                ++active_requests;
+                handle_request(send_plain_line, request_line, client_ip);
+                if (active_requests > 0) --active_requests;
+                close(client_fd);
+                continue;
+            }
+
+            if (pfd.fd == tls_server.listen_fd) {
+                sockaddr_in peer_addr {};
+                TlsClientConnection client {};
+                std::string tls_err;
+                const int client_fd = accept_tls_client(tls_server, client, peer_addr, tls_err);
+                if (client_fd < 0) {
+                    if (!running.load()) break;
+                    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+                    std::cerr << "[main.cpp] [VideoCatalog] TLS accept failed: " << tls_err
+                              << std::endl;
+                    continue;
+                }
+
+                const std::string client_ip = peer_ip_to_string(peer_addr);
+                if (!is_ip_allowed(sec_cfg.alert_allow_ips, client_ip)) {
+                    std::cout << "[main.cpp] [VideoCatalog] TLS connection rejected by allowlist: ip="
+                              << client_ip << std::endl;
+                    close_tls_client(client);
+                    continue;
+                }
+                if (active_requests >= sec_cfg.video_max_clients) {
+                    send_error_tls(client, "MAX_CLIENTS", "video catalog max clients reached");
+                    close_tls_client(client);
+                    continue;
+                }
+                apply_socket_read_timeout(client.fd, sec_cfg.socket_read_timeout_ms);
+
+                std::string request_line;
+                bool oversized = false;
+                if (!read_request_tls(client, request_line, oversized)) {
+                    close_tls_client(client);
+                    continue;
+                }
+                if (oversized) {
+                    send_error_tls(client, "PAYLOAD_TOO_LARGE", "request exceeds maximum size");
+                    close_tls_client(client);
+                    continue;
+                }
+
+                auto send_tls_line = [&](const std::string& line) -> bool {
+                    return send_all_tls(client, line.data(), line.size());
+                };
+                ++active_requests;
+                handle_request(send_tls_line, request_line, client_ip);
+                if (active_requests > 0) --active_requests;
+                close_tls_client(client);
+            }
+        }
+    }
+
+    if (plain_server_fd >= 0) close(plain_server_fd);
+    close_tls_server(tls_server);
+    close_db();
+    std::cout << "[main.cpp] [VideoCatalog] service thread stopped." << std::endl;
+}
+
 void run_position_stream_service(std::atomic<bool>& running,
                                  const SecurityRuntimeOptions& sec_cfg,
                                  AnalyticsProcessor& analytics,
@@ -633,6 +1166,53 @@ void run_position_stream_service(std::atomic<bool>& running,
             esp_active_object_id.clear();
             esp_has_last_sent = false;
         }
+    };
+    const auto reconcile_esp_track_target = [&]() {
+        if (esp_active_object_id.empty()) return;
+
+        bool still_requested = false;
+        for (const auto& c : plain_clients) {
+            if (c.active_object_id == esp_active_object_id) {
+                still_requested = true;
+                break;
+            }
+        }
+        if (!still_requested) {
+            for (const auto& c : tls_clients) {
+                if (c.active_object_id == esp_active_object_id) {
+                    still_requested = true;
+                    break;
+                }
+            }
+        }
+        if (still_requested) return;
+
+        std::string next_target;
+        for (const auto& c : plain_clients) {
+            if (!c.active_object_id.empty()) {
+                next_target = c.active_object_id;
+                break;
+            }
+        }
+        if (next_target.empty()) {
+            for (const auto& c : tls_clients) {
+                if (!c.active_object_id.empty()) {
+                    next_target = c.active_object_id;
+                    break;
+                }
+            }
+        }
+
+        if (next_target.empty()) {
+            std::cout << "[main.cpp] [Position] clearing ESP track target: no active subscribers"
+                      << std::endl;
+            clear_esp_track_target(esp_active_object_id, "NO_SUBSCRIBER");
+            return;
+        }
+
+        std::cout << "[main.cpp] [Position] switching ESP track target after disconnect: from="
+                  << esp_active_object_id << ", to=" << next_target << std::endl;
+        switch_esp_track_target(next_target);
     };
 
     while (running.load()) {
@@ -930,6 +1510,7 @@ void run_position_stream_service(std::atomic<bool>& running,
         };
 
         erase_removed_clients();
+        reconcile_esp_track_target();
 
         const auto now = std::chrono::steady_clock::now();
         const auto esp_stale_limit =
