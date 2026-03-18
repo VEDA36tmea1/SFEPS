@@ -387,6 +387,27 @@ Window {
                             }
                         }
 
+                        // Logout button: notify server and exit
+                        Button {
+                            id: logoutButton
+                            flat: true
+                            implicitWidth: 32
+                            implicitHeight: 32
+                            background: Rectangle {
+                                color: parent.hovered ? "#333" : "transparent"
+                                radius: 8
+                            }
+                            contentItem: Image {
+                                anchors.centerIn: parent
+                                source: "qrc:/assets/logout.png"
+                                sourceSize: Qt.size(18, 18)
+                            }
+                            onClicked: {
+                                console.log("[UI] Logout clicked: sending logout and returning to Login View")
+                                authManager.sendLogout()
+                            }
+                        }
+
                         Drawer {
                             id: notificationDrawer
                             edge: Qt.RightEdge

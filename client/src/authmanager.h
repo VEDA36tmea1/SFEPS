@@ -14,12 +14,14 @@ public:
     explicit AuthManager(QObject *parent = nullptr);
 
     Q_INVOKABLE void login(const QString &id, const QString &pw);
+    Q_INVOKABLE void sendLogout();
     QString currentUserId() const { return m_currentUserId; }
 
 signals:
     void loginSuccess();
     void loginFailed(const QString &message);
     void currentUserIdChanged();
+    void logoutRequested();
 
 private slots:
     void onReadyRead();

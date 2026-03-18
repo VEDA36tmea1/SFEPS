@@ -367,3 +367,43 @@ AuthManager::LoginAttemptResult AuthManager::attemptPlainLogin(const QString &ho
                             .arg(QString::fromUtf8(response));
     return LoginAttemptResult::TransportError;
 }
+
+void AuthManager::sendLogout()
+{
+    const QString userId = m_currentUserId.trimmed();
+    if (userId.isEmpty()) {
+        qDebug() << "[AuthManager] sendLogout: no current user id, skipping";
+        return;
+    }
+
+    const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    const QString authHost = env.value("AUTH_SERVER_HOST", QString::fromUtf8(kDefaultAuthHost));
+    const int authPlainPort = parseEnvPort(env, "AUTH_PLAINTEXT_PORT", kDefaultAuthPlainPort);
+
+    qInfo().noquote() << QString("[AuthManager] sending LOGOUT for user=%1 to %2:%3")
+                             .arg(maskUserId(userId))
+                             .arg(authHost)
+                             .arg(authPlainPort);
+
+    // perform a short-lived plaintext connect and send LOGOUT|<userId>\n
+    socket->abort();
+    socket->connectToHost(authHost, static_cast<quint16>(authPlainPort));
+    if (!socket->waitForConnected(kAuthConnectTimeoutMs)) {
+        qWarning() << "[AuthManager] sendLogout: connect failed:" << socket->errorString();
+        socket->abort();
+        return;
+    }
+
+    QByteArray msg = QString("LOGOUT|%1\n").arg(userId).toUtf8();
+    qint64 written = socket->write(msg);
+    socket->flush();
+    if (written <= 0 || !socket->waitForBytesWritten(500)) {
+        qWarning() << "[AuthManager] sendLogout: failed to write/logout or flush";
+    } else {
+        qDebug() << "[AuthManager] sendLogout: written bytes=" << written;
+    }
+
+    socket->disconnectFromHost();
+    // Notify UI/main that logout was requested so app can show login view
+    emit logoutRequested();
+}

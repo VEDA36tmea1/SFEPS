@@ -16,6 +16,17 @@ PositionManager::~PositionManager() {
     if (posSocket) posSocket->disconnectFromHost();
 }
 
+void PositionManager::disconnectPositionServer()
+{
+    if (m_reconnectTimer && m_reconnectTimer->isActive()) m_reconnectTimer->stop();
+    if (posSocket) {
+        if (posSocket->state() != QAbstractSocket::UnconnectedState) posSocket->disconnectFromHost();
+        posSocket->deleteLater();
+        posSocket = nullptr;
+        qDebug() << "[PositionManager] Position socket disconnected by request";
+    }
+}
+
 void PositionManager::attachPosSocketSignals()
 {
     if (!posSocket) return;
@@ -153,12 +164,12 @@ void PositionManager::attachPosSocketSignals()
         qDebug() << "[PositionManager] Position socket connected to" << lastPosHost << ":" << lastPosPort;
     });
     connect(posSocket, &QTcpSocket::disconnected, this, [this]() {
-        qDebug() << "[PositionManager] Position socket disconnected. Retrying in 1s...";
-        QTimer::singleShot(1000, this, [this]() {
-            if (posSocket && posSocket->state() == QAbstractSocket::UnconnectedState) {
-                posSocket->connectToHost(lastPosHost, static_cast<quint16>(lastPosPort));
-            }
-        });
+        qDebug() << "[PositionManager] Position socket disconnected.";
+        scheduleReconnect();
+    });
+    connect(posSocket, &QTcpSocket::connected, this, [this]() {
+        qDebug() << "[PositionManager] Position socket connected to" << lastPosHost << ":" << lastPosPort;
+        resetReconnectBackoff();
     });
 }
 
@@ -173,7 +184,37 @@ void PositionManager::connectPositionServer(const QString &host, int port)
     }
     posSocket = new QTcpSocket(this);
     attachPosSocketSignals();
-    posSocket->connectToHost(host, static_cast<quint16>(port));
+    // immediate connect attempt
+    if (posSocket->state() == QAbstractSocket::UnconnectedState) {
+        posSocket->connectToHost(host, static_cast<quint16>(port));
+    }
+}
+
+void PositionManager::scheduleReconnect()
+{
+    if (!m_reconnectTimer) {
+        m_reconnectTimer = new QTimer(this);
+        m_reconnectTimer->setSingleShot(true);
+        connect(m_reconnectTimer, &QTimer::timeout, this, [this]() {
+            if (!posSocket) return;
+            if (posSocket->state() == QAbstractSocket::UnconnectedState) {
+                qDebug() << "[PositionManager] Reconnect attempt (delay_ms=" << m_reconnectDelayMs << ") to" << lastPosHost << lastPosPort;
+                posSocket->connectToHost(lastPosHost, static_cast<quint16>(lastPosPort));
+            }
+            // increase delay for next time (exponential backoff)
+            m_reconnectDelayMs = qMin(m_reconnectDelayMs * 2, m_reconnectMaxMs);
+        });
+    }
+
+    // Ensure minimum
+    if (m_reconnectDelayMs < m_reconnectMinMs) m_reconnectDelayMs = m_reconnectMinMs;
+    m_reconnectTimer->start(m_reconnectDelayMs);
+}
+
+void PositionManager::resetReconnectBackoff()
+{
+    m_reconnectDelayMs = m_reconnectMinMs;
+    if (m_reconnectTimer && m_reconnectTimer->isActive()) m_reconnectTimer->stop();
 }
 
 void PositionManager::sendPositionCommand(const QString &msg)
