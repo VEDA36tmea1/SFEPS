@@ -41,6 +41,24 @@ bool sleep_interruptible(std::atomic<bool>& running_flag,
     return running_flag.load();
 }
 
+std::string sanitize_alert_field(std::string value) {
+    for (char& c : value) {
+        if (c == '|' || c == '\n' || c == '\r') {
+            c = '_';
+        }
+    }
+    return value;
+}
+
+std::string join_http_url(const std::string& base, const std::string& filename) {
+    std::string normalized_base = base;
+    while (!normalized_base.empty() && normalized_base.back() == '/') {
+        normalized_base.pop_back();
+    }
+    if (normalized_base.empty()) return filename;
+    return normalized_base + "/" + filename;
+}
+
 }  // namespace
 
 void signal_handler(int signum) {
@@ -87,6 +105,9 @@ int main() {
               << ", auth_deauth_grace_ms=" << sec_cfg.auth_deauth_grace_ms
               << ", position_stale_sec=" << sec_cfg.position_stale_seconds
               << ", socket_read_timeout_ms=" << sec_cfg.socket_read_timeout_ms << std::endl;
+    std::cout << "[main.cpp] [Security] fraud_image_http_base_url="
+              << sec_cfg.fraud_image_http_base_url
+              << ", fraud_image_retention_sec=" << sec_cfg.fraud_image_retention_sec << std::endl;
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
@@ -110,8 +131,35 @@ int main() {
     analytics.setRfidPairedCallback(
         [](const std::string& object_id) { snapshot_rfid_image_for_object(object_id); });
     analytics.setOutlineDecisionCallback(
-        [](const AnalyticsProcessor::OutlineDecisionPayload& payload) {
-            finalize_outline_image_for_object(payload);
+        [&sec_cfg](const AnalyticsProcessor::OutlineDecisionPayload& payload) {
+            FinalizedFraudImageInfo fraud_image_info;
+            if (!finalize_outline_image_for_object(payload, &fraud_image_info)) {
+                return;
+            }
+            if (sec_cfg.fraud_image_http_base_url.empty()) {
+                std::cerr << "[main.cpp] [RFID_IMAGE_REF_SEND] skipped: empty "
+                             "SFEPS_FRAUD_IMAGE_HTTP_BASE_URL, object_id="
+                          << payload.object_id << std::endl;
+                return;
+            }
+            if (fraud_image_info.filename.empty()) {
+                std::cerr << "[main.cpp] [RFID_IMAGE_REF_SEND] skipped: missing filename, object_id="
+                          << payload.object_id << std::endl;
+                return;
+            }
+
+            const std::string url =
+                join_http_url(sec_cfg.fraud_image_http_base_url, fraud_image_info.filename);
+            std::string message = "IMG_REF|OBJECT_ID=" +
+                                  sanitize_alert_field(fraud_image_info.object_id) +
+                                  "|URL=" + sanitize_alert_field(url) +
+                                  "|TAG=" + sanitize_alert_field(fraud_image_info.tag_time) +
+                                  "|NAME=" + sanitize_alert_field(fraud_image_info.filename);
+            message.push_back('\n');
+            send_alert_to_clients(message);
+            std::cout << "[main.cpp] [RFID_IMAGE_REF_SEND] object_id="
+                      << fraud_image_info.object_id << ", tag_time=" << fraud_image_info.tag_time
+                      << ", name=" << fraud_image_info.filename << ", url=" << url << std::endl;
         });
     if (!analytics.start()) {
         std::cerr << "[Fatal] AnalyticsProcessor startup failed (fail-closed)." << std::endl;
@@ -145,6 +193,12 @@ int main() {
 
     std::thread t_file_cleanup(run_file_cleanup_worker, std::ref(g_running),
                                std::string(VIDEO_SAVE_DIR), 300);
+    std::thread t_pending_image_cleanup(run_pending_image_cleanup_worker, std::ref(g_running),
+                                        std::string(pending_image_directory_path()),
+                                        static_cast<long>(sec_cfg.fraud_image_retention_sec));
+    std::thread t_fraud_image_cleanup(run_fraud_image_cleanup_worker, std::ref(g_running),
+                                      std::string(fraud_image_directory_path()),
+                                      static_cast<long>(sec_cfg.fraud_image_retention_sec));
 
     std::thread t_db_cleanup([&]() {
         while (g_running.load()) {
@@ -179,6 +233,8 @@ int main() {
     if (t_auth.joinable()) t_auth.join();
     if (t_video_catalog.joinable()) t_video_catalog.join();
     if (t_db_cleanup.joinable()) t_db_cleanup.join();
+    if (t_pending_image_cleanup.joinable()) t_pending_image_cleanup.join();
+    if (t_fraud_image_cleanup.joinable()) t_fraud_image_cleanup.join();
     if (t_file_cleanup.joinable()) t_file_cleanup.join();
 
     analytics.stop();

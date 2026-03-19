@@ -70,6 +70,13 @@ SecurityRuntimeOptions load_security_runtime_options() {
     if (!video_http_base_url.empty()) {
         cfg.video_http_base_url = trim_copy(video_http_base_url);
     }
+    const std::string fraud_image_http_base_url =
+        load_env_string("SFEPS_FRAUD_IMAGE_HTTP_BASE_URL");
+    if (!fraud_image_http_base_url.empty()) {
+        cfg.fraud_image_http_base_url = trim_copy(fraud_image_http_base_url);
+    }
+    cfg.fraud_image_retention_sec =
+        load_env_size_t("SFEPS_FRAUD_IMAGE_RETENTION_SEC", 86400, 1, kConfigLogPrefix);
 
     cfg.esp_tcp_enable = load_env_bool("SFEPS_ESP_TCP_ENABLE", false, kConfigLogPrefix);
     cfg.esp_tcp_port = load_env_port("SFEPS_ESP_TCP_PORT", 5565, kConfigLogPrefix);

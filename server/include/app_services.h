@@ -39,6 +39,8 @@ struct SecurityRuntimeOptions {
     int app_tls_handshake_timeout_ms = 3000;
     std::string app_bind_ip = "0.0.0.0";
     std::string video_http_base_url = "http://127.0.0.1:8080/videos";
+    std::string fraud_image_http_base_url = "http://127.0.0.1:8080/fraud-images";
+    std::size_t fraud_image_retention_sec = 86400;
 
     bool esp_tcp_enable = false;
     int esp_tcp_port = 5565;

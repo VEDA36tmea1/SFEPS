@@ -135,9 +135,13 @@ void snapshot_rfid_image_for_object(const std::string& object_id) {
     }
 }
 
-void finalize_outline_image_for_object(
-    const AnalyticsProcessor::OutlineDecisionPayload& payload) {
-    if (payload.object_id.empty()) return;
+bool finalize_outline_image_for_object(
+    const AnalyticsProcessor::OutlineDecisionPayload& payload,
+    FinalizedFraudImageInfo* out_fraud_image_info) {
+    if (out_fraud_image_info != nullptr) {
+        *out_fraud_image_info = FinalizedFraudImageInfo {};
+    }
+    if (payload.object_id.empty()) return false;
 
     auto& registry = event_image_registry();
     std::lock_guard<std::mutex> lock(registry.mutex);
@@ -148,7 +152,7 @@ void finalize_outline_image_for_object(
                   << (payload.is_fraud ? "RFID_IMAGE_KEEP" : "RFID_IMAGE_DELETE")
                   << "] no pending image: object_id=" << payload.object_id
                   << ", tag_time=" << payload.tag_time << std::endl;
-        return;
+        return false;
     }
 
     const fs::path pending_path = it->second;
@@ -160,7 +164,7 @@ void finalize_outline_image_for_object(
                   << "] pending image missing on disk: object_id=" << payload.object_id
                   << ", path=" << pending_path << ", tag_time=" << payload.tag_time
                   << std::endl;
-        return;
+        return false;
     }
 
     if (!payload.is_fraud) {
@@ -169,7 +173,7 @@ void finalize_outline_image_for_object(
             std::cout << "[main.cpp] [RFID_IMAGE_DELETE] object_id=" << payload.object_id
                       << ", path=" << pending_path << ", tag_time=" << payload.tag_time
                       << std::endl;
-            return;
+            return false;
         }
 
         try {
@@ -181,7 +185,7 @@ void finalize_outline_image_for_object(
             std::cerr << "[main.cpp] [RFID_IMAGE_DELETE] failed: object_id=" << payload.object_id
                       << ", path=" << pending_path << ", err=" << e.what() << std::endl;
         }
-        return;
+        return false;
     }
 
     try {
@@ -189,6 +193,13 @@ void finalize_outline_image_for_object(
         std::cout << "[main.cpp] [RFID_IMAGE_KEEP] object_id=" << payload.object_id
                   << ", from=" << pending_path << ", to=" << kept
                   << ", tag_time=" << payload.tag_time << std::endl;
+        if (out_fraud_image_info != nullptr) {
+            out_fraud_image_info->object_id = payload.object_id;
+            out_fraud_image_info->tag_time = payload.tag_time;
+            out_fraud_image_info->filename = kept.filename().string();
+            out_fraud_image_info->absolute_path = kept.string();
+        }
+        return true;
     } catch (const std::exception& keep_err) {
         try {
             const fs::path failed = move_file_to_dir(pending_path, fs::path(kEventImageFailedDir));
@@ -201,4 +212,13 @@ void finalize_outline_image_for_object(
                       << ", failed_err=" << failed_err.what() << std::endl;
         }
     }
+    return false;
+}
+
+const char* fraud_image_directory_path() {
+    return kEventImageFraudDir;
+}
+
+const char* pending_image_directory_path() {
+    return kEventImagePendingDir;
 }
