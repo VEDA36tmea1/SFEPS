@@ -5,6 +5,7 @@ import src 1.0
 
 Item {
     id: root
+    objectName: "detailViewRoot"
     signal closeClicked
     signal confirmClicked
 
@@ -109,12 +110,14 @@ Item {
                     ColumnLayout {
                         spacing: 4
                         Text {
+                            objectName: "detailTitleText"
                             text: "Event Details"
                             color: "white"
                             font.pixelSize: 24
                             font.bold: true
                         }
                         Text {
+                            objectName: "detailFraudTypeText"
                             text: isFraud ? "FARE EVASION DETECTED" : "BOARDING EVENT DETECTED"
                             color: AppTheme.accent
                             font.pixelSize: 12
@@ -124,6 +127,7 @@ Item {
                     }
                     Item { Layout.fillWidth: true }
                     Button {
+                        objectName: "detailCloseButton"
                         flat: true
                         implicitWidth: 32; implicitHeight: 32
                         onClicked: closeClicked()
@@ -148,27 +152,71 @@ Item {
                     Layout.fillWidth: true
                     spacing: 16
 
-                    Repeater {
-                        model: [
-                            { label: "Object ID", value: objectId },
-                            { label: "Card Tag", value: cardAgeDisplay },
-                            { label: "Estimated Age Group", value: ageGroupDisplay },
-                            { label: "Boarding Result", value: fraudDisplay }
-                        ]
-                        delegate: RowLayout {
-                            Layout.fillWidth: true
-                            Text {
-                                text: modelData.label
-                                color: AppTheme.textSecondary
-                                font.pixelSize: 13
-                                Layout.preferredWidth: 120
-                            }
-                            Text {
-                                text: modelData.value
-                                color: "white"
-                                font.pixelSize: 14
-                                font.bold: true
-                            }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text {
+                            text: "Object ID"
+                            color: AppTheme.textSecondary
+                            font.pixelSize: 13
+                            Layout.preferredWidth: 120
+                        }
+                        Text {
+                            objectName: "detailObjectIdValueText"
+                            text: objectId
+                            color: "white"
+                            font.pixelSize: 14
+                            font.bold: true
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text {
+                            text: "Card Tag"
+                            color: AppTheme.textSecondary
+                            font.pixelSize: 13
+                            Layout.preferredWidth: 120
+                        }
+                        Text {
+                            objectName: "detailCardTagValueText"
+                            text: cardAgeDisplay
+                            color: "white"
+                            font.pixelSize: 14
+                            font.bold: true
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text {
+                            text: "Estimated Age Group"
+                            color: AppTheme.textSecondary
+                            font.pixelSize: 13
+                            Layout.preferredWidth: 120
+                        }
+                        Text {
+                            objectName: "detailAgeGroupValueText"
+                            text: ageGroupDisplay
+                            color: "white"
+                            font.pixelSize: 14
+                            font.bold: true
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text {
+                            text: "Boarding Result"
+                            color: AppTheme.textSecondary
+                            font.pixelSize: 13
+                            Layout.preferredWidth: 120
+                        }
+                        Text {
+                            objectName: "detailBoardingResultValueText"
+                            text: fraudDisplay
+                            color: "white"
+                            font.pixelSize: 14
+                            font.bold: true
                         }
                     }
                 }
@@ -178,6 +226,7 @@ Item {
                 // Actions
                 Button {
                     id: confirmButton
+                    objectName: "detailConfirmButton"
                     Layout.fillWidth: true
                     Layout.preferredHeight: 50
                     background: Rectangle {
