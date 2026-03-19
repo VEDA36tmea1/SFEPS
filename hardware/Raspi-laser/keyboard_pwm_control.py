@@ -349,7 +349,7 @@ def main() -> int:
     p.add_argument("--pigpio-port", type=int, default=8888, help="pigpiod port")
     p.add_argument("--init0-us", type=int, default=1290, help="초기 PWM0(GPIO12) 펄스폭(us)")
     p.add_argument("--init1-us", type=int, default=1390, help="초기 PWM1(GPIO13) 펄스폭(us)")
-    p.add_argument("--step-us", type=int, default=10, help="키 입력 1회당 증감(us)")
+    p.add_argument("--step-us", type=int, default=5, help="키 입력 1회당 증감(us)")
     p.add_argument("--min-us", type=int, default=800, help="최소 펄스폭(us)")
     p.add_argument("--max-us", type=int, default=2200, help="최대 펄스폭(us)")
     p.add_argument("--period-ns", type=int, default=20_000_000, help="PWM period(ns), 50Hz=20000000")
