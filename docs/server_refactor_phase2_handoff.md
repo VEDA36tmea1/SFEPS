@@ -1,41 +1,55 @@
 # Server Refactor Phase 2 Handoff
 
+Last updated: 2026-03-19
+
 ## Scope
-- Target: `server/` only.
-- No source changes in `Camera/` and `client/`.
-- Public runtime contract was kept:
+
+- Target: `server/` only
+- No source changes in `Camera/` and `client/`
+- Public runtime contracts 유지:
   - TCP/TLS protocol strings unchanged
   - `.env.local` key names/semantics unchanged
   - `run_*` service entry contracts unchanged
 
 ## What Changed in Server
-- Common utility layer added and reused:
+
+- Common utility layer 정리:
   - `text_utils` (trim/lower/sanitize)
   - `env_utils` (typed env parsing + allowlist parsing)
   - `sample_utils` (sampling helper)
-- `main.cpp` reduced to orchestration-only flow.
-  - security/runtime loading+validation moved to `security_runtime`.
-  - RFID image snapshot/finalize pipeline moved to `rfid_image_pipeline`.
-- Large-module internal slimming:
-  - `analytics.cpp`: env/helper dedup + event parsing helper extraction.
-  - `recorder.cpp`: env/helper dedup + runtime limit loading grouped.
-  - `rfid_monitor.cpp`: text helper dedup.
-  - `log.cpp`: DB execute/bind/cleanup helper separation.
-  - `alert.cpp`, `esp_manager.cpp`: client dispatch/broadcast duplication reduced.
-- Legacy cleanup:
-  - removed `server/include/event_matcher.h`
-  - removed `server/src/event_matcher.cpp`
+- `main.cpp`는 orchestration 중심으로 단순화
+  - runtime/security validation 분리
+  - RFID image snapshot/finalize pipeline 분리
+- 대형 모듈 내 중복 제거:
+  - `analytics.cpp`: env/helper dedup + parsing helper 분리
+  - `recorder.cpp`: runtime limits 로딩 정리
+  - `rfid_monitor.cpp`: text helper 공통화
+  - `log.cpp`: DB execute/bind/cleanup helper 분리
+  - `alert.cpp`, `esp_manager.cpp`: dispatch/broadcast 중복 축소
+- app services 분리:
+  - `services/auth_service.cpp`
+  - `services/audio_service.cpp`
+  - `services/alert_service.cpp`
+  - `services/position_service.cpp`
+  - `services/video_catalog_service.cpp`
 
 ## Camera/Client Impact
+
 - Camera:
-  - No code change required from this refactor.
-  - Existing metadata contract with server remains the same.
+  - 코드 변경 불필요
+  - metadata contract 유지
 - Client:
-  - No immediate code change required from this refactor.
-  - For future plaintext removal phase, validate TLS-only endpoint/reconnect policy.
+  - 즉시 코드 변경 필수는 아님
+  - TLS-only 전환 단계에서 endpoint/reconnect 정책 점검 필요
 
 ## Verification
-- Build verified:
-  - `cmake -S server -B server/build`
-  - `cmake --build server/build --clean-first -j4`
-- Result: success (`smart_server.bin` linked).
+
+빌드 확인:
+
+```bash
+cmake -S server -B server/build
+cmake --build server/build --clean-first -j4
+```
+
+결과:
+- 성공 (`smart_server.bin` 링크 완료)

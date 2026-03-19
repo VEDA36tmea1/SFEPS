@@ -1,38 +1,47 @@
-Jenkins agent Docker image for SFEPS CI
-=====================================
+# Jenkins Agent Image for SFEPS CI
 
-This document explains how to build and use the provided Jenkins agent image which includes system packages required to build and run the SFEPS server inside CI.
+Last updated: 2026-03-19
 
-Build locally
--------------
+SFEPS CI에서 서버 빌드/테스트를 수행하기 위한 Jenkins Agent Docker 이미지 사용 가이드입니다.
 
-1. Build image on the machine that can run Docker (host or CI builder):
+## Build Locally
 
 ```bash
 ./scripts/build_agent_image.sh sfeps-jenkins-agent:latest
 ```
 
-2. Optionally push to a registry accessible by your Jenkins instance:
+## Push (Optional)
 
 ```bash
 docker tag sfeps-jenkins-agent:latest my-registry.example.com/myorg/sfeps-jenkins-agent:latest
 docker push my-registry.example.com/myorg/sfeps-jenkins-agent:latest
 ```
 
-Use in Jenkinsfile
-------------------
-
-If your Jenkins has the Docker Pipeline plugin and can run Docker, set the pipeline agent to use the image:
+## Use in Jenkinsfile
 
 ```groovy
 pipeline {
-  agent { docker { image 'my-registry.example.com/myorg/sfeps-jenkins-agent:latest' } }
+  agent {
+    docker {
+      image 'my-registry.example.com/myorg/sfeps-jenkins-agent:latest'
+    }
+  }
   stages { /* ... */ }
 }
 ```
 
-Notes
------
-- If your Jenkins master is itself a Docker container, building images inside that container requires Docker-in-Docker or access to the host Docker socket. Alternatively build the image on the host and push to a registry.
-- The image runs as user `jenkins` (non-root). Certain operations (like apt install) are not performed in the container at runtime; the image includes the packages already installed.
-- If your environment restricts running Docker, install the packages from `scripts/install_agent_deps.sh` on the agent instead.
+## Included Tooling (Dockerfile 기준)
+
+- build: `build-essential`, `cmake`, `pkg-config`, `git`
+- python: `python3`, `python3-venv`, `python3-pip`, `python3-pytest`
+- db/libs: `libmariadb-dev`, `default-libmysqlclient-dev`, `libtinyxml2-dev`
+- media/audio/ssl: `libavcodec-dev`, `libavformat-dev`, `libavutil-dev`, `libswscale-dev`, `libasound2-dev`, `libssl-dev`
+- report: `wkhtmltopdf`
+
+이미지는 `jenkins` 비루트 사용자로 실행됩니다.
+
+## Notes
+
+- Docker Pipeline 사용 환경이 아니면, 에이전트 호스트에 직접 의존성을 설치할 수 있습니다.
+  - 설치 스크립트: `scripts/install_agent_deps.sh`
+- Jenkins가 컨테이너 안에서 동작하는 경우, 이미지 빌드/푸시를 위해 Docker socket 또는 DinD 구성이 필요합니다.
