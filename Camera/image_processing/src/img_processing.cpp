@@ -8,38 +8,85 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/dnn.hpp>
 
-// ========================================================
-// 🌟 [100% 순수 C++ 영역] 하드웨어 레벨 ISP 엔진
-// ========================================================
-
-// 1. 순수 C++ BLC & AWB 엔진 (기존과 동일)
+// 1. & 지능형 AE/AWB 엔진
 void applyInitialISP(uint16_t* raw_buf, int width, int height, const ISPConfig& cfg) {
+    // [단계 1] 실시간 화면 분석 (AE & AWB 계산)
+    long long sum_r = 0, sum_g = 0, sum_b = 0;
+    int cnt_r = 0, cnt_g = 0, cnt_b = 0;
+
+    for (int y = 0; y < height - 1; y += 4) {
+        for (int x = 0; x < width - 1; x += 4) {
+            auto clamp_blc = [&](uint32_t p) { 
+                return (p > cfg.black_level) ? (p - cfg.black_level) : 0; 
+            };
+
+            // SBGGR 패턴의 2x2 블록 추출
+            sum_b += clamp_blc(raw_buf[y * width + x]);               // (0,0) Blue
+            sum_g += clamp_blc(raw_buf[y * width + x + 1]);           // (0,1) Green 1
+            sum_g += clamp_blc(raw_buf[(y + 1) * width + x]);         // (1,0) Green 2
+            sum_r += clamp_blc(raw_buf[(y + 1) * width + x + 1]);     // (1,1) Red
+
+            cnt_b++;
+            cnt_g += 2;
+            cnt_r++;
+        }
+    }
+
+    // 0으로 나누는 것을 방지하기 위한 안전장치
+    float avg_r = (cnt_r > 0) ? (float)sum_r / cnt_r : 1.0f;
+    float avg_g = (cnt_g > 0) ? (float)sum_g / cnt_g : 1.0f;
+    float avg_b = (cnt_b > 0) ? (float)sum_b / cnt_b : 1.0f;
+
+    // AWB: 평균을 초록색(G)에 맞춰 화이트밸런스를 잡습니다.
+    float dynamic_r_gain = avg_g / (avg_r + 1.0f);
+    float dynamic_b_gain = avg_g / (avg_b + 1.0f);
+
+    // AE: 최적의 평균 밝기를 150(중간 회색) 근처로 맞춥니다. 
+    float current_brightness = (avg_r + avg_g + avg_b) / 3.0f;
+    float target_brightness = 150.0f; 
+    float ae_gain = target_brightness / (current_brightness + 1.0f);
+
+    ae_gain = std::max(0.5f, std::min(ae_gain, 3.0f)); // 노출 게인 리미트
+
+    float final_r_gain = dynamic_r_gain * ae_gain;
+    float final_g_gain = 1.0f * ae_gain;
+    float final_b_gain = dynamic_b_gain * ae_gain;
+
+    // [단계 2] 계산된 동적 Gain을 전체 이미지에 적용
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
             int idx = y * width + x;
-            uint32_t pixel = raw_buf[idx];
+            uint32_t orig_pixel = raw_buf[idx]; // 센서가 받은 진짜 원본 빛의 양
+            uint32_t pixel = (orig_pixel > cfg.black_level) ? (orig_pixel - cfg.black_level) : 0;
 
-            pixel = (pixel > cfg.black_level) ? (pixel - cfg.black_level) : 0;
-
-            if (y % 2 == 0) { // B G 라인
-                if (x % 2 == 0) pixel = (uint32_t)(pixel * cfg.b_gain); 
-                else            pixel = (uint32_t)(pixel * cfg.g_gain); 
-            } else {          // G R 라인
-                if (x % 2 == 0) pixel = (uint32_t)(pixel * cfg.g_gain); 
-                else            pixel = (uint32_t)(pixel * cfg.r_gain); 
+            float current_gain = 1.0f;
+            if (y % 2 == 0) {
+                if (x % 2 == 0) current_gain = final_b_gain;
+                else            current_gain = final_g_gain;
+            } else {
+                if (x % 2 == 0) current_gain = final_g_gain;
+                else            current_gain = final_r_gain;
+            
+            }
+            if (orig_pixel > 950) {
+                // 950부터 1023 사이에서 0.0 ~ 1.0의 비율을 만듭니다.
+                float blend = (orig_pixel - 950) / 73.0f; 
+                blend = std::min(1.0f, std::max(0.0f, blend));
+                
+                current_gain = current_gain * (1.0f - blend) + (final_g_gain) * blend;
             }
 
+
+            pixel = (uint32_t)(pixel * current_gain);
             raw_buf[idx] = (uint16_t)std::min(pixel, (uint32_t)1023);
         }
     }
 }
 
-// 🌟 2. NEW: 순수 C++ 수동 Demosaicing (Bilinear Interpolation)
-// OpenCV를 쓰지 않고 주변 픽셀을 참조해 R, G, B 채널을 직접 조립합니다.
+//  Demosaicing (Bilinear Interpolation)
 std::vector<uint8_t> applyPureDemosaic(const uint16_t* raw_buf, int width, int height) {
     std::vector<uint8_t> bgr_buf(width * height * 3, 0);
 
-    // 경계값을 안전하게 가져오면서 10-bit -> 8-bit 스케일링을 수행하는 람다 함수
     auto get_val = [&](int y, int x) -> uint8_t {
         y = std::max(0, std::min(y, height - 1));
         x = std::max(0, std::min(x, width - 1));
@@ -51,7 +98,6 @@ std::vector<uint8_t> applyPureDemosaic(const uint16_t* raw_buf, int width, int h
             int idx = (y * width + x) * 3;
             uint8_t r = 0, g = 0, b = 0;
 
-            // SBGGR 패턴에 따른 선형 보간 수학식 구현
             if (y % 2 == 0) { 
                 if (x % 2 == 0) { // Blue 픽셀 (B)
                     b = get_val(y, x);
@@ -73,8 +119,6 @@ std::vector<uint8_t> applyPureDemosaic(const uint16_t* raw_buf, int width, int h
                     r = get_val(y, x);
                 }
             }
-
-            // 후처리 모듈(OpenCV)과의 호환을 위해 BGR 순서로 담아줍니다.
             bgr_buf[idx + 0] = b;
             bgr_buf[idx + 1] = g;
             bgr_buf[idx + 2] = r;
@@ -83,7 +127,52 @@ std::vector<uint8_t> applyPureDemosaic(const uint16_t* raw_buf, int width, int h
     return bgr_buf;
 }
 
-// 🌟 3. 브릿지 함수 수정: OpenCV의 cvtColor 완전 제거!
+struct CCMConfig {
+    float ccm[3][3] = {
+        {  1.61f, -0.40f, -0.21f }, 
+        { -0.27f,  1.48f, -0.21f }, 
+        { -0.08f, -0.52f,  1.60f }  
+    };
+};
+
+void applyCCM(std::vector<uint8_t>& bgr_buf, int width, int height, const CCMConfig& cfg) {
+    for (int i = 0; i < width * height * 3; i += 3) {
+        float b = bgr_buf[i];
+        float g = bgr_buf[i + 1];
+        float r = bgr_buf[i + 2];
+
+        float max_val = std::max({r, g, b});
+        if (max_val > 200.0f) { 
+            float blend = (max_val - 200.0f) / 55.0f; 
+            float avg = (r + g + b) / 3.0f; // 3색의 평균
+            
+            r = r * (1.0f - blend) + avg * blend;
+            g = g * (1.0f - blend) + avg * blend;
+            b = b * (1.0f - blend) + avg * blend;
+        }
+
+        float new_b = r * cfg.ccm[2][0] + g * cfg.ccm[2][1] + b * cfg.ccm[2][2];
+        float new_g = r * cfg.ccm[1][0] + g * cfg.ccm[1][1] + b * cfg.ccm[1][2];
+        float new_r = r * cfg.ccm[0][0] + g * cfg.ccm[0][1] + b * cfg.ccm[0][2];
+
+        bgr_buf[i]     = (uint8_t)std::max(0.0f, std::min(255.0f, new_b));
+        bgr_buf[i + 1] = (uint8_t)std::max(0.0f, std::min(255.0f, new_g));
+        bgr_buf[i + 2] = (uint8_t)std::max(0.0f, std::min(255.0f, new_r));
+    }
+}
+
+void applyRGBGamma(std::vector<uint8_t>& bgr_buf, int width, int height, float gamma = 2.2f) {
+    uint8_t gamma_lut[256];
+    for (int i = 0; i < 256; i++) {
+        float val = i / 255.0f;
+        float corrected = std::pow(val, 1.0f / gamma);
+        gamma_lut[i] = (uint8_t)std::min(255.0f, std::max(0.0f, corrected * 255.0f));
+    }
+    for (int i = 0; i < width * height * 3; i++) {
+        bgr_buf[i] = gamma_lut[bgr_buf[i]]; 
+    }
+}
+
 cv::Mat runPureISP(cv::Mat& raw16_frame) {
     if (raw16_frame.empty() || raw16_frame.type() != CV_16UC1) {
         std::cerr << "🚨 입력이 16-bit RAW 데이터가 아닙니다!" << std::endl;
@@ -94,22 +183,29 @@ cv::Mat runPureISP(cv::Mat& raw16_frame) {
     int height = raw16_frame.rows;
     uint16_t* raw_data = (uint16_t*)raw16_frame.data;
 
-    // [순수 C++ 1단계] BLC & AWB 엔진 가동 (원본 RAW 버퍼 직접 수정)
+    // [Step 1] BLC & AWB
     ISPConfig cfg;
     applyInitialISP(raw_data, width, height, cfg);
 
-    // [순수 C++ 2단계] 수동 Demosaicing (Bayer 10-bit -> BGR 8-bit 배열로 복원)
+    // [Step 2] Demosaic
     std::vector<uint8_t> bgr_buffer = applyPureDemosaic(raw_data, width, height);
 
-    // [어플리케이션 계층] 순수 C++로 만든 1차원 배열을 OpenCV의 2차원 객체로 '포장'만 해줍니다.
+    // [Step 3] CCM 적용
+    CCMConfig ccm_cfg;
+    applyCCM(bgr_buffer, width, height, ccm_cfg);
+
+    // [Step 4] RGB Gamma 적용
+    applyRGBGamma(bgr_buffer, width, height, 2.2f);
+
+    // [어플리케이션 계층 전환]
     cv::Mat bgr_img(height, width, CV_8UC3);
     std::copy(bgr_buffer.begin(), bgr_buffer.end(), bgr_img.data);
 
-    // 이제 순수 C++로 1차 가공된 컬러 사진이 기존의 화질 튜닝 파이프라인으로 넘어갑니다!
     return bgr_img; 
 }
 
-// 1. Gamma Correnction + Tone Mapping (기존과 동일)
+
+// 1. Gamma Correnction + Tone Mapping
 void applyShadowBoost(const cv::Mat& src, cv::Mat& dst, double gamma, double alpha) {
     if (src.empty()) return;
 
@@ -142,7 +238,7 @@ void applyShadowBoost(const cv::Mat& src, cv::Mat& dst, double gamma, double alp
     cv::cvtColor(yuv, dst, cv::COLOR_YUV2BGR);
 }
 
-// 3. CLAHE (기존과 동일)
+// 3. CLAHE
 void applyCLAHE(const cv::Mat& src, cv::Mat& dst, double clip_limit, cv::Size grid) {
     cv::Mat lab;
     cv::cvtColor(src, lab, cv::COLOR_BGR2Lab);
@@ -235,7 +331,7 @@ void applyCLAHE(const cv::Mat& src, cv::Mat& dst, double clip_limit, cv::Size gr
     cv::cvtColor(lab, dst, cv::COLOR_Lab2BGR);
 }
 
-// 엔트로피 계산 함수 (기존과 동일)
+// 엔트로피 계산 함수
 double calculateEntropy(const cv::Mat& frame) {
     if (frame.empty()) return 0.0;
     cv::Mat gray;
@@ -254,7 +350,7 @@ double calculateEntropy(const cv::Mat& frame) {
     return entropy;
 }
 
-// 5. 8분할 이미지 & Bestshot 생성 함수 (기존과 동일)
+// 5. 8분할 이미지 & Bestshot 생성 함수
 cv::Mat processISPAndGetBest(const cv::Mat& raw_frame_in, cv::Mat& tuning_view_out) {
     if (raw_frame_in.empty()) return raw_frame_in;
 
