@@ -14,7 +14,7 @@ Item {
     property string ageGroup: "Senior"
     property bool isFraud: true
     property string cardAgeDisplay: cardAgeText && cardAgeText.trim() !== "" ? cardAgeText.toUpperCase() : "-"
-    property string ageGroupDisplay: ageGroup && ageGroup.trim() !== "" ? ageGroup.toUpperCase() : "-"
+    property string estimatedAgeDisplay: ageGroup && ageGroup.trim() !== "" ? ageGroup.toUpperCase() : "-"
     property string fraudDisplay: isFraud ? "FARE EVASION (Y)" : "NORMAL BOARDING (N)"
 
     RowLayout {
@@ -189,14 +189,14 @@ Item {
                     RowLayout {
                         Layout.fillWidth: true
                         Text {
-                            text: "Estimated Age Group"
+                            text: "Estimated Age"
                             color: AppTheme.textSecondary
                             font.pixelSize: 13
                             Layout.preferredWidth: 120
                         }
                         Text {
-                            objectName: "detailAgeGroupValueText"
-                            text: ageGroupDisplay
+                            objectName: "detailEstimatedAgeValueText"
+                            text: estimatedAgeDisplay
                             color: "white"
                             font.pixelSize: 14
                             font.bold: true
