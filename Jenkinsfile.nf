@@ -14,9 +14,9 @@ pipeline {
         string(name: 'PERF_EVENT_INTERVAL_SECONDS', defaultValue: '0', description: 'Optional delay between generated events')
         string(name: 'PERF_EVENT_MAX_MISSING', defaultValue: '0', description: 'Allowed missing event count')
         string(name: 'PERF_EVENT_MAX_DUPLICATES', defaultValue: '0', description: 'Allowed duplicate event count')
-        string(name: 'PERF_STREAM_DURATION_SECONDS', defaultValue: '3600', description: 'TC-NF-PERF-03 stream monitoring duration')
-        string(name: 'PERF_STREAM_POLL_INTERVAL_SECONDS', defaultValue: '1', description: 'TC-NF-PERF-03 polling interval')
-        string(name: 'PERF_STREAM_RECOVERY_TIMEOUT_SECONDS', defaultValue: '10', description: 'TC-NF-PERF-03 max recovery timeout')
+        string(name: 'PERF_STREAM_DURATION_SECONDS', defaultValue: '3600', description: 'TC-NF-RELI-02 stream monitoring duration')
+        string(name: 'PERF_STREAM_POLL_INTERVAL_SECONDS', defaultValue: '1', description: 'TC-NF-RELI-02 polling interval')
+        string(name: 'PERF_STREAM_RECOVERY_TIMEOUT_SECONDS', defaultValue: '10', description: 'TC-NF-RELI-02 max recovery timeout')
     }
 
     environment {
@@ -29,6 +29,7 @@ pipeline {
 
         // Performance tests are opt-in in pytest; force-enable in this dedicated pipeline.
         SFEPS_ENABLE_PERF_TESTS = "1"
+        SFEPS_ENABLE_RELI_TESTS = "1"
         SFEPS_PERF_EVENT_TARGET_COUNT = "${params.PERF_EVENT_TARGET_COUNT}"
         SFEPS_PERF_EVENT_WINDOW_SECONDS = "${params.PERF_EVENT_WINDOW_SECONDS}"
         SFEPS_PERF_EVENT_INTERVAL_SECONDS = "${params.PERF_EVENT_INTERVAL_SECONDS}"
@@ -37,6 +38,9 @@ pipeline {
         SFEPS_PERF_STREAM_DURATION_SECONDS = "${params.PERF_STREAM_DURATION_SECONDS}"
         SFEPS_PERF_STREAM_POLL_INTERVAL_SECONDS = "${params.PERF_STREAM_POLL_INTERVAL_SECONDS}"
         SFEPS_PERF_STREAM_RECOVERY_TIMEOUT_SECONDS = "${params.PERF_STREAM_RECOVERY_TIMEOUT_SECONDS}"
+        SFEPS_RELI_STREAM_DURATION_SECONDS = "${params.PERF_STREAM_DURATION_SECONDS}"
+        SFEPS_RELI_STREAM_POLL_INTERVAL_SECONDS = "${params.PERF_STREAM_POLL_INTERVAL_SECONDS}"
+        SFEPS_RELI_STREAM_RECOVERY_TIMEOUT_SECONDS = "${params.PERF_STREAM_RECOVERY_TIMEOUT_SECONDS}"
 
         // Stream defaults used by perf tests and local publisher.
         SFEPS_STREAM_RTSP_URL = "${env.SFEPS_STREAM_RTSP_URL ?: 'rtsp://127.0.0.1:8554/cam1'}"
@@ -294,6 +298,39 @@ PY
             }
         }
 
+        stage('Run Reliability Tests') {
+            steps {
+                sh '''
+                    set -eu
+                    export MYSQL_UNIX_PORT="$WORKSPACE/.ci-mariadb/mysqld.sock"
+                    mkdir -p reports
+                    python3 -m pytest -q tests/test_tc_nf_reli.py -r a --junitxml=reports/nf-reli-tests.xml
+
+                    python3 - <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+path = "reports/nf-reli-tests.xml"
+root = ET.parse(path).getroot()
+
+if root.tag == "testsuite":
+    tests = int(root.attrib.get("tests", "0"))
+    skipped = int(root.attrib.get("skipped", "0"))
+else:
+    tests = 0
+    skipped = 0
+    for suite in root.findall("testsuite"):
+        tests += int(suite.attrib.get("tests", "0"))
+        skipped += int(suite.attrib.get("skipped", "0"))
+
+if tests == 0 or skipped == tests:
+    print(f"All reliability tests skipped ({skipped}/{tests}). Marking build as failed.")
+    sys.exit(2)
+PY
+                '''
+            }
+        }
+
         stage('Run Performance Tests') {
             steps {
                 sh '''
@@ -358,7 +395,7 @@ PY
                 fi
                 exit 0
             '''
-            junit testResults: 'reports/nf-rec-tests.xml,reports/nf-perf-tests.xml', allowEmptyResults: true
+            junit testResults: 'reports/nf-rec-tests.xml,reports/nf-reli-tests.xml,reports/nf-perf-tests.xml', allowEmptyResults: true
             archiveArtifacts artifacts: 'reports/*.xml,reports/test-report.html,reports/test-report.pdf,reports/test-report.xls,reports/test-report.xlsx,tests/real_server.log,.ci-mariadb/mysqld.log,.ci-mediamtx.log,.ci-ffmpeg-publisher.log', allowEmptyArchive: true
         }
     }
