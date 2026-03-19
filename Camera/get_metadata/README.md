@@ -176,3 +176,110 @@ $(CAM_TARGET): $(CAM_SRCS)
 
 두 실행 파일을 동시에 빌드할 수 있다.
 
+---
+
+### 5. `camera_RBF` — RBF 보간 기반 레이저/서보 PWM 제어 (2026-03-19)
+
+파일: `src/camera_RBF.cpp`  
+빌드: `make camera_RBF` 또는 `make` (전체 빌드)
+
+#### 5.1 개요
+
+`camera_client`의 "클릭→좌표 출력" 기능을 확장하여, ONVIF 메타데이터에서 얻은 사람 bbox 위치를 **RBF(Thin-Plate Spline) 보간**으로 PWM 값으로 변환하고, **칼만 필터**로 이동 방향을 예측하여 레이저/서보를 제어하는 파이프라인이다.
+
+```
+camera_RBF (stdout) ──pipe──▶ ubuntu_tcp_server ──TCP──▶ Raspberry Pi (set_pwm_client.py)
+```
+
+#### 5.2 주요 구현 사항
+
+##### RBF (Thin-Plate Spline) 2D 보간
+
+- 16개 캘리브레이션 포인트 `(u, v) → (pan_us, tilt_us)` 를 하드코딩  
+- Thin-Plate Spline 커널 `φ(r) = r² log(r + ε)` 을 사용한 보간  
+- SVD 분해로 가중치 w + affine 파라미터 (a0, a1, a2) 계산  
+- 임의의 픽셀 좌표 `(u, v)` → PWM `(pan, tilt)` 실시간 변환  
+- (옵션) 월드 좌표 `(X_cm, Y_cm)` → 픽셀 `(u, v)` RBF로 1200mm 평면 그리드 오버레이
+
+##### 실시간 객체 추적
+
+- 마우스 클릭으로 선택한 객체의 ID를 기억
+- 매 프레임 ONVIF 메타데이터에서 **같은 ID의 최신 bbox**를 조회하여 갱신
+- 선택 bbox의 `center_x`, `top + height × ratio` 지점을 타겟 좌표로 사용
+- 선택한 객체가 없을 때는 `SET_PWM` 미전송 (빈 줄 heartbeat만 전송하여 파이프 건강 체크)
+
+##### 칼만 필터 (alpha-beta) 300ms 예측 (2026-03-19 추가)
+
+이동하는 사람의 위치를 추적하고, 레이저가 도달하기까지의 지연(~300ms)을 보상하기 위해 2D 칼만 필터를 적용했다.
+
+| 파라미터 | 기본값 | 역할 |
+|---|---|---|
+| `alpha_pos` | 0.6 | 위치 보정 비율 (0~1, 클수록 측정값에 민감) |
+| `beta_vel` | 0.15 | 속도 보정 비율 (0~1, 클수록 속도 변화에 민감) |
+| `alpha_size` | 0.3 | bbox 크기 exponential smoothing 비율 |
+| `predict_ms` | 300 | 미래 예측 시간 (ms), CLI `--predict-ms`로 조절 |
+
+동작 흐름:
+
+1. 매 프레임 측정값 `(bbox_cx, bbox_cy)` + `dt`로 필터 갱신  
+2. `predict(0.3초)` → 예측 좌표 `(pred_u, pred_v)` 계산  
+3. 예측 좌표로 RBF → PWM 변환 → `SET_PWM,PAN=...,TILT=...` 출력  
+4. 새 객체 선택 시 필터/스무딩 즉시 리셋 (이전 값에 끌리지 않음)
+
+##### 파이프라인 자동 종료
+
+- `SIGPIPE` 핸들러: 다운스트림 프로세스(`ubuntu_tcp_server`) 종료 시 자동 종료
+- `std::cout` 상태 체크: 매 프레임 stdout이 유효한지 확인, 깨지면 `g_running = false`
+- heartbeat: 선택 객체 없을 때 30프레임마다 빈 줄 전송 → 파이프 파손 조기 감지
+
+#### 5.3 실행 방법
+
+```bash
+cd /home/ros2man/Desktop/SFEPS/Camera/get_metadata
+make camera_RBF
+
+# 기본 실행 (단독, 화면에서 확인만)
+./camera_RBF
+
+# ubuntu_tcp_server와 파이프 연결 (라즈베리 제어)
+./camera_RBF | ../hardware/stm32-laser/tmp_server/ubuntu_server/ubuntu_tcp_server --tcp 5555
+```
+
+#### 5.4 CLI 옵션
+
+| 옵션 | 기본값 | 설명 |
+|---|---|---|
+| `--detect-all` | off | Human 외 모든 객체 타입도 표시 |
+| `--ratio <f>` | 0.3 | bbox 상단으로부터의 타겟 비율 (0=상단, 1=하단) |
+| `--alpha <f>` | 0.5 | PWM 스무딩 계수 (0=변화 없음, 1=즉시 반영) |
+| `--send-every <n>` | 1 | n프레임마다 SET_PWM 전송 (프레임 스킵) |
+| `--predict-ms <f>` | 300 | 칼만 필터 예측 시간 (ms). 0이면 예측 비활성화 |
+| `--no-grid` | off | 1200mm 평면 그리드 오버레이 비활성화 |
+
+#### 5.5 화면 시각화 요소
+
+| 요소 | 색상 | 의미 |
+|---|---|---|
+| 노란색 사각형 | `(0,255,255)` | ONVIF 메타데이터 바운딩 박스 |
+| 초록색 사각형 | `(0,255,0)` | 현재 선택(추적 중)인 객체의 bbox |
+| 초록 수평선 | `(0,255,0)` | bbox 내 ratio 지점 (타겟 높이) |
+| 주황색 작은 점 | `(0,165,255)` | 현재 측정된 타겟 위치 |
+| 마젠타 큰 점 | `(255,0,255)` | 300ms 예측 위치 (PWM이 이 좌표 기준) |
+| 마젠타-주황 연결선 | `(255,0,255)` | 예측 방향/거리 |
+| 상단 텍스트 | `(0,255,255)` | `src`, `predict`, `pan`, `tilt`, `vx`, `vy` 정보 |
+
+#### 5.6 출력 포맷
+
+stdout (`ubuntu_tcp_server`로 파이프):
+
+```
+SET_PWM,PAN=1234,TILT=1350
+```
+
+stderr (디버그 로그):
+
+```
+CLICK_PWM id=596948 meas=(512,400) pred=(530,395) vel=(58.3,-16.2) PAN=1180 TILT=1370
+[FPS] 29.8
+```
+
