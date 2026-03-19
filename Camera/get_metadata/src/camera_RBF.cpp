@@ -37,6 +37,17 @@ static std::string g_selected_id;
 static cv::Rect g_selected_rect;
 static bool g_selected_valid = false;
 
+static std::mutex g_pwm_mutex;
+static int g_last_pan = 1500;
+static int g_last_tilt = 1500;
+static int g_last_target_u = -1;
+static int g_last_target_v = -1;
+static bool g_last_pwm_valid = false;
+
+static std::mutex g_click_mutex;
+static bool g_click_pending = false;
+static std::string g_click_pending_id;
+
 static void signal_handler(int) { g_running = false; }
 
 static bool compute_rect_from_obj(const ParsedMetadataObject& obj, int W, int H, cv::Rect& out)
@@ -161,12 +172,19 @@ static void on_mouse(int event, int x, int y, int /*flags*/, void* userdata)
             g_selected_valid = true;
         }
 
-        std::cout << "SELECT "
+        std::cerr << "SELECT "
                   << "id=" << obj.id
                   << " x=" << rect.x << " y=" << rect.y
                   << " w=" << rect.width << " h=" << rect.height
                   << std::endl;
-        std::fflush(stdout);
+
+        // 클릭 순간에는 아직 "선택된 rect 기준" PWM이 계산되기 전일 수 있음.
+        // → 다음 프레임에서 계산된 값(화면 오버레이와 동일)을 출력하도록 pending 플래그만 세팅.
+        {
+            std::lock_guard<std::mutex> lk(g_click_mutex);
+            g_click_pending = true;
+            g_click_pending_id = obj.id;
+        }
         break;
     }
 }
@@ -373,14 +391,56 @@ static void draw_world_grid(cv::Mat& frame, const RbfTps2D& rbf_u, const RbfTps2
     }
 }
 
+struct KalmanBbox2D
+{
+    double cx{0}, cy{0};
+    double vx{0}, vy{0};
+    double w{0}, h{0};
+    double alpha_pos{0.6};
+    double beta_vel{0.15};
+    double alpha_size{0.3};
+    bool initialized{false};
+
+    void update(double meas_cx, double meas_cy, double meas_w, double meas_h, double dt)
+    {
+        if (!initialized || dt <= 0)
+        {
+            cx = meas_cx; cy = meas_cy;
+            w = meas_w;   h = meas_h;
+            vx = vy = 0;
+            initialized = true;
+            return;
+        }
+        double px = cx + vx * dt;
+        double py = cy + vy * dt;
+        double rx = meas_cx - px;
+        double ry = meas_cy - py;
+        cx = px + alpha_pos * rx;
+        cy = py + alpha_pos * ry;
+        vx += (beta_vel * rx) / dt;
+        vy += (beta_vel * ry) / dt;
+        w += alpha_size * (meas_w - w);
+        h += alpha_size * (meas_h - h);
+    }
+
+    void predict(double dt_ahead, double& pred_cx, double& pred_cy) const
+    {
+        pred_cx = cx + vx * dt_ahead;
+        pred_cy = cy + vy * dt_ahead;
+    }
+
+    void reset() { initialized = false; cx = cy = vx = vy = w = h = 0; }
+};
+
 int main(int argc, char** argv)
 {
-    double ratio = 0.26;
-    double alpha = 0.5; // smoothing
+    double ratio = 0.3;
+    double alpha = 0.5;
     int pan_min = 500, pan_max = 2500;
     int tilt_min = 500, tilt_max = 2500;
     int send_every_n = 1;
     bool draw_grid = true;
+    double predict_ms = 300.0;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -390,9 +450,11 @@ int main(int argc, char** argv)
         else if (arg == "--alpha" && i + 1 < argc) alpha = std::atof(argv[++i]);
         else if (arg == "--send-every" && i + 1 < argc) send_every_n = std::max(1, std::atoi(argv[++i]));
         else if (arg == "--no-grid") draw_grid = false;
+        else if (arg == "--predict-ms" && i + 1 < argc) predict_ms = std::atof(argv[++i]);
     }
 
     std::signal(SIGINT, signal_handler);
+    std::signal(SIGPIPE, signal_handler);
 
     // Calib points
     std::vector<CalibPoint> pts = load_calib_points();
@@ -457,6 +519,10 @@ int main(int argc, char** argv)
     int prev_pan = 1500, prev_tilt = 1500;
     int frame_id = 0;
     auto t_fps0 = std::chrono::steady_clock::now();
+    auto t_last_frame = std::chrono::steady_clock::now();
+
+    KalmanBbox2D kf;
+    std::string prev_sel_id;
 
     while (g_running)
     {
@@ -500,8 +566,46 @@ int main(int argc, char** argv)
             sel_rect = g_selected_rect;
         }
 
+        if (sel_ok)
+        {
+            for (const auto& obj : objs)
+            {
+                if (obj.id == sel_id)
+                {
+                    cv::Rect updated;
+                    if (compute_rect_from_obj(obj, W, H, updated))
+                    {
+                        sel_rect = updated;
+                        std::lock_guard<std::mutex> lock(g_sel_mutex);
+                        g_selected_rect = updated;
+                    }
+                    break;
+                }
+            }
+        }
+
+        auto t_now = std::chrono::steady_clock::now();
+        double dt_sec = std::chrono::duration<double>(t_now - t_last_frame).count();
+        t_last_frame = t_now;
+        if (dt_sec <= 0 || dt_sec > 1.0) dt_sec = 1.0 / 30.0;
+
+        if (sel_ok && sel_id != prev_sel_id)
+        {
+            kf.reset();
+            prev_pan = 1500;
+            prev_tilt = 1500;
+            prev_sel_id = sel_id;
+        }
+        if (!sel_ok && !prev_sel_id.empty())
+        {
+            kf.reset();
+            prev_sel_id.clear();
+        }
+
         int target_u = W / 2;
         int target_v = H / 2;
+        int pred_target_u = target_u;
+        int pred_target_v = target_v;
         std::string src = "none";
 
         if (sel_ok)
@@ -515,47 +619,100 @@ int main(int argc, char** argv)
             cv::putText(frame, ("SEL " + sel_id).c_str(), cv::Point(sel_rect.x, std::max(0, sel_rect.y - 10)),
                         cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 0), 2);
 
-            target_u = sel_rect.x + sel_rect.width / 2;
-            target_v = sel_rect.y + (int)std::round(sel_rect.height * ratio);
-            target_v = std::max(0, std::min(H - 1, target_v));
-            src = "ratio";
+            double bbox_cx = sel_rect.x + sel_rect.width * 0.5;
+            double bbox_cy = sel_rect.y + sel_rect.height * ratio;
+            bbox_cy = std::max(0.0, std::min((double)(H - 1), bbox_cy));
 
-            // draw plane line
+            target_u = (int)std::lround(bbox_cx);
+            target_v = (int)std::lround(bbox_cy);
+            src = "kalman";
+
+            kf.update(bbox_cx, bbox_cy, (double)sel_rect.width, (double)sel_rect.height, dt_sec);
+
+            double pcx, pcy;
+            kf.predict(predict_ms / 1000.0, pcx, pcy);
+            pcx = std::max(0.0, std::min((double)(W - 1), pcx));
+            pcy = std::max(0.0, std::min((double)(H - 1), pcy));
+            pred_target_u = (int)std::lround(pcx);
+            pred_target_v = (int)std::lround(pcy);
+
             cv::line(frame, cv::Point(sel_rect.x, target_v), cv::Point(sel_rect.x + sel_rect.width, target_v),
                      cv::Scalar(0, 255, 0), 1);
         }
 
-        // RBF -> PWM
-        double pan_d = rbf_pan.eval((double)target_u, (double)target_v);
-        double tilt_d = rbf_tilt.eval((double)target_u, (double)target_v);
+        // RBF -> PWM (predicted position)
+        double pan_d = rbf_pan.eval((double)pred_target_u, (double)pred_target_v);
+        double tilt_d = rbf_tilt.eval((double)pred_target_u, (double)pred_target_v);
 
         int pan = (int)std::lround(std::max((double)pan_min, std::min((double)pan_max, pan_d)));
         int tilt = (int)std::lround(std::max((double)tilt_min, std::min((double)tilt_max, tilt_d)));
 
-        // smoothing
         pan = (int)std::lround(alpha * pan + (1.0 - alpha) * prev_pan);
         tilt = (int)std::lround(alpha * tilt + (1.0 - alpha) * prev_tilt);
         prev_pan = pan;
         prev_tilt = tilt;
 
-        // stdout -> ubuntu_tcp_server
-        if (frame_id % send_every_n == 0)
+        {
+            std::lock_guard<std::mutex> lk(g_pwm_mutex);
+            g_last_pan = pan;
+            g_last_tilt = tilt;
+            g_last_target_u = pred_target_u;
+            g_last_target_v = pred_target_v;
+            g_last_pwm_valid = true;
+        }
+
+        if (sel_ok && frame_id % send_every_n == 0)
         {
             std::cout << "SET_PWM,PAN=" << pan << ",TILT=" << tilt << std::endl;
-            std::cout.flush();
+        }
+        else if (frame_id % 30 == 0)
+        {
+            std::cout << std::endl;
+        }
+        if (!std::cout)
+        {
+            g_running = false;
+            break;
+        }
+
+        {
+            std::lock_guard<std::mutex> lk(g_click_mutex);
+            if (g_click_pending && sel_ok && sel_id == g_click_pending_id)
+            {
+                std::cerr << "CLICK_PWM "
+                          << "id=" << sel_id
+                          << " meas=(" << target_u << "," << target_v << ")"
+                          << " pred=(" << pred_target_u << "," << pred_target_v << ")"
+                          << " vel=(" << std::fixed << std::setprecision(1) << kf.vx << "," << kf.vy << ")"
+                          << " PAN=" << pan << " TILT=" << tilt
+                          << std::endl;
+                g_click_pending = false;
+                g_click_pending_id.clear();
+            }
         }
 
         // draw 1200mm plane grid overlay (world->pixel RBF)
         if (draw_grid)
             draw_world_grid(frame, rbf_u, rbf_v, pts);
 
-        // draw target
-        cv::circle(frame, cv::Point(target_u, target_v), 8, cv::Scalar(0, 165, 255), -1, cv::LINE_AA);
-        cv::circle(frame, cv::Point(target_u, target_v), 8, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+        // draw measured target (orange, small)
+        cv::circle(frame, cv::Point(target_u, target_v), 5, cv::Scalar(0, 165, 255), -1, cv::LINE_AA);
+        // draw predicted target (magenta, big) + line from measured
+        if (sel_ok && kf.initialized)
+        {
+            cv::line(frame, cv::Point(target_u, target_v), cv::Point(pred_target_u, pred_target_v),
+                     cv::Scalar(255, 0, 255), 2, cv::LINE_AA);
+            cv::circle(frame, cv::Point(pred_target_u, pred_target_v), 9, cv::Scalar(255, 0, 255), -1, cv::LINE_AA);
+            cv::circle(frame, cv::Point(pred_target_u, pred_target_v), 9, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+        }
+        else
+        {
+            cv::circle(frame, cv::Point(target_u, target_v), 8, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+        }
 
-        // info
         char info[256];
-        std::snprintf(info, sizeof(info), "src=%s ratio=%.3f pan=%d tilt=%d", src.c_str(), ratio, pan, tilt);
+        std::snprintf(info, sizeof(info), "src=%s predict=%.0fms pan=%d tilt=%d vx=%.0f vy=%.0f",
+                      src.c_str(), predict_ms, pan, tilt, kf.vx, kf.vy);
         cv::putText(frame, info, cv::Point(10, 30),
                     cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 255), 2);
 
