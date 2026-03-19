@@ -422,3 +422,12 @@ void AuthManager::notifyLocalLogout()
     qDebug() << "[AuthManager] notifyLocalLogout: emitting logoutRequested";
     emit logoutRequested();
 }
+
+void AuthManager::requestForcedLogout(const QString &message)
+{
+    const QString text = message.trimmed().isEmpty()
+                             ? QStringLiteral("서버와의 네트워크 연결이 끊어져 강제 로그아웃됩니다.")
+                             : message;
+    qWarning() << "[AuthManager] requestForcedLogout:" << text;
+    emit forcedLogoutNotice(text);
+}

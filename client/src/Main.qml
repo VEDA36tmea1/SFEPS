@@ -5,6 +5,7 @@ import src 1.0
 import src.views 1.0
 
 Window {
+    id: rootWindow
     width: 1250
     height: 750
     visible: true
@@ -13,6 +14,9 @@ Window {
 
     property int currentViewIndex: 1  // 1: Live View, 2: Analytics, 3: Settings
     property int unreadCount: 0
+    property bool laserTrackingEnabled: true
+    property string forcedLogoutMessage: "서버와의 네트워크 연결이 끊어져 강제 로그아웃됩니다."
+    property int forcedLogoutSecondsRemaining: 3
 
     ListModel {
         id: notificationModel
@@ -54,6 +58,83 @@ Window {
                     notificationModel.remove(currentNotificationIndex)
                 }
                 currentNotificationIndex = -1
+            }
+        }
+    }
+
+    Popup {
+        id: forcedLogoutPopup
+        anchors.centerIn: parent
+        width: Math.min(parent.width - 40, 460)
+        height: 220
+        modal: true
+        focus: true
+        closePolicy: Popup.NoAutoClose
+        padding: 0
+
+        background: Rectangle {
+            color: AppTheme.surfaceCardAlt
+            radius: 12
+            border.color: AppTheme.borderCard
+            border.width: 1
+        }
+
+        contentItem: ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 20
+            spacing: 14
+
+            Text {
+                text: "네트워크 연결 오류"
+                color: "white"
+                font.pixelSize: 20
+                font.bold: true
+                Layout.fillWidth: true
+                horizontalAlignment: Text.AlignHCenter
+            }
+
+            Text {
+                text: forcedLogoutMessage
+                color: AppTheme.textSecondary
+                wrapMode: Text.WordWrap
+                font.pixelSize: 14
+                Layout.fillWidth: true
+                horizontalAlignment: Text.AlignHCenter
+            }
+
+            Text {
+                text: "자동 로그아웃까지 " + forcedLogoutSecondsRemaining + "초"
+                color: AppTheme.accent
+                font.pixelSize: 13
+                font.bold: true
+                Layout.fillWidth: true
+                horizontalAlignment: Text.AlignHCenter
+            }
+
+            Item { Layout.fillHeight: true }
+
+            Button {
+                id: forcedLogoutConfirmButton
+                text: "확인"
+                Layout.alignment: Qt.AlignHCenter
+                Layout.preferredWidth: 120
+                Layout.preferredHeight: 40
+                background: Rectangle {
+                    radius: 8
+                    color: forcedLogoutConfirmButton.hovered ? AppTheme.accentHover : AppTheme.accent
+                }
+                contentItem: Text {
+                    text: parent.text
+                    color: "white"
+                    font.bold: true
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+                onClicked: {
+                    forcedLogoutTimer.stop()
+                    forcedLogoutPopup.close()
+                    authManager.notifyLocalLogout()
+                }
             }
         }
     }
@@ -551,6 +632,7 @@ Window {
                     currentIndex: currentViewIndex - 1
 
                     MonitoringView {
+                        laserTrackingEnabled: rootWindow.laserTrackingEnabled
                         onViewDetailRequest: (objectId, cardAgeText, ageGroup, isFraud) => {
                             detailPopup.objectId = objectId
                             detailPopup.cardAgeText = cardAgeText
@@ -561,6 +643,10 @@ Window {
                     }
                     AnalyticsView {}
                     SettingsView {
+                        laserTrackingEnabled: rootWindow.laserTrackingEnabled
+                        onLaserTrackingToggled: function(enabled) {
+                            rootWindow.laserTrackingEnabled = enabled
+                        }
                         onCloseClicked: {}
                     }
                 }
@@ -578,6 +664,36 @@ Window {
                 timestamp: Qt.formatDateTime(new Date(), "HH:mm:ss")
             })
             unreadCount++
+        }
+    }
+
+    Connections {
+        target: authManager
+        function onForcedLogoutNotice(message) {
+            forcedLogoutMessage = message
+            forcedLogoutSecondsRemaining = 3
+            if (!forcedLogoutPopup.opened) {
+                forcedLogoutPopup.open()
+            }
+            if (!forcedLogoutTimer.running) {
+                forcedLogoutTimer.start()
+            }
+        }
+    }
+
+    Timer {
+        id: forcedLogoutTimer
+        interval: 1000
+        repeat: true
+        onTriggered: {
+            forcedLogoutSecondsRemaining = Math.max(0, forcedLogoutSecondsRemaining - 1)
+            if (forcedLogoutSecondsRemaining === 0) {
+                stop()
+                if (forcedLogoutPopup.opened) {
+                    forcedLogoutPopup.close()
+                }
+                authManager.notifyLocalLogout()
+            }
         }
     }
 
