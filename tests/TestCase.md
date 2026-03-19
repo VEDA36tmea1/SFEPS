@@ -88,7 +88,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   - 영상이 끊김 없이 표시
   - 프레임이 지속적으로 갱신
 
-### TC-FUNC-STREAM-02 네트워크 단절/지연 등으로 스트리밍 불가 시 오류 상태 표시
+### TC-FUNC-STREAM-02 네트워크 단절/지연 등으로 스트리밍 불가 시 UI에 오류 상태 표시
 - **Level/Type/Priority**: Integration / Functional / Medium
 - **Execution**: Manual
 - **Pre-condition**: 스트리밍이 정상 표시 중
@@ -235,18 +235,32 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   - 추정 나이 표시(Mock 포함)
   - 발생 시각/게이트ID 표시
 
+### TC-FUNC-UI-04 로그아웃 버튼 클릭 시 로그아웃 요청 전송 및 로그인 화면 복귀
+- **Level/Type/Priority**: System / Functional / Medium
+- **Execution**: Manual
+- **Pre-condition**
+  - 유효 계정으로 로그인 완료
+  - 메인 화면(대시보드/분석/설정) 진입 상태
+- **Input Data**: 없음
+- **Steps**
+  1. 상단 우측 로그아웃 버튼 클릭
+- **Expected Result**
+  - 로그아웃 요청이 서버로 전송됨
+  - 현재 세션이 종료되고 로그인 화면으로 복귀함
+
 ---
 
 ## 5) Functional Test Cases — TRACKING
 
-### TC-FUNC-TRACK-01 관리자가 상세 팝업에서 Tracking 버튼 클릭 시 Laser Tracking 수행
+### TC-FUNC-TRACK-01 관리자가 스트리밍 객체 바운딩박스의 Track 버튼 클릭 시 Laser Tracking 수행
 - **Level/Type/Priority**: System / Functional / High
-- **Execution**: Manual
+- **Execution**: Auto / Manual
 - **Pre-condition**
-  - 의심 이벤트 1건 존재 및 상세 팝업 표시
+  - 스트리밍 화면에 추적 대상 객체 바운딩박스 표시
 - **Input Data**: 없음
 - **Steps**
-  1. 상세 팝업에서 Tracking 버튼 클릭
+  1. 객체 바운딩박스의 `Track` 버튼 클릭
+  2. 추적 종료 시 객체 바운딩박스의 `Untrack` 버튼 클릭
 - **Expected Result**
   - Laser Tracking이 시작됨(서버로 제어 요청)
   - 시작 시 레이저 ON
@@ -257,8 +271,8 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 - **Execution**: Manual
 - **Pre-condition**: Tracking 제어 가능 상태
 - **Steps**
-  1. Tracking 시작 후 UI 상태 표시 확인(ON)
-  2. Tracking 종료 후 UI 상태 표시 확인(OFF)
+  1. 객체 바운딩박스의 `Track` 버튼 클릭 후 UI 상태 표시 확인(ON)
+  2. 객체 바운딩박스의 `Untrack` 버튼 클릭 후 UI 상태 표시 확인(OFF)
 - **Expected Result**
   - UI에 상태가 정확히 반영됨
 
@@ -266,27 +280,27 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ## 6) Non-Functional Test Cases — Performance
 
-### TC-NF-PERF-01 Tracking 버튼 클릭 → Tracking 시작/ACK 확인까지 1초 이내
+### TC-NF-PERF-01 Tracking 명령 전송 시점(Client→Server) → 레이저 ON ACK 수신 시점(STM32→Server) 1초 이내
 - **Level/Type/Priority**: System/Integration / Non-Functional(Performance) / High
-- **Execution**: Manual
+- **Execution**: Auto
 - **Pre-condition**
-  - 의심 이벤트 존재 및 상세 팝업 표시
+  - 스트리밍 화면에 추적 대상 객체 바운딩박스 표시
   - 레이저 제어 가능(STM32)
   - 시간 측정용 로그/계측 가능
 - **Measurement**
-  - Start: QT Client Tracking 버튼 클릭 시각
-  - End: 레이저 ON ACK 시각
+  - Start: QT Client에서 Server로 Tracking 명령을 전송한 시각
+  - End: STM32에서 전송한 레이저 ON ACK를 Server가 수신한 시각
 - **Steps**
   1. 계측/로그 수집 시작
-  2. Tracking 버튼 클릭
-  3. End 시각 확보(서버/STM32 로그 또는 응답)
+  2. 객체 바운딩박스의 `Track` 버튼으로 Tracking 명령 전송 유도
+  3. Start/End 시각 확보(클라이언트 전송 로그, 서버 ACK 수신 로그)
   4. 경과 시간 계산
 - **Expected Result**
   - 경과 시간 ≤ 1.0초
 
 ### TC-NF-PERF-02 1분 내 50건 이상 의심 이벤트 처리(생성/전달/표시)
 - **Level/Type/Priority**: System / Non-Functional(Performance) / High
-- **Execution**: Auto
+- **Execution**: Auto / Manual
 - **Pre-condition**
   - 의심 이벤트를 자동/시뮬레이션으로 50건 이상 생성 가능
 - **Steps**
@@ -295,10 +309,31 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   3. QT Client 이벤트 목록 표시 수 확인
 - **Expected Result**
   - 60초 내 50건 이상 처리 완료
-  - 누락/중복이 허용 범위를 벗어나지 않음
 
-### TC-NF-PERF-03 1시간 연속 스트리밍 유지(중단 시 자동 복구 포함 가능)
-- **Level/Type/Priority**: System / Non-Functional(Performance) / Low
+---
+
+## 7) Non-Functional Test Cases — Reliability
+
+### TC-NF-RELI-01 Tracking(ON/OFF) 20회 반복 시 오류/상태불일치/비정상 종료 없음
+- **Level/Type/Priority**: System/Integration / Non-Functional(Reliability) / High
+- **Execution**: Auto / Manual
+- **Pre-condition**
+  - 의심 이벤트 존재(또는 반복 생성 가능)
+  - 레이저 제어 정상
+- **Steps**
+  1. 스트리밍 화면에서 추적 대상 객체 바운딩박스 확인
+  2. 아래를 20회 반복
+     - 바운딩박스 `Track` 버튼 클릭(Tracking 시작)
+     - 2~3초 유지
+     - 바운딩박스 `Untrack` 버튼 클릭(Tracking 종료)
+  3. 반복 중 오류/예외/크래시 여부 확인
+  4. 각 반복에서 UI 상태와 실제 장치 동작 일치 여부 확인
+- **Expected Result**
+  - 20회 수행 동안 비정상 종료/오류 없음
+  - UI 표시와 레이저 동작이 일치
+
+### TC-NF-RELI-02 1시간 연속 스트리밍 유지(중단 시 자동 복구 포함 가능)
+- **Level/Type/Priority**: System / Non-Functional(Reliability) / Low
 - **Execution**: Auto
 - **Pre-condition**: 스트리밍 정상 상태
 - **Steps**
@@ -308,28 +343,6 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 - **Expected Result**
   - 1시간 동안 스트리밍 유지
   - 치명적 장애(앱 다운/서버 다운) 없이 동작
-
----
-
-## 7) Non-Functional Test Cases — Reliability
-
-### TC-NF-RELI-01 Tracking(ON→OFF/종료) 20회 반복 시 오류/상태불일치/비정상 종료 없음
-- **Level/Type/Priority**: System/Integration / Non-Functional(Reliability) / High
-- **Execution**: Manual
-- **Pre-condition**
-  - 의심 이벤트 존재(또는 반복 생성 가능)
-  - 레이저 제어 정상
-- **Steps**
-  1. 이벤트 상세 팝업 진입
-  2. 아래를 20회 반복
-     - Tracking 시작
-     - 2~3초 유지
-     - Tracking 종료
-  3. 반복 중 오류/예외/크래시 여부 확인
-  4. 각 반복에서 UI 상태와 실제 장치 동작 일치 여부 확인
-- **Expected Result**
-  - 20회 수행 동안 비정상 종료/오류 없음
-  - UI 표시와 레이저 동작이 일치
 
 ---
 
@@ -373,9 +386,9 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   4. QT Client 이벤트 목록에 표시되는지 확인
   5. 해당 이벤트 클릭 → 상세 팝업 표시
   6. 팝업에서 스크린샷/카드정보/추정나이/시간/게이트ID 확인
-  7. Tracking 버튼 클릭
+  7. 스트리밍 객체 바운딩박스의 `Track` 버튼 클릭
   8. 레이저 ON 확인
-  9. Tracking 종료 후 레이저 OFF 확인
+  9. 스트리밍 객체 바운딩박스의 `Untrack` 버튼 클릭 후 레이저 OFF 확인
 - **Expected Result**
   - 전체 흐름이 끊김 없이 수행됨
   - 이벤트 정보 표시가 정확함

@@ -83,7 +83,7 @@ int main(int argc, char *argv[]) {
       return parsed;
   };
 
-  const QString alertHost = env.value("FRAUD_SERVER_HOST", "192.168.0.101");
+  const QString alertHost = env.value("FRAUD_SERVER_HOST", "192.168.0.82");
   const bool clientTlsEnabled = parseEnvBool(env, "SFEPS_CLIENT_TLS_ENABLE", false);
   const bool alertTlsEnabled = parseEnvBool(env, "SFEPS_ALERT_TLS_ENABLE", clientTlsEnabled);
   const int alertPort = alertTlsEnabled
@@ -106,10 +106,14 @@ int main(int argc, char *argv[]) {
       }
       isForceLogoutInProgress = true;
       qDebug() << "[Main] performing forced logout (reason):" << reason;
-      // Ensure Position socket is closed and clear current user, then notify UI
+      // Ensure Position socket is closed and clear current user, then ask UI to show forced-logout notice.
       positionManager.disconnectPositionServer();
       authManager.clearCurrentUser();
-      authManager.notifyLocalLogout();
+      QString notice = QStringLiteral("서버와의 네트워크 연결이 끊어져 강제 로그아웃됩니다.");
+      if (reason == "force_logout_event") {
+          notice = QStringLiteral("서버 정책에 의해 강제 로그아웃됩니다.");
+      }
+      authManager.requestForcedLogout(notice);
   };
 
   QObject::connect(serverDownTimer, &QTimer::timeout, [&]() {
@@ -159,16 +163,29 @@ int main(int argc, char *argv[]) {
     bool authLoginSucceeded = false;
     bool alertLoginAckReceived = false;
     bool positionConnectIssued = false;
-    auto tryStartPositionConnection = [&]() {
+    QTimer *positionConnectFallbackTimer = new QTimer(&app);
+    positionConnectFallbackTimer->setSingleShot(true);
+    positionConnectFallbackTimer->setInterval(2000);
+
+    auto tryStartPositionConnection = [&](bool allowWithoutAck = false) {
             if (positionConnectIssued) return;
-            if (!authLoginSucceeded || !alertLoginAckReceived) return;
+            if (!authLoginSucceeded) return;
+            if (!alertLoginAckReceived && !allowWithoutAck) return;
             positionConnectIssued = true;
-            qDebug() << "[Main] login+ack ready: initiating Position connection to" << posHost << posPort;
+            if (allowWithoutAck && !alertLoginAckReceived) {
+                qWarning() << "[Main] login ACK not received in time; starting Position connection with fallback";
+            } else {
+                qDebug() << "[Main] login+ack ready: initiating Position connection to" << posHost << posPort;
+            }
             positionManager.connectPositionServer(posHost, posPort);
     };
 
+    QObject::connect(positionConnectFallbackTimer, &QTimer::timeout, [&]() {
+        tryStartPositionConnection(true);
+    });
+
     // Expose RTSP stream URL to QML so QML MediaPlayer can use it
-    const QString rtspStreamUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.101:8554/cam1");
+    const QString rtspStreamUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.82:8554/cam1");
     engine.rootContext()->setContextProperty("rtspStreamUrl", rtspStreamUrl);
 
     // Auto-subscribe helper for testing: if SFEPS_AUTO_SUB_POS_ID env var is set,
@@ -211,24 +228,33 @@ int main(int argc, char *argv[]) {
       }
   });
 
-  // Position connection gate: require both local auth success and server TEST|LOGIN_OK ack.
+    // Position connection gate: prefer server TEST|LOGIN_OK ack, with timed fallback for recovery.
   QObject::connect(&authManager, &AuthManager::loginSuccess, [&]() {
       authLoginSucceeded = true;
-      tryStartPositionConnection();
+      alertLoginAckReceived = false;
+      positionConnectIssued = false;
+      tryStartPositionConnection(false);
+      positionConnectFallbackTimer->start();
   });
 
   QObject::connect(&fraudManager, &FraudManager::loginAckReceived, [&](const QString &userId) {
       Q_UNUSED(userId);
       alertLoginAckReceived = true;
-      tryStartPositionConnection();
+      if (positionConnectFallbackTimer->isActive()) {
+          positionConnectFallbackTimer->stop();
+      }
+      tryStartPositionConnection(false);
   });
 
   // When logout is requested, close main windows and show Login view again
-    QObject::connect(&authManager, &AuthManager::logoutRequested, [&engine, loginUrl, &positionManager, &authLoginSucceeded, &alertLoginAckReceived, &positionConnectIssued](){
+    QObject::connect(&authManager, &AuthManager::logoutRequested, [&engine, loginUrl, &positionManager, &authLoginSucceeded, &alertLoginAckReceived, &positionConnectIssued, positionConnectFallbackTimer](){
       qDebug() << "[Main] logoutRequested: closing main windows, disconnecting Position and loading login view";
       authLoginSucceeded = false;
       alertLoginAckReceived = false;
       positionConnectIssued = false;
+            if (positionConnectFallbackTimer->isActive()) {
+                    positionConnectFallbackTimer->stop();
+            }
       // Ensure Position socket is closed so server stops sending POS events
       positionManager.disconnectPositionServer();
       const auto rootObjects = engine.rootObjects();

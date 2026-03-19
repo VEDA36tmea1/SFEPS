@@ -533,14 +533,14 @@ Page {
                     model: [
                         {
                             title: "Active Cameras",
-                            value: "124 / 128",
+                            value: "1 / 1",
                             badge: "Active",
                             color: "#22c55e",
                             icon: "video"
                         },
                         {
                             title: "Gate Sensors",
-                            value: "512 / 512",
+                            value: "1 / 1",
                             badge: "Online",
                             color: AppTheme.accent,
                             icon: "wifi"

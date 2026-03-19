@@ -5,6 +5,8 @@ import src 1.0
 import src.backend 1.0
 
 Page {
+    id: rootPage
+    objectName: "monitoringPage"
     background: Rectangle {
         color: AppTheme.background
     }
@@ -12,11 +14,87 @@ Page {
     signal viewDetailRequest(string objectId, string cardAgeText, string ageGroup, bool isFraud)
 
     // Properties for live stats
-    property int alertsToday: 0
-    property real detectionRate: 94.2
+    property int totalBoardingCount: 0
+    property int fraudBoardingCount: 0
+    // Object-level aggregation for virtual-line decision events.
+    property var boardingDecisionByObject: ({})
+    property bool laserTrackingEnabled: true
+    property real detectionRate: totalBoardingCount > 0
+                                 ? Math.round((fraudBoardingCount / totalBoardingCount) * 1000) / 10
+                                 : 0
     property var pendingDetections: []
     property string currentTrackedId: ""
     property string visualTrackedId: ""
+    property string streamStatusOverrideForTest: ""
+    readonly property string effectiveStreamStatus: streamStatusOverrideForTest !== ""
+                                                    ? streamStatusOverrideForTest
+                                                    : (videoDisplay ? videoDisplay.streamStatus : "STOPPED")
+    readonly property bool trackingActive: visualTrackedId !== ""
+
+    function appendMonitoringEvent(objectId, cardAgeText, ageGroup, isFraud) {
+        if (!monitoringEventModel) {
+            return
+        }
+        var normalizedObjectId = String(objectId)
+        var normalizedCardAgeText = cardAgeText !== undefined ? String(cardAgeText) : ""
+        var normalizedAgeGroup = ageGroup !== undefined ? String(ageGroup) : ""
+        var fraud = !!isFraud
+        var key = normalizedObjectId
+        var hasPrev = Object.prototype.hasOwnProperty.call(boardingDecisionByObject, key)
+
+        if (!hasPrev) {
+            totalBoardingCount++
+            if (fraud) {
+                fraudBoardingCount++
+            }
+        } else if (boardingDecisionByObject[key] !== fraud) {
+            if (boardingDecisionByObject[key]) {
+                fraudBoardingCount = Math.max(0, fraudBoardingCount - 1)
+            }
+            if (fraud) {
+                fraudBoardingCount++
+            }
+        }
+        boardingDecisionByObject[key] = fraud
+
+        monitoringEventModel.insert(0, {
+            eventId: normalizedObjectId,
+            eventType: "FARE EVASION DETECTED",
+            title: "Object " + normalizedObjectId + " - " + normalizedCardAgeText.toUpperCase() + " CARD",
+            camera: "Age Group: " + normalizedAgeGroup.toUpperCase() + " (Fraud: " + (fraud ? "Y" : "N") + ")",
+            timestamp: Qt.formatDateTime(new Date(), "HH:mm:ss"),
+            confidence: "",
+            objectId: normalizedObjectId,
+            cardAgeText: normalizedCardAgeText,
+            ageGroup: normalizedAgeGroup,
+            isFraud: fraud
+        })
+    }
+
+    // Squish helper: inject monitoring events without backend socket dependency.
+    function injectTestMonitoringEvent(objectId, cardAgeText, ageGroup, isFraud) {
+        appendMonitoringEvent(
+            objectId || "TEST-OBJ-001",
+            cardAgeText || "adult",
+            ageGroup || "30s",
+            isFraud !== false
+        )
+    }
+
+    // Squish helper: force stream-state label rendering for UI verification.
+    function setStreamStatusOverrideForTest(status) {
+        streamStatusOverrideForTest = status ? String(status) : ""
+    }
+
+    function clearStreamStatusOverrideForTest() {
+        streamStatusOverrideForTest = ""
+    }
+
+    onLaserTrackingEnabledChanged: {
+        if (!laserTrackingEnabled && videoDisplay) {
+            videoDisplay.setSelectedDetection("")
+        }
+    }
 
     Timer {
         id: detectionFlushTimer
@@ -59,11 +137,12 @@ Page {
                 }
 
                 Rectangle {
+                    objectName: "streamStatusBadge"
                     Layout.preferredHeight: 24
                     implicitWidth: streamStatusLabel.implicitWidth + 24
                     radius: 12
                     color: AppTheme.surfaceCard
-                    border.color: streamStatusColor(videoDisplay.streamStatus)
+                    border.color: streamStatusColor(effectiveStreamStatus)
                     border.width: 1
 
                     RowLayout {
@@ -74,16 +153,38 @@ Page {
                             width: 8
                             height: 8
                             radius: 4
-                            color: streamStatusColor(videoDisplay.streamStatus)
+                            color: streamStatusColor(effectiveStreamStatus)
                         }
 
                         Text {
                             id: streamStatusLabel
-                            text: streamStatusText(videoDisplay.streamStatus)
-                            color: streamStatusColor(videoDisplay.streamStatus)
+                            objectName: "streamStatusLabel"
+                            text: streamStatusText(effectiveStreamStatus)
+                            color: streamStatusColor(effectiveStreamStatus)
                             font.pixelSize: 10
                             font.bold: true
                         }
+                    }
+                }
+
+                Rectangle {
+                    id: trackingStateBadge
+                    objectName: "trackingStateBadge"
+                    Layout.preferredHeight: 24
+                    implicitWidth: trackingStateLabel.implicitWidth + 24
+                    radius: 12
+                    color: AppTheme.surfaceCard
+                    border.width: 1
+                    border.color: trackingActive ? "#60a5fa" : AppTheme.borderCard
+
+                    Text {
+                        id: trackingStateLabel
+                        objectName: "trackingStateLabel"
+                        anchors.centerIn: parent
+                        text: trackingActive ? "TRACKING ON" : "TRACKING OFF"
+                        color: trackingActive ? "#60a5fa" : AppTheme.textSecondary
+                        font.pixelSize: 10
+                        font.bold: true
                     }
                 }
             }
@@ -105,6 +206,7 @@ Page {
                 // Real Video Stream for Camera 1
                 VideoDisplay {
                     id: videoDisplay
+                    objectName: "videoDisplay"
                     anchors.fill: parent
                     anchors.margins: 1 // inside border
                     brightness: brightnessSlider.value
@@ -166,7 +268,7 @@ Page {
                     MouseArea {
                         anchors.fill: parent
                         z: 50
-                        enabled: !zoomBtn.checked
+                        enabled: !zoomBtn.checked && laserTrackingEnabled
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
@@ -186,13 +288,13 @@ Page {
                 // Popup for Track controls when an object is selected
                 Popup {
                     id: trackPopup
+                    objectName: "trackPopup"
                     // position near last click, clamp inside parent
                     x: Math.min(parent.width - width - 8, Math.max(8, videoDisplay.x + videoDisplay.lastClickX - width/2))
                     y: Math.min(parent.height - height - 8, Math.max(8, videoDisplay.y + videoDisplay.lastClickY - height/2))
-                    visible: videoDisplay.selectedDetection !== ""
+                    visible: laserTrackingEnabled && videoDisplay.selectedDetection !== ""
                     modal: false
                     focus: true
-
                     Rectangle {
                         width: 240
                         height: 120
@@ -206,6 +308,7 @@ Page {
                             spacing: 8
 
                             Text {
+                                objectName: "trackPopupSelectedText"
                                 text: "Selected: " + videoDisplay.selectedDetection
                                 color: "white"
                                 font.pixelSize: 12
@@ -213,6 +316,7 @@ Page {
                             }
 
                             Text {
+                                objectName: "trackPopupTrackingStateText"
                                 text: visualTrackedId !== "" ? "Tracking: " + visualTrackedId : "Tracking: -"
                                 color: visualTrackedId !== "" ? "#60a5fa" : "#9ca3af"
                                 font.pixelSize: 11
@@ -225,6 +329,7 @@ Page {
 
                                 Button {
                                     id: trackBtn
+                                    objectName: "trackButton"
                                     Layout.preferredWidth: 100
                                     Layout.preferredHeight: 34
                                     text: "Track"
@@ -261,6 +366,7 @@ Page {
 
                                 Button {
                                     id: untrackBtn
+                                    objectName: "untrackButton"
                                     Layout.preferredWidth: 100
                                     Layout.preferredHeight: 34
                                     text: "Untrack"
@@ -334,22 +440,25 @@ Page {
                 }
 
                 Rectangle {
-                    visible: videoDisplay.streamStatus === "DISCONNECTED" || videoDisplay.streamStatus === "RECONNECTING"
+                    id: streamNoticeBanner
+                    objectName: "streamNoticeBanner"
+                    visible: effectiveStreamStatus === "DISCONNECTED" || effectiveStreamStatus === "RECONNECTING"
                     anchors.horizontalCenter: parent.horizontalCenter
                     anchors.bottom: parent.bottom
                     anchors.bottomMargin: 16
                     radius: 6
                     color: AppTheme.surfaceCard
-                    border.color: streamStatusColor(videoDisplay.streamStatus)
+                    border.color: streamStatusColor(effectiveStreamStatus)
                     border.width: 1
                     width: streamNoticeText.implicitWidth + 20
                     height: 30
 
                     Text {
                         id: streamNoticeText
+                        objectName: "streamNoticeText"
                         anchors.centerIn: parent
-                        text: streamStatusText(videoDisplay.streamStatus)
-                        color: streamStatusColor(videoDisplay.streamStatus)
+                        text: streamStatusText(effectiveStreamStatus)
+                        color: streamStatusColor(effectiveStreamStatus)
                         font.pixelSize: 11
                         font.bold: true
                     }
@@ -619,6 +728,7 @@ Page {
                 // Event List (mockEvents 스타일, 기본 행 형태)
                 ListView {
                     id: eventListView
+                    objectName: "monitoringEventListView"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
@@ -630,20 +740,7 @@ Page {
                     Connections {
                         target: fraudManager
                         function onFraudDetected(objectId, cardAgeText, ageGroup, isFraud) {
-                            monitoringEventModel.insert(0, {
-                                eventId: objectId,
-                                eventType: "FARE EVASION DETECTED",
-                                title: "Object " + objectId + " - " + cardAgeText.toUpperCase() + " CARD",
-                                camera: "Age Group: " + ageGroup.toUpperCase() + " (Fraud: " + (isFraud ? "Y" : "N") + ")",
-                                timestamp: Qt.formatDateTime(new Date(), "HH:mm:ss"),
-                                confidence: "98.5%",
-                                // Raw data for DetailView
-                                objectId: objectId,
-                                cardAgeText: cardAgeText,
-                                ageGroup: ageGroup,
-                                isFraud: isFraud
-                            })
-                            alertsToday++
+                            appendMonitoringEvent(objectId, cardAgeText, ageGroup, isFraud)
                         }
                     }
 
@@ -715,6 +812,7 @@ Page {
                                 visible: eventType === "FARE EVASION DETECTED"
 
                                 Button {
+                                    objectName: "monitoringDetailViewButton_" + index
                                     Layout.fillWidth: true
                                     Layout.preferredHeight: 24
                                     flat: true
@@ -788,14 +886,14 @@ Page {
                     ColumnLayout {
                         spacing: 0
                         Text {
-                            text: "DETECTION RATE"
+                            text: "FARE EVASION RATE"
                             color: "#888"
                             font.bold: true
                             font.pixelSize: 10
                             Layout.alignment: Qt.AlignHCenter
                         }
                         Text {
-                            text: (94.0 + (alertsToday % 20) / 10.0).toFixed(1) + "%"
+                            text: detectionRate.toFixed(1) + "%"
                             color: AppTheme.primaryOrange
                             font.bold: true
                             font.pixelSize: 20
@@ -803,18 +901,18 @@ Page {
                         }
                     }
 
-                    // Alerts Today
+                    // Fraud Riders
                     ColumnLayout {
                         spacing: 0
                         Text {
-                            text: "ALERTS TODAY"
+                            text: "FRAUD RIDERS"
                             color: "#888"
                             font.bold: true
                             font.pixelSize: 10
                             Layout.alignment: Qt.AlignHCenter
                         }
                         Text {
-                            text: alertsToday
+                            text: fraudBoardingCount
                             color: "white"
                             font.bold: true
                             font.pixelSize: 20

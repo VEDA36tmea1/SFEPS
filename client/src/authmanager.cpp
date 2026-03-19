@@ -14,7 +14,7 @@ constexpr int kDefaultAuthTlsPort = 6555;
 constexpr int kDefaultAuthPlainPort = 5555;
 constexpr bool kDefaultAuthTlsEnable = true;
 constexpr bool kDefaultPlainFallbackEnable = false;
-constexpr const char* kDefaultAuthHost = "192.168.0.101";
+constexpr const char* kDefaultAuthHost = "192.168.0.82";
 constexpr const char* kResourceCaPath = ":/certs/auth_ca.pem";
 
 QString maskUserId(const QString& userId)
@@ -421,4 +421,13 @@ void AuthManager::notifyLocalLogout()
 {
     qDebug() << "[AuthManager] notifyLocalLogout: emitting logoutRequested";
     emit logoutRequested();
+}
+
+void AuthManager::requestForcedLogout(const QString &message)
+{
+    const QString text = message.trimmed().isEmpty()
+                             ? QStringLiteral("서버와의 네트워크 연결이 끊어져 강제 로그아웃됩니다.")
+                             : message;
+    qWarning() << "[AuthManager] requestForcedLogout:" << text;
+    emit forcedLogoutNotice(text);
 }

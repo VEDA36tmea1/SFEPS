@@ -5,6 +5,7 @@ import src 1.0
 
 Item {
     id: root
+    objectName: "detailViewRoot"
     signal closeClicked
     signal confirmClicked
 
@@ -12,6 +13,9 @@ Item {
     property string cardAgeText: "Adult"
     property string ageGroup: "Senior"
     property bool isFraud: true
+    property string cardAgeDisplay: cardAgeText && cardAgeText.trim() !== "" ? cardAgeText.toUpperCase() : "-"
+    property string estimatedAgeDisplay: ageGroup && ageGroup.trim() !== "" ? ageGroup.toUpperCase() : "-"
+    property string fraudDisplay: isFraud ? "FARE EVASION (Y)" : "NORMAL BOARDING (N)"
 
     RowLayout {
         anchors.fill: parent
@@ -45,7 +49,7 @@ Item {
                         }
                         Item { Layout.fillWidth: true }
                         Text {
-                            text: "LIVE FEED MOCK"
+                            text: "EVENT SNAPSHOT"
                             color: AppTheme.accent
                             font.pixelSize: 10
                             font.bold: true
@@ -106,13 +110,15 @@ Item {
                     ColumnLayout {
                         spacing: 4
                         Text {
+                            objectName: "detailTitleText"
                             text: "Event Details"
                             color: "white"
                             font.pixelSize: 24
                             font.bold: true
                         }
                         Text {
-                            text: "FARE EVASION DETECTED"
+                            objectName: "detailFraudTypeText"
+                            text: isFraud ? "FARE EVASION DETECTED" : "BOARDING EVENT DETECTED"
                             color: AppTheme.accent
                             font.pixelSize: 12
                             font.bold: true
@@ -121,6 +127,7 @@ Item {
                     }
                     Item { Layout.fillWidth: true }
                     Button {
+                        objectName: "detailCloseButton"
                         flat: true
                         implicitWidth: 32; implicitHeight: 32
                         onClicked: closeClicked()
@@ -145,27 +152,71 @@ Item {
                     Layout.fillWidth: true
                     spacing: 16
 
-                    Repeater {
-                        model: [
-                            { label: "Object ID", value: objectId },
-                            { label: "Card Age Text", value: cardAgeText },
-                            { label: "Age Group", value: ageGroup.toUpperCase() },
-                            { label: "Fraud", value: isFraud ? "Y" : "N" }
-                        ]
-                        delegate: RowLayout {
-                            Layout.fillWidth: true
-                            Text {
-                                text: modelData.label
-                                color: AppTheme.textSecondary
-                                font.pixelSize: 13
-                                Layout.preferredWidth: 120
-                            }
-                            Text {
-                                text: modelData.value
-                                color: "white"
-                                font.pixelSize: 14
-                                font.bold: true
-                            }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text {
+                            text: "Object ID"
+                            color: AppTheme.textSecondary
+                            font.pixelSize: 13
+                            Layout.preferredWidth: 120
+                        }
+                        Text {
+                            objectName: "detailObjectIdValueText"
+                            text: objectId
+                            color: "white"
+                            font.pixelSize: 14
+                            font.bold: true
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text {
+                            text: "Card Tag"
+                            color: AppTheme.textSecondary
+                            font.pixelSize: 13
+                            Layout.preferredWidth: 120
+                        }
+                        Text {
+                            objectName: "detailCardTagValueText"
+                            text: cardAgeDisplay
+                            color: "white"
+                            font.pixelSize: 14
+                            font.bold: true
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text {
+                            text: "Estimated Age"
+                            color: AppTheme.textSecondary
+                            font.pixelSize: 13
+                            Layout.preferredWidth: 120
+                        }
+                        Text {
+                            objectName: "detailEstimatedAgeValueText"
+                            text: estimatedAgeDisplay
+                            color: "white"
+                            font.pixelSize: 14
+                            font.bold: true
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text {
+                            text: "Boarding Result"
+                            color: AppTheme.textSecondary
+                            font.pixelSize: 13
+                            Layout.preferredWidth: 120
+                        }
+                        Text {
+                            objectName: "detailBoardingResultValueText"
+                            text: fraudDisplay
+                            color: "white"
+                            font.pixelSize: 14
+                            font.bold: true
                         }
                     }
                 }
@@ -175,6 +226,7 @@ Item {
                 // Actions
                 Button {
                     id: confirmButton
+                    objectName: "detailConfirmButton"
                     Layout.fillWidth: true
                     Layout.preferredHeight: 50
                     background: Rectangle {

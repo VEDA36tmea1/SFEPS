@@ -24,7 +24,7 @@ pipeline {
         // Single-job fallback branch (set to main when running main in a single Pipeline job)
         SFEPS_SINGLE_JOB_BRANCH = "${env.SFEPS_SINGLE_JOB_BRANCH ?: 'develop'}"
 
-        SFEPS_TEST_HOST = "${env.SFEPS_TEST_HOST ?: '192.168.0.101'}"
+        SFEPS_TEST_HOST = "${env.SFEPS_TEST_HOST ?: '192.168.0.82'}"
         SFEPS_TEST_SSH_CREDENTIALS_ID = "${env.SFEPS_TEST_SSH_CREDENTIALS_ID ?: 'sfeps-test-ssh'}"
         SFEPS_TEST_CONTAINER_NAME = "${env.SFEPS_TEST_CONTAINER_NAME ?: 'sfeps-server-test'}"
 
@@ -222,6 +222,39 @@ import sys
 import xml.etree.ElementTree as ET
 
 path = "reports/login-tests.xml"
+root = ET.parse(path).getroot()
+
+if root.tag == "testsuite":
+    tests = int(root.attrib.get("tests", "0"))
+    skipped = int(root.attrib.get("skipped", "0"))
+else:
+    tests = 0
+    skipped = 0
+    for suite in root.findall("testsuite"):
+        tests += int(suite.attrib.get("tests", "0"))
+        skipped += int(suite.attrib.get("skipped", "0"))
+
+if tests == 0 or skipped == tests:
+    print(f"All tests skipped ({skipped}/{tests}). Marking build as failed.")
+    sys.exit(2)
+PY
+                '''
+            }
+        }
+
+        stage('Run Track Tests') {
+            steps {
+                sh '''
+                    set -eu
+                    export MYSQL_UNIX_PORT="$WORKSPACE/.ci-mariadb/mysqld.sock"
+                    mkdir -p reports
+                    python3 -m pytest -q tests/test_tc_func_track.py -r a --junitxml=reports/track-tests.xml
+
+                    python3 - <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+path = "reports/track-tests.xml"
 root = ET.parse(path).getroot()
 
 if root.tag == "testsuite":

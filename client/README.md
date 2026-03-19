@@ -11,6 +11,8 @@
     *   **저지연 최적화 (Low Latency)**: `VideoCaptureWorker` 스레드와 `CAP_PROP_BUFFERSIZE` 최적화를 통해 실시간 응답성 확보.
 *   **실시간 영상 처리**: OpenCV 기반의 밝기 조절 및 ROI(관심 영역) 드래그 줌 기능 구현.
 *   **이상 징후 실시간 알림**: `FraudManager`를 통해 서버로부터 부정 승차 의심 데이터를 즉각 수신(Port 5557) 및 팝업 알림.
+*   **서버 단절 강제 로그아웃 UX**: 서버 연결 단절 또는 `AUTH|FORCE_LOGOUT` 이벤트 수신 시 안내 팝업 표시 후 자동 로그아웃 처리.
+*   **Position 복구 강화**: 재로그인 시 `TEST|LOGIN_OK` ACK 기반으로 Position 채널(Port 5558) 연결을 재시도하고, ACK 지연 시 폴백 타이머로 자동 복구.
 *   **양방향 음성 통신**: `VoiceManager`를 통한 RAW PCM 무전통신 기능(Port 5556, 16kHz Mono) 지원.
 *   **통합 관제 대시보드**: 모니터링, 데이터 분석(Analytics), 로그 관리, 설정 기능을 갖춘 유려한 다크 테마 UI.
 
@@ -27,25 +29,35 @@
     *   TCP Port `5555`: 사용자 인증 (Auth)
     *   TCP Port `5557`: 부정 승차 알림 수신 (Fraud Alert)
     *   TCP Port `5556`: 음성 스트리밍 (Voice/Audio)
+    *   TCP Port `5558`: 위치/트래킹 스트림 (Position)
     *   RTSP Port `8554`: 영상 스트리밍 (Video)
 
 ### 네트워크 설정 (필수)
-현재 코드는 라즈베리파이 서버 IP를 `192.168.0.101`로 가정하고 있습니다. 서버 환경에 맞춰 다음 파일들을 확인하십시오.
+현재 코드는 라즈베리파이 서버 IP를 `192.168.0.82`로 가정하고 있습니다. 서버 환경에 맞춰 다음 파일들을 확인하십시오.
 *   `src/authmanager.cpp`: 인증 서버 IP/Port 설정.
-*   `src/mainwindow.cpp`: RTSP 주소 (`rtsp://192.168.0.101:8554/cam1`) 설정.
+*   `src/mainwindow.cpp`: RTSP 주소 (`rtsp://192.168.0.82:8554/cam1`) 설정.
 *   `src/voicemanager.cpp`: 오디오 서버 IP/Port 설정.
 
 환경변수로 런타임 네트워크 대상을 변경할 수도 있습니다.
-*   `AUTH_SERVER_HOST`: 로그인 인증 서버 호스트(기본값 `192.168.0.101`)
+*   `AUTH_SERVER_HOST`: 로그인 인증 서버 호스트(기본값 `192.168.0.82`)
 *   `AUTH_TLS_ENABLE`: 로그인 채널 TLS 사용 여부(기본값 `1`)
 *   `AUTH_TLS_PORT`: 로그인 TLS 포트(기본값 `6555`)
 *   `AUTH_PLAINTEXT_PORT`: 로그인 평문 포트(기본값 `5555`)
 *   `AUTH_ALLOW_PLAINTEXT_FALLBACK`: TLS 실패 시 평문 1회 재시도 허용(기본값 `0`)
 *   `AUTH_TLS_CA_FILE`: 서버 인증서 검증용 CA PEM 파일 경로(예: `.../client/certs/auth_ca.pem`)
-*   `RTSP_STREAM_URL`: 모니터링 RTSP 스트림 URL(기본값 `rtsp://192.168.0.101:8554/cam1`)
+*   `RTSP_STREAM_URL`: 모니터링 RTSP 스트림 URL(기본값 `rtsp://192.168.0.82:8554/cam1`)
+*   `FRAUD_SERVER_HOST`: 알림 서버 호스트(기본값 `192.168.0.82`)
+*   `FRAUD_SERVER_PORT`: 알림 서버 평문 포트(기본값 `5557`)
+*   `POS_SERVER_HOST`: Position 서버 호스트(기본값: `FRAUD_SERVER_HOST` 값)
+*   `POS_SERVER_PORT`: Position 서버 평문 포트(기본값 `5558`)
+*   `SFEPS_ALERT_TLS_ENABLE`, `SFEPS_ALERT_TLS_PORT`: 알림 채널 TLS 사용/포트
+*   `SFEPS_POS_TLS_ENABLE`, `SFEPS_POS_TLS_PORT`: Position 채널 TLS 사용/포트
 
 스트리밍 장애가 발생하면 Monitoring 화면에서 `CONNECTING/RECONNECTING/STREAM OFFLINE` 상태가 표시되며,
 클라이언트는 3초 간격으로 자동 재연결을 시도합니다.
+
+서버 연결이 장시간 복구되지 않거나 서버가 강제 로그아웃 이벤트를 전송하면,
+클라이언트는 강제 로그아웃 안내 팝업을 띄운 후 로그인 화면으로 전환합니다.
 
 ### TLS 관련 클라이언트 환경변수 (새)
 

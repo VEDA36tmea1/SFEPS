@@ -1,32 +1,32 @@
-#ifndef IMG_PROCESSING_H
-#define IMG_PROCESSING_H
-
+#pragma once
 #include <opencv2/opencv.hpp>
-#include <vector>
-
-// 1. AGC
-void applyShadowBoost(const cv::Mat& src, cv::Mat& dst, double gamma_val = 1.0, double alpha_val = 1.0);
-
-// 2. CLAHE
-void applyCLAHE(const cv::Mat& src, cv::Mat& dst, double clip=1.5, cv::Size grid=cv::Size(8,8));
-
-// 3. 8분할 이미지 & Bestshot 생성 함수
-cv::Mat processISPAndGetBest(const cv::Mat& raw_frame_in, cv::Mat& tuning_view_out);;
-
-// 4. 엔트로피 계산 함수
-double calculateEntropy(const cv::Mat& frame);
-
-cv::Mat runPureISP(cv::Mat& raw16_frame);
-
-// ISP 설정 구조체
+#include <cstdint>
+ 
+// ── RAW ISP 설정 ──────────────────────────────────────────────
 struct ISPConfig {
-    uint16_t black_level = 64;
-    float r_gain = 1.8f;
-    float g_gain = 1.0f;
-    float b_gain = 1.5f;
+    uint16_t black_level = 64; // 센서 블랙 레벨 (10-bit 기준)
 };
-
-// 함수 선언 (이름만 등록)
-void applyInitialISP(uint16_t* raw_buf, int width, int height, const ISPConfig& cfg);
-
-#endif
+ 
+// ── 공개 인터페이스 ───────────────────────────────────────────
+ 
+/**
+ * runPureISP
+ *  입력: CV_16UC1  RAW 10-bit 베이어 프레임 (원본 보존)
+ *  출력: CV_8UC3   BGR 이미지
+ *  처리: BLC → AWB/AE → Demosaic → CCM → Gamma
+ */
+cv::Mat runPureISP(const cv::Mat& raw16_frame);
+ 
+/**
+ * processISPAndGetBest
+ *  입력: CV_8UC3   BGR 이미지 (runPureISP 결과 or libcamera BGR 직접 입력)
+ *  출력: best_frame      — 엔트로피 최고 후보
+ *        tuning_view_out — 8분할 비교 뷰 (4x2 그리드)
+ *  처리: ShadowBoost × 7 → CLAHE × 7 → Entropy 평가 → Best 선택
+ */
+cv::Mat processISPAndGetBest(const cv::Mat& frame_in, cv::Mat& tuning_view_out);
+ 
+// ── 내부 공유 함수 (단독 사용 가능) ─────────────────────────
+void applyShadowBoost(const cv::Mat& src, cv::Mat& dst, double gamma, double alpha);
+void applyCLAHE(const cv::Mat& src, cv::Mat& dst, double clip_limit, cv::Size grid);
+ 

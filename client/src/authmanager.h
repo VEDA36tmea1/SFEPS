@@ -17,6 +17,7 @@ public:
     Q_INVOKABLE void sendLogout();
     Q_INVOKABLE void clearCurrentUser();
     Q_INVOKABLE void notifyLocalLogout();
+    Q_INVOKABLE void requestForcedLogout(const QString &message);
     QString currentUserId() const { return m_currentUserId; }
 
 signals:
@@ -24,6 +25,7 @@ signals:
     void loginFailed(const QString &message);
     void currentUserIdChanged();
     void logoutRequested();
+    void forcedLogoutNotice(const QString &message);
 
 private slots:
     void onReadyRead();
