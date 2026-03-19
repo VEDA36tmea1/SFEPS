@@ -45,7 +45,7 @@ bool RTSPClient::connectToCamera() {
         return false;
     }
 #endif
-    std::cout << "✅ Connected to Camera!" << std::endl;
+    std::cerr << "✅ Connected to Camera!" << std::endl;
     return true;
 }
 
@@ -75,7 +75,7 @@ void RTSPClient::sendHandshake() {
     if (session_pos != std::string::npos) {
         size_t end_pos = resp.find_first_of(";\r\n", session_pos);
         session_id = resp.substr(session_pos + 9, end_pos - (session_pos + 9));
-        std::cout << "✅ Session ID: " << session_id << std::endl;
+        std::cerr << "✅ Session ID: " << session_id << std::endl;
     }
 
     // 4. SETUP (Metadata)
@@ -88,7 +88,7 @@ void RTSPClient::sendHandshake() {
     send(sock, msg.c_str(), msg.length(), 0);
     recv(sock, buffer, 1024, 0);
     
-    std::cout << "🚀 Streaming Started!" << std::endl;
+    std::cerr << "🚀 Streaming Started!" << std::endl;
     last_heartbeat = time(NULL);
 }
 

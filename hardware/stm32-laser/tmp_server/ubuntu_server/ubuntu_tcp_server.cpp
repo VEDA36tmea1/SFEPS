@@ -4,6 +4,8 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <poll.h>
+#include <netinet/tcp.h>
 
 #include <atomic>
 #include <cerrno>
@@ -16,6 +18,8 @@
 #include <thread>
 #include <limits>
 #include <algorithm>
+#include <deque>
+#include <condition_variable>
  
 // NOTE:
 // 이 서버는 원래 TCP 전용이었다.
@@ -25,6 +29,21 @@
 //            이후 sendto()는 그 주소로 수행한다. (HELLO/PING/임의 라인)
 
 static bool g_running = true;
+
+// 종료 시 accept/poll을 깨우기 위한 전역 FD (best-effort)
+static int g_server_fd = -1;
+
+// stdin(파이프)에서 들어오는 라인들을 클라이언트 연결과 무관하게 큐잉
+static std::mutex g_inq_mutex;
+static std::condition_variable g_inq_cv;
+static std::deque<std::string> g_inq;
+static constexpr size_t kMaxQueuedLines = 200;
+static std::atomic<unsigned long long> g_in_lines{0};
+static std::atomic<unsigned long long> g_sent_lines{0};
+static std::atomic<unsigned long long> g_send_fail{0};
+static std::atomic<bool> g_client_connected{false};
+static std::mutex g_last_sent_mutex;
+static std::string g_last_sent;
 
 // rtsp_laser_demo에 "클라이언트 연결됨" 신호 전달 (레이저 탐지/LUT 시작 조건)
 static constexpr const char* LUT_CLIENT_CONNECTED_FIFO = "/tmp/lut_client_connected";
@@ -91,6 +110,105 @@ static void recv_thread_fn(int client_fd, std::atomic<bool>& stop_flag)
 
 void handle_signal(int) {
     g_running = false;
+    // best-effort: poll/accept를 깨우기 위해 shutdown
+    if (g_server_fd >= 0) {
+        ::shutdown(g_server_fd, SHUT_RDWR);
+    }
+    g_inq_cv.notify_all();
+}
+
+static void stdin_thread_fn()
+{
+    std::string line;
+    while (g_running && std::getline(std::cin, line))
+    {
+        if (!g_running) break;
+        if (line.empty()) continue;
+        {
+            std::lock_guard<std::mutex> lk(g_inq_mutex);
+            if (g_inq.size() >= kMaxQueuedLines)
+                g_inq.pop_front();
+            g_inq.push_back(line);
+        }
+        g_in_lines.fetch_add(1);
+        g_inq_cv.notify_one();
+    }
+    // 파이프가 끊기면(EOF) 서버도 같이 종료되게
+    g_running = false;
+    // accept/poll 즉시 탈출 유도
+    if (g_server_fd >= 0) {
+        ::shutdown(g_server_fd, SHUT_RDWR);
+    }
+    g_inq_cv.notify_all();
+}
+
+static void status_thread_fn()
+{
+    using clock = std::chrono::steady_clock;
+    auto next = clock::now() + std::chrono::seconds(1);
+    while (g_running)
+    {
+        std::this_thread::sleep_until(next);
+        next += std::chrono::seconds(1);
+
+        size_t qsz = 0;
+        {
+            std::lock_guard<std::mutex> lk(g_inq_mutex);
+            qsz = g_inq.size();
+        }
+        std::string last;
+        {
+            std::lock_guard<std::mutex> lk(g_last_sent_mutex);
+            last = g_last_sent;
+        }
+        std::cerr << "[STAT] in=" << g_in_lines.load()
+                  << " sent=" << g_sent_lines.load()
+                  << " fail=" << g_send_fail.load()
+                  << " q=" << qsz
+                  << " connected=" << (g_client_connected.load() ? "Y" : "N")
+                  << " last=\"" << last << "\""
+                  << "\n";
+    }
+}
+
+static int accept_with_poll(int server_fd, sockaddr_in& client_addr, socklen_t& client_len)
+{
+    int client_fd = -1;
+    while (g_running && client_fd < 0)
+    {
+        pollfd pfd{};
+        pfd.fd = server_fd;
+        pfd.events = POLLIN;
+        int pr = ::poll(&pfd, 1, 200);
+        if (pr == 0) continue;
+        if (pr < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        client_fd = ::accept(server_fd, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
+        if (client_fd < 0)
+        {
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                client_fd = -1;
+                continue;
+            }
+            return -1;
+        }
+    }
+    return client_fd;
+}
+
+static void set_nonblocking(int fd)
+{
+    int flags = ::fcntl(fd, F_GETFL, 0);
+    if (flags >= 0)
+        ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+static void set_tcp_nodelay(int fd)
+{
+    int one = 1;
+    ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 }
 
 // UDP 수신: 클라이언트(라즈베리)의 PAN/TILT 라인 등을 수신해 FIFO로 전달.
@@ -132,9 +250,9 @@ static void udp_recv_thread_fn(int udp_fd, std::atomic<bool>& stop_flag, UdpPeer
                 ::inet_ntop(AF_INET, &peer.addr.sin_addr, ip, sizeof(ip));
                 std::cerr << "[UDP] peer learned: " << ip << ":" << ntohs(peer.addr.sin_port) << "\n";
 
-                // rtsp_laser_demo에 "연결됨" 신호 전달 → 레이저 탐지/LUT 시작
+                // rtsp_laser_demo에 "연결됨" 신호 전달 (리더 없으면 즉시 skip)
                 ::mkfifo(LUT_CLIENT_CONNECTED_FIFO, 0666);
-                int conn_fd = ::open(LUT_CLIENT_CONNECTED_FIFO, O_WRONLY);
+                int conn_fd = ::open(LUT_CLIENT_CONNECTED_FIFO, O_WRONLY | O_NONBLOCK);
                 if (conn_fd >= 0) {
                     const char* msg = "CONNECTED\n";
                     ssize_t wr = ::write(conn_fd, msg, std::strlen(msg));
@@ -421,15 +539,19 @@ int main(int argc, char** argv) {
 
     std::signal(SIGINT, handle_signal);
     std::signal(SIGTERM, handle_signal);
+    // 파이프로 연결되었을 때 반대쪽이 먼저 죽어도 프로세스가 SIGPIPE로 죽지 않게
+    std::signal(SIGPIPE, SIG_IGN);
 
     int server_fd = ::socket(AF_INET, udp_mode ? SOCK_DGRAM : SOCK_STREAM, 0);
     if (server_fd < 0) {
         std::perror("socket");
         return 1;
     }
+    g_server_fd = server_fd;
 
     int opt = 1;
     ::setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    ::setsockopt(server_fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
 
     sockaddr_in addr{};
     addr.sin_family      = AF_INET;
@@ -442,10 +564,15 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (::listen(server_fd, 5) < 0) {
-        std::perror("listen");
-        ::close(server_fd);
-        return 1;
+    if (!udp_mode) {
+        if (::listen(server_fd, 5) < 0) {
+            std::perror("listen");
+            ::close(server_fd);
+            return 1;
+        }
+        // accept를 non-blocking + poll로 돌려서 종료 신호에 즉시 반응
+        int flags = ::fcntl(server_fd, F_GETFL, 0);
+        if (flags >= 0) ::fcntl(server_fd, F_SETFL, flags | O_NONBLOCK);
     }
 
     std::cout << "[TCP] Ubuntu TCP 서버 시작" << std::endl;
@@ -491,9 +618,13 @@ int main(int argc, char** argv) {
                 if (line == "quit" || line == "exit") break;
                 if (line.empty()) continue;
 
-                // peer가 아직 없으면 기다림 (라즈베리가 HELLO 필요)
                 if (!peer.valid)
+                {
+                    static int drop_cnt = 0;
+                    if (++drop_cnt % 100 == 1)
+                        std::cerr << "[UDP] peer not learned yet, dropping stdin lines (count=" << drop_cnt << ")\n";
                     continue;
+                }
 
                 std::string msg = line;
                 // stdin 라인은 개행이 제거되어 있으므로 \n 추가
@@ -514,12 +645,16 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // TCP 모드: stdin을 별도 스레드에서 항상 읽어 큐잉 (클라이언트 연결 여부와 무관)
+    std::thread stdin_th(stdin_thread_fn);
+    std::thread stat_th(status_thread_fn);
+
     while (g_running) {
         std::cout << "[TCP] 클라이언트 연결 대기 중..." << std::endl;
 
         sockaddr_in client_addr{};
         socklen_t   client_len = sizeof(client_addr);
-        int client_fd = ::accept(server_fd, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
+        int client_fd = accept_with_poll(server_fd, client_addr, client_len);
         if (client_fd < 0) {
             if (!g_running) break;
             std::perror("accept");
@@ -530,10 +665,13 @@ int main(int argc, char** argv) {
         ::inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, sizeof(client_ip));
         std::cout << "[TCP] Client connected from " << client_ip
                   << ":" << ntohs(client_addr.sin_port) << std::endl;
+        g_client_connected = true;
+        set_nonblocking(client_fd);
+        set_tcp_nodelay(client_fd);
 
-        // rtsp_laser_demo에 "연결됨" 신호 전달 → 레이저 탐지/LUT 시작
+        // rtsp_laser_demo에 "연결됨" 신호 전달 (리더 없으면 즉시 skip)
         ::mkfifo(LUT_CLIENT_CONNECTED_FIFO, 0666);
-        int conn_fd = ::open(LUT_CLIENT_CONNECTED_FIFO, O_WRONLY);
+        int conn_fd = ::open(LUT_CLIENT_CONNECTED_FIFO, O_WRONLY | O_NONBLOCK);
         if (conn_fd >= 0) {
             const char* msg = "CONNECTED\n";
             ssize_t wr = ::write(conn_fd, msg, std::strlen(msg));
@@ -548,11 +686,23 @@ int main(int argc, char** argv) {
         if (rtt_mode) {
             run_rtt_test(client_fd);
         } else {
-            std::cout << "[TCP] 파이프 수신 대기 중 (rtsp_laser_demo | ubuntu_tcp_server)" << std::endl;
+            std::cout << "[TCP] 파이프 수신 대기 중 (camera_RBF | ubuntu_tcp_server)" << std::endl;
 
-            std::string line;
-            while (g_running && std::getline(std::cin, line)) {
-                if (line == "quit" || line == "exit") break;
+            while (g_running)
+            {
+                std::string line;
+                {
+                    std::unique_lock<std::mutex> lk(g_inq_mutex);
+                    g_inq_cv.wait_for(lk, std::chrono::milliseconds(200), [] {
+                        return !g_inq.empty() || !g_running;
+                    });
+                    if (!g_running) break;
+                    if (g_inq.empty()) continue;
+                    line = std::move(g_inq.front());
+                    g_inq.pop_front();
+                }
+
+                if (line == "quit" || line == "exit") { g_running = false; break; }
 
                 std::string trimmed = line;
                 while (!trimmed.empty() && (trimmed.back() == '\r' || trimmed.back() == '\n' || trimmed.back() == ' '))
@@ -570,8 +720,16 @@ int main(int argc, char** argv) {
                     trimmed.find("SET_PWM,") == 0)
                 {
                     std::string msg = trimmed + "\n";
-                    if (::send(client_fd, msg.c_str(), static_cast<int>(msg.size()), MSG_NOSIGNAL) <= 0) {
+                    int sret = ::send(client_fd, msg.c_str(), static_cast<int>(msg.size()), MSG_NOSIGNAL | MSG_DONTWAIT);
+                    if (sret <= 0) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                            // 송신 버퍼가 가득 차면 최신값만 유지하고 드롭
+                            g_send_fail.fetch_add(1);
+                            continue;
+                        }
                         std::cerr << "[TCP] 클라이언트 연결 끊김, 재접속 대기...\n";
+                        g_send_fail.fetch_add(1);
+                        g_client_connected = false;
 
                         stop_recv.store(true);
                         if (recv_th.joinable()) recv_th.join();
@@ -579,19 +737,13 @@ int main(int argc, char** argv) {
 
                         // 새 클라이언트 접속까지 대기
                         client_fd = -1;
-                        while (g_running && client_fd < 0) {
-                            client_fd = ::accept(server_fd,
-                                reinterpret_cast<sockaddr*>(&client_addr), &client_len);
-                            if (client_fd < 0) {
-                                if (!g_running) break;
-                                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                            }
-                        }
+                        client_fd = accept_with_poll(server_fd, client_addr, client_len);
                         if (client_fd < 0) break;
 
                         ::inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, sizeof(client_ip));
                         std::cout << "[TCP] 재접속: " << client_ip
                                   << ":" << ntohs(client_addr.sin_port) << std::endl;
+                        g_client_connected = true;
 
                         // 수신 스레드 재시작
                         stop_recv.store(false);
@@ -602,7 +754,14 @@ int main(int argc, char** argv) {
                             std::cout << "[TCP] Sent (재전송): " << msg;
                         continue;
                     }
-                    std::cout << "[TCP] Sent: " << msg;
+                    g_sent_lines.fetch_add(1);
+                    {
+                        std::lock_guard<std::mutex> lk(g_last_sent_mutex);
+                        g_last_sent = trimmed;
+                    }
+                    // 너무 많이 찍히면 터미널이 죽어서, SET_PWM는 1초에 1번만 요약 로그로 본다.
+                    if (trimmed.find("SET_PWM,") != 0)
+                        std::cout << "[TCP] Sent: " << msg;
                     continue;
                 }
 
@@ -635,8 +794,15 @@ int main(int argc, char** argv) {
                     continue;
 
                 // send 실패 → 연결 끊김, 재접속 대기
-                if (::send(client_fd, send_buf, len, MSG_NOSIGNAL) <= 0) {
+                int sret = ::send(client_fd, send_buf, len, MSG_NOSIGNAL | MSG_DONTWAIT);
+                if (sret <= 0) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                        g_send_fail.fetch_add(1);
+                        continue;
+                    }
                     std::cerr << "[TCP] 클라이언트 연결 끊김, 재접속 대기...\n";
+                    g_send_fail.fetch_add(1);
+                    g_client_connected = false;
 
                     stop_recv.store(true);
                     if (recv_th.joinable()) recv_th.join();
@@ -644,19 +810,13 @@ int main(int argc, char** argv) {
 
                     // 새 클라이언트 접속까지 대기
                     client_fd = -1;
-                    while (g_running && client_fd < 0) {
-                        client_fd = ::accept(server_fd,
-                            reinterpret_cast<sockaddr*>(&client_addr), &client_len);
-                        if (client_fd < 0) {
-                            if (!g_running) break;
-                            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                        }
-                    }
+                    client_fd = accept_with_poll(server_fd, client_addr, client_len);
                     if (client_fd < 0) break;
 
                     ::inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, sizeof(client_ip));
                     std::cout << "[TCP] 재접속: " << client_ip
                               << ":" << ntohs(client_addr.sin_port) << std::endl;
+                    g_client_connected = true;
 
                     // 수신 스레드 재시작
                     stop_recv.store(false);
@@ -667,22 +827,28 @@ int main(int argc, char** argv) {
                         std::cout << "[TCP] Sent (재전송): " << send_buf;
                     continue;
                 }
+                g_sent_lines.fetch_add(1);
+                {
+                    std::lock_guard<std::mutex> lk(g_last_sent_mutex);
+                    g_last_sent = std::string(send_buf, len > 1 ? len - 1 : 0);
+                }
                 std::cout << "[TCP] Sent: " << send_buf;
             }
-
-            if (!std::cin.good())
-                g_running = false;
         }
 
         stop_recv.store(true);
         if (recv_th.joinable()) recv_th.join();
 
         ::close(client_fd);
+        g_client_connected = false;
         if (!g_running || rtt_mode) break; // RTT 모드는 1회 측정 후 종료
     }
 
     ::close(server_fd);
+    g_server_fd = -1;
     std::cout << "[TCP] 서버 종료" << std::endl;
+    if (stdin_th.joinable()) stdin_th.join();
+    if (stat_th.joinable()) stat_th.join();
     return 0;
 }
 

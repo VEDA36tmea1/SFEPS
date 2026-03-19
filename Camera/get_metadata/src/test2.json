@@ -1,0 +1,17 @@
+{
+  "image": "/home/ros2man/Desktop/SFEPS/Camera/get_metadata/src/test2.png",
+  "bbox": {
+    "x0": 45,
+    "y0": 83,
+    "x1": 254,
+    "y1": 639,
+    "w": 209,
+    "h": 556
+  },
+  "ratio_1200mm": 0.3147482014388489,
+  "click_xy": {
+    "x": 103,
+    "y": 258
+  },
+  "pose_process_ms": 127.33650207519531
+}
