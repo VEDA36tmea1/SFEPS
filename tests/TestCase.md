@@ -214,28 +214,21 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 - **Expected Result**
   - 이벤트 목록에 신규 이벤트가 표시됨(이벤트 ID/시간 등)
 
-### TC-FUNC-UI-02 이벤트 선택 시 상세 팝업 표시
+### TC-FUNC-UI-02 이벤트 선택 시 상세 팝업 표시 및 상세 정보 확인
 - **Level/Type/Priority**: System / Functional / High
 - **Execution**: Manual
 - **Pre-condition**: 의심 이벤트 목록 표시 상태
 - **Steps**
   1. 이벤트 1건 선택/클릭
+  2. 상세 팝업 내 각 필드 존재 및 값 표시 확인
 - **Expected Result**
   - 상세 팝업(Detail View)이 표시됨
-
-### TC-FUNC-UI-03 상세 팝업 정보 표시(스크린샷/카드정보/추정나이/발생시각/게이트ID)
-- **Level/Type/Priority**: System / Functional / High
-- **Execution**: Manual
-- **Pre-condition**: 상세 팝업 표시 상태(TC-FUNC-UI-02 선행)
-- **Steps**
-  1. 팝업 내 각 필드 존재 및 값 표시 확인
-- **Expected Result**
   - 얼굴 스크린샷(또는 캡처 프레임) 표시
   - 카드 정보 표시
   - 추정 나이 표시(Mock 포함)
   - 발생 시각/게이트ID 표시
 
-### TC-FUNC-UI-04 로그아웃 버튼 클릭 시 로그아웃 요청 전송 및 로그인 화면 복귀
+### TC-FUNC-UI-03 로그아웃 버튼 클릭 시 로그아웃 요청 전송 및 로그인 화면 복귀
 - **Level/Type/Priority**: System / Functional / Medium
 - **Execution**: Manual
 - **Pre-condition**
