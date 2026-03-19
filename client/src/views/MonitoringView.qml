@@ -12,11 +12,23 @@ Page {
     signal viewDetailRequest(string objectId, string cardAgeText, string ageGroup, bool isFraud)
 
     // Properties for live stats
-    property int alertsToday: 0
-    property real detectionRate: 94.2
+    property int totalBoardingCount: 0
+    property int fraudBoardingCount: 0
+    // Object-level aggregation for virtual-line decision events.
+    property var boardingDecisionByObject: ({})
+    property bool laserTrackingEnabled: true
+    property real detectionRate: totalBoardingCount > 0
+                                 ? Math.round((fraudBoardingCount / totalBoardingCount) * 1000) / 10
+                                 : 0
     property var pendingDetections: []
     property string currentTrackedId: ""
     property string visualTrackedId: ""
+
+    onLaserTrackingEnabledChanged: {
+        if (!laserTrackingEnabled && videoDisplay) {
+            videoDisplay.setSelectedDetection("")
+        }
+    }
 
     Timer {
         id: detectionFlushTimer
@@ -166,7 +178,7 @@ Page {
                     MouseArea {
                         anchors.fill: parent
                         z: 50
-                        enabled: !zoomBtn.checked
+                        enabled: !zoomBtn.checked && laserTrackingEnabled
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
@@ -189,10 +201,9 @@ Page {
                     // position near last click, clamp inside parent
                     x: Math.min(parent.width - width - 8, Math.max(8, videoDisplay.x + videoDisplay.lastClickX - width/2))
                     y: Math.min(parent.height - height - 8, Math.max(8, videoDisplay.y + videoDisplay.lastClickY - height/2))
-                    visible: videoDisplay.selectedDetection !== ""
+                    visible: laserTrackingEnabled && videoDisplay.selectedDetection !== ""
                     modal: false
                     focus: true
-
                     Rectangle {
                         width: 240
                         height: 120
@@ -630,20 +641,36 @@ Page {
                     Connections {
                         target: fraudManager
                         function onFraudDetected(objectId, cardAgeText, ageGroup, isFraud) {
+                            var key = String(objectId)
+                            var hasPrev = Object.prototype.hasOwnProperty.call(boardingDecisionByObject, key)
+                            if (!hasPrev) {
+                                totalBoardingCount++
+                                if (isFraud) {
+                                    fraudBoardingCount++
+                                }
+                            } else if (boardingDecisionByObject[key] !== isFraud) {
+                                if (boardingDecisionByObject[key]) {
+                                    fraudBoardingCount = Math.max(0, fraudBoardingCount - 1)
+                                }
+                                if (isFraud) {
+                                    fraudBoardingCount++
+                                }
+                            }
+                            boardingDecisionByObject[key] = isFraud
+
                             monitoringEventModel.insert(0, {
                                 eventId: objectId,
                                 eventType: "FARE EVASION DETECTED",
                                 title: "Object " + objectId + " - " + cardAgeText.toUpperCase() + " CARD",
                                 camera: "Age Group: " + ageGroup.toUpperCase() + " (Fraud: " + (isFraud ? "Y" : "N") + ")",
                                 timestamp: Qt.formatDateTime(new Date(), "HH:mm:ss"),
-                                confidence: "98.5%",
+                                confidence: "",
                                 // Raw data for DetailView
                                 objectId: objectId,
                                 cardAgeText: cardAgeText,
                                 ageGroup: ageGroup,
                                 isFraud: isFraud
                             })
-                            alertsToday++
                         }
                     }
 
@@ -788,14 +815,14 @@ Page {
                     ColumnLayout {
                         spacing: 0
                         Text {
-                            text: "DETECTION RATE"
+                            text: "FARE EVASION RATE"
                             color: "#888"
                             font.bold: true
                             font.pixelSize: 10
                             Layout.alignment: Qt.AlignHCenter
                         }
                         Text {
-                            text: (94.0 + (alertsToday % 20) / 10.0).toFixed(1) + "%"
+                            text: detectionRate.toFixed(1) + "%"
                             color: AppTheme.primaryOrange
                             font.bold: true
                             font.pixelSize: 20
@@ -803,18 +830,18 @@ Page {
                         }
                     }
 
-                    // Alerts Today
+                    // Fraud Riders
                     ColumnLayout {
                         spacing: 0
                         Text {
-                            text: "ALERTS TODAY"
+                            text: "FRAUD RIDERS"
                             color: "#888"
                             font.bold: true
                             font.pixelSize: 10
                             Layout.alignment: Qt.AlignHCenter
                         }
                         Text {
-                            text: alertsToday
+                            text: fraudBoardingCount
                             color: "white"
                             font.bold: true
                             font.pixelSize: 20

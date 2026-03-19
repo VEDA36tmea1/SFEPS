@@ -8,6 +8,14 @@ Page {
         color: AppTheme.background
     }
     signal closeClicked
+    signal laserTrackingToggled(bool enabled)
+    property bool laserTrackingEnabled: true
+
+    onLaserTrackingEnabledChanged: {
+        if (laserTrackingSwitch.checked === laserTrackingEnabled) {
+            laserTrackingSwitch.checked = !laserTrackingEnabled
+        }
+    }
 
     ColumnLayout {
         anchors.fill: parent
@@ -19,7 +27,9 @@ Page {
             spacing: 12
             Image {
                 source: "../../assets/Settings.svg"
-                sourceSize: Qt.size(28, 28)
+                width: 14
+                height: 28
+                fillMode: Image.PreserveAspectFit
             }
             Text {
                 text: "System Settings"
@@ -35,7 +45,8 @@ Page {
 
             // Device Card
             Rectangle {
-                Layout.fillWidth: true
+                Layout.fillWidth: false
+                Layout.preferredWidth: (parent.width - 24) * 0.5
                 Layout.preferredHeight: 200
                 color: AppTheme.surfaceCard
                 radius: 8
@@ -73,43 +84,17 @@ Page {
                             color: "white"
                         }
                         Switch {
-                            checked: true
+                            id: laserTrackingSwitch
+                            checked: false
+                            onToggled: laserTrackingToggled(!checked)
+                            Component.onCompleted: checked = !laserTrackingEnabled
                         }
                     }
                 }
             }
 
-            // Standby Card
-            Rectangle {
+            Item {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 200
-                color: AppTheme.surfaceCard
-                radius: 8
-                border.color: AppTheme.borderCard
-                border.width: 1
-
-                ColumnLayout {
-                    anchors.fill: parent
-                    anchors.margins: 20
-                    spacing: 16
-
-                    Text {
-                        text: "Standby Device"
-                        color: AppTheme.textSecondary
-                        font.bold: true
-                    }
-                    Text {
-                        text: "SFEPS-CAM-02"
-                        color: "gray"
-                        font.pixelSize: 24
-                        font.bold: true
-                    }
-
-                    Button {
-                        text: "Activate Pair"
-                        flat: true
-                    }
-                }
             }
         }
 
@@ -140,21 +125,6 @@ Page {
 
         Item {
             Layout.fillHeight: true
-        }
-
-        Button {
-            text: "Apply Changes"
-            Layout.alignment: Qt.AlignRight
-            background: Rectangle {
-                color: AppTheme.primaryOrange
-                radius: 4
-            }
-            contentItem: Text {
-                text: parent.text
-                color: "white"
-                padding: 12
-            }
-            onClicked: closeClicked()
         }
     }
 }

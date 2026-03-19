@@ -12,6 +12,9 @@ Item {
     property string cardAgeText: "Adult"
     property string ageGroup: "Senior"
     property bool isFraud: true
+    property string cardAgeDisplay: cardAgeText && cardAgeText.trim() !== "" ? cardAgeText.toUpperCase() : "-"
+    property string ageGroupDisplay: ageGroup && ageGroup.trim() !== "" ? ageGroup.toUpperCase() : "-"
+    property string fraudDisplay: isFraud ? "FARE EVASION (Y)" : "NORMAL BOARDING (N)"
 
     RowLayout {
         anchors.fill: parent
@@ -45,7 +48,7 @@ Item {
                         }
                         Item { Layout.fillWidth: true }
                         Text {
-                            text: "LIVE FEED MOCK"
+                            text: "EVENT SNAPSHOT"
                             color: AppTheme.accent
                             font.pixelSize: 10
                             font.bold: true
@@ -112,7 +115,7 @@ Item {
                             font.bold: true
                         }
                         Text {
-                            text: "FARE EVASION DETECTED"
+                            text: isFraud ? "FARE EVASION DETECTED" : "BOARDING EVENT DETECTED"
                             color: AppTheme.accent
                             font.pixelSize: 12
                             font.bold: true
@@ -148,9 +151,9 @@ Item {
                     Repeater {
                         model: [
                             { label: "Object ID", value: objectId },
-                            { label: "Card Age Text", value: cardAgeText },
-                            { label: "Age Group", value: ageGroup.toUpperCase() },
-                            { label: "Fraud", value: isFraud ? "Y" : "N" }
+                            { label: "Card Tag", value: cardAgeDisplay },
+                            { label: "Estimated Age Group", value: ageGroupDisplay },
+                            { label: "Boarding Result", value: fraudDisplay }
                         ]
                         delegate: RowLayout {
                             Layout.fillWidth: true
