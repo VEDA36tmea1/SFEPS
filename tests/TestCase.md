@@ -88,7 +88,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   - 영상이 끊김 없이 표시
   - 프레임이 지속적으로 갱신
 
-### TC-FUNC-STREAM-02 네트워크 단절/지연 등으로 스트리밍 불가 시 오류 상태 표시
+### TC-FUNC-STREAM-02 네트워크 단절/지연 등으로 스트리밍 불가 시 UI에 오류 상태 표시
 - **Level/Type/Priority**: Integration / Functional / Medium
 - **Execution**: Manual
 - **Pre-condition**: 스트리밍이 정상 표시 중
@@ -241,7 +241,7 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-FUNC-TRACK-01 관리자가 스트리밍 객체 바운딩박스의 Track 버튼 클릭 시 Laser Tracking 수행
 - **Level/Type/Priority**: System / Functional / High
-- **Execution**: Manual
+- **Execution**: Auto / Manual
 - **Pre-condition**
   - 스트리밍 화면에 추적 대상 객체 바운딩박스 표시
 - **Input Data**: 없음
