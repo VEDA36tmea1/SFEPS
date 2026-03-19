@@ -86,6 +86,8 @@ export SFEPS_APP_TLS_HANDSHAKE_TIMEOUT_MS=3000
 
 # Video Catalog
 export SFEPS_VIDEO_HTTP_BASE_URL=http://127.0.0.1:8080/videos
+export SFEPS_FRAUD_IMAGE_HTTP_BASE_URL=http://127.0.0.1:8080/fraud-images
+export SFEPS_FRAUD_IMAGE_RETENTION_SEC=86400
 
 # ESP(선택)
 export SFEPS_ESP_TCP_ENABLE=0
@@ -170,6 +172,8 @@ Alert:
 - 로그인 성공 테스트: `TEST|LOGIN_OK|<user>\n`
 - Fraud 알림:
   - `FRAUD|<object_id>|<card_age_text>|<age>|<Y|N>|L=<...>|T=<...>|R=<...>|B=<...>|X=<...>|Y=<...>|TAG=<...>\n`
+- Fraud 이미지 참조:
+  - `IMG_REF|OBJECT_ID=<object_id>|URL=<image_url>|TAG=<iso_time>|NAME=<filename>\n`
 - 강제 로그아웃 이벤트:
   - `AUTH|FORCE_LOGOUT|REASON=POSITION_UNAUTHENTICATED|PROTO=PLAIN\n`
   - `AUTH|FORCE_LOGOUT|REASON=POSITION_UNAUTHENTICATED|PROTO=TLS\n`
@@ -234,3 +238,9 @@ sudo systemctl enable --now sfeps-server.service
 - 영상 저장: `/home/iam/SFEPS/videos`
 - 이벤트 이미지: `/home/iam/SFEPS/event_images`
 - RFID 소켓: `/tmp/rc522_events.sock`
+
+운영 참고:
+- `IMG_REF` URL은 `SFEPS_FRAUD_IMAGE_HTTP_BASE_URL` 기반으로 생성됩니다.
+- 운영에서 `http://<host>:8080/fraud-images/<filename>`가
+  `/home/iam/SFEPS/event_images/fraud/<filename>`로 매핑되도록 정적 파일 서빙 구성이 필요합니다.
+- fraud 이미지는 `SFEPS_FRAUD_IMAGE_RETENTION_SEC`(기본 86400초, 1일) 지난 파일부터 자동 삭제됩니다.

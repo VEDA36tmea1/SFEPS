@@ -8,5 +8,11 @@
 // save_dir: 삭제할 대상 디렉토리 경로
 // retention_sec: 파일 보관 기간 (초 단위, 기본 60초)
 void run_file_cleanup_worker(std::atomic<bool>& running_flag, const std::string& save_dir, long retention_sec = 60);
+void run_fraud_image_cleanup_worker(std::atomic<bool>& running_flag,
+                                    const std::string& save_dir,
+                                    long retention_sec = 86400);
+void run_pending_image_cleanup_worker(std::atomic<bool>& running_flag,
+                                      const std::string& save_dir,
+                                      long retention_sec = 86400);
 
 #endif
