@@ -1,10 +1,11 @@
 # Tests README
 
-`tests/` 자동 테스트는 현재 아래 6개 축으로 운영됩니다.
+`tests/` 자동 테스트는 현재 아래 7개 축으로 운영됩니다.
 
 - 로그인 기능: `tests/test_tc_func_login.py`
 - 스트리밍 기능: `tests/test_tc_func_stream.py`
 - 이벤트 판정 기능: `tests/test_tc_func_event.py`
+- 트래킹 기능: `tests/test_tc_func_track.py`
 - 비기능(Recoverability): `tests/test_tc_nf_rec.py`
 - 비기능(Reliability): `tests/test_tc_nf_reli.py`
 - 비기능(Performance): `tests/test_tc_nf_perf.py`
@@ -17,6 +18,7 @@
 - `tests/test_tc_func_login.py`: 로그인 PASS/FAIL 및 클라이언트 소스 가드 검증
 - `tests/test_tc_func_stream.py`: RTSP 직접 요청 기반 스트림 검증(TC01, TC03)
 - `tests/test_tc_func_event.py`: 서버 실제 판정 로직 기반 EVENT TC-FUNC-EVENT-01~06 검증
+- `tests/test_tc_func_track.py`: Track/Untrack 명령의 서버 수신(TC-FUNC-TRACK-01) 검증
 - `tests/test_tc_nf_rec.py`: 서버 인증 세션 해제 후 unauthenticated 재접속 거절 및 `AUTH|FORCE_LOGOUT` 이벤트, 재로그인 복구 검증
 - `tests/test_tc_nf_reli.py`: Tracking 토글 반복 안정성(TC-NF-RELI-01), 장시간 스트리밍 복구 신뢰성(TC-NF-RELI-02) 검증
 - `tests/test_tc_nf_perf.py`: 이벤트 처리 성능(TC-NF-PERF-02) 검증
@@ -57,6 +59,10 @@ pip install pytest
   - `server_event_driver.cpp`를 테스트 시점 빌드 후 실제 판정 로직 호출
   - 모드: `run-case`, `parse-rfid`
   - 실서버(`smart_server`) 기동 불필요
+- TRACK (`test_tc_func_track.py`)
+  - 실서버 기준으로 Position 채널 `SUB_POS`/`UNSUB_POS` 전송
+  - Position 연결 유지/강제 로그아웃 미발생 확인
+  - 가능할 때 `tests/real_server.log`에서 서버 `SUB_POS`/`UNSUB_POS` 수신 로그 확인
 
 ## 4) Non-Functional Recoverability 테스트 요약
 
@@ -106,6 +112,9 @@ pip install pytest
   - `SFEPS_PERF_EVENT_INTERVAL_SECONDS` (기본 `0`)
   - `SFEPS_PERF_EVENT_MAX_MISSING` (기본 `0`)
   - `SFEPS_PERF_EVENT_MAX_DUPLICATES` (기본 `0`)
+- Functional Tracking 관련
+  - `SFEPS_TRACK_CMD_TIMEOUT_SECONDS` (기본 `3.0`)
+  - `SFEPS_TRACK_OBJECT_ID` (기본 `FUNC-TRACK-01`)
 - Stream/RTSP 관련
   - `SFEPS_STREAM_RTSP_URL` (기본: `RTSP_STREAM_URL` 또는 `rtsp://127.0.0.1:8554/cam1`)
   - `SFEPS_STREAM_MIN_STABLE_SECONDS` (기본 `10`)
@@ -142,6 +151,14 @@ python -m pytest -q tests/test_tc_func_stream.py -r a
 cd /home/iam/SFEPS
 source .venv/bin/activate
 python -m pytest -q tests/test_tc_func_event.py -r a
+```
+
+트래킹 테스트:
+
+```bash
+cd /home/iam/SFEPS
+source .venv/bin/activate
+python -m pytest -q tests/test_tc_func_track.py -r a
 ```
 
 Recoverability 테스트:
