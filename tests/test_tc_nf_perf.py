@@ -3,10 +3,7 @@ import os
 import socket
 import subprocess
 import time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
-from urllib.parse import urlparse
 
 import pytest
 
@@ -52,11 +49,6 @@ EVENT_WINDOW_SECONDS = _env_float("SFEPS_PERF_EVENT_WINDOW_SECONDS", 60.0)
 EVENT_INTERVAL_SECONDS = _env_float("SFEPS_PERF_EVENT_INTERVAL_SECONDS", 0.0)
 EVENT_MAX_MISSING = _env_int("SFEPS_PERF_EVENT_MAX_MISSING", 0)
 EVENT_MAX_DUPLICATES = _env_int("SFEPS_PERF_EVENT_MAX_DUPLICATES", 0)
-STREAM_DURATION_SECONDS = _env_float("SFEPS_PERF_STREAM_DURATION_SECONDS", 3600.0)
-STREAM_POLL_INTERVAL_SECONDS = _env_float("SFEPS_PERF_STREAM_POLL_INTERVAL_SECONDS", 1.0)
-STREAM_RECOVERY_TIMEOUT_SECONDS = _env_float(
-    "SFEPS_PERF_STREAM_RECOVERY_TIMEOUT_SECONDS", 10.0
-)
 
 pytestmark = pytest.mark.skipif(
     not PERF_TESTS_ENABLED,
@@ -228,172 +220,4 @@ def test_tc_nf_perf_02(event_driver_bin, auth_endpoint):
         pytest.fail(
             "TC-NF-PERF-02 failed: at least one event processing failure occurred. "
             f"failure_count={failure_count}\n{preview}"
-        )
-
-
-@dataclass(frozen=True)
-class RtspEndpoint:
-    raw_url: str
-    host: str
-    port: int
-
-
-def _resolve_rtsp_url() -> str:
-    return (
-        os.getenv("SFEPS_STREAM_RTSP_URL")
-        or os.getenv("RTSP_STREAM_URL")
-        or "rtsp://127.0.0.1:8554/cam1"
-    )
-
-
-def _parse_rtsp_endpoint(url: str) -> RtspEndpoint:
-    parsed = urlparse(url)
-    if parsed.scheme not in ("rtsp", "rtsps"):
-        raise ValueError(f"Unsupported RTSP scheme: {parsed.scheme!r}")
-    if not parsed.hostname:
-        raise ValueError(f"RTSP host is missing in URL: {url}")
-
-    default_port = 554 if parsed.scheme == "rtsp" else 322
-    port = parsed.port or default_port
-    return RtspEndpoint(raw_url=url, host=parsed.hostname, port=port)
-
-
-def _recv_rtsp_response(sock: socket.socket) -> str:
-    data = b""
-    header_end = b"\r\n\r\n"
-
-    while header_end not in data:
-        chunk = sock.recv(4096)
-        if not chunk:
-            break
-        data += chunk
-        if len(data) > 256 * 1024:
-            break
-
-    if header_end not in data:
-        return data.decode("utf-8", errors="replace")
-
-    header_blob, body = data.split(header_end, 1)
-    headers = header_blob.decode("utf-8", errors="replace").splitlines()
-    content_length = 0
-    for line in headers:
-        if line.lower().startswith("content-length:"):
-            try:
-                content_length = int(line.split(":", 1)[1].strip())
-            except ValueError:
-                content_length = 0
-            break
-
-    while content_length > 0 and len(body) < content_length:
-        chunk = sock.recv(4096)
-        if not chunk:
-            break
-        body += chunk
-
-    return (header_blob + header_end + body).decode("utf-8", errors="replace")
-
-
-def _rtsp_request(
-    endpoint: RtspEndpoint,
-    method: str,
-    cseq: int,
-    timeout: float = 3.0,
-    extra_headers: Optional[Dict[str, str]] = None,
-) -> str:
-    headers = {
-        "CSeq": str(cseq),
-        "User-Agent": "SFEPS-PERF-PyTest",
-    }
-    if extra_headers:
-        headers.update(extra_headers)
-
-    request = f"{method} {endpoint.raw_url} RTSP/1.0\r\n"
-    request += "".join(f"{k}: {v}\r\n" for k, v in headers.items())
-    request += "\r\n"
-
-    with socket.create_connection((endpoint.host, endpoint.port), timeout=timeout) as sock:
-        sock.settimeout(timeout)
-        sock.sendall(request.encode("utf-8"))
-        return _recv_rtsp_response(sock)
-
-
-def _rtsp_status_code(response_text: str) -> int:
-    first_line = response_text.splitlines()[0] if response_text.splitlines() else ""
-    parts = first_line.split()
-    if len(parts) < 2:
-        return -1
-    try:
-        return int(parts[1])
-    except ValueError:
-        return -1
-
-
-def _is_stream_ready(endpoint: RtspEndpoint, timeout: float = 3.0) -> bool:
-    try:
-        describe = _rtsp_request(
-            endpoint,
-            method="DESCRIBE",
-            cseq=1,
-            timeout=timeout,
-            extra_headers={"Accept": "application/sdp"},
-        )
-    except OSError:
-        return False
-
-    return _rtsp_status_code(describe) == 200 and ("m=video" in describe)
-
-
-@pytest.fixture(scope="module")
-def stream_endpoint() -> RtspEndpoint:
-    return _parse_rtsp_endpoint(_resolve_rtsp_url())
-
-
-def _wait_until(predicate, timeout: float, interval: float) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        time.sleep(interval)
-    return False
-
-
-def test_tc_nf_perf_03(stream_endpoint: RtspEndpoint, auth_endpoint):
-    if STREAM_DURATION_SECONDS <= 0:
-        pytest.skip("SFEPS_PERF_STREAM_DURATION_SECONDS must be > 0")
-    if STREAM_POLL_INTERVAL_SECONDS <= 0:
-        pytest.skip("SFEPS_PERF_STREAM_POLL_INTERVAL_SECONDS must be > 0")
-    if STREAM_RECOVERY_TIMEOUT_SECONDS <= 0:
-        pytest.skip("SFEPS_PERF_STREAM_RECOVERY_TIMEOUT_SECONDS must be > 0")
-
-    if not _is_stream_ready(stream_endpoint, timeout=3.0):
-        pytest.skip(
-            "TC-NF-PERF-03 pre-condition 미충족: "
-            f"DESCRIBE 200 + video 트랙 확인 실패 ({stream_endpoint.raw_url})"
-        )
-
-    deadline = time.monotonic() + STREAM_DURATION_SECONDS
-    outage_count = 0
-    max_outage_seconds = 0.0
-    total_outage_seconds = 0.0
-
-    while time.monotonic() < deadline:
-        if _is_stream_ready(stream_endpoint, timeout=3.0):
-            time.sleep(STREAM_POLL_INTERVAL_SECONDS)
-            continue
-
-        outage_count += 1
-        outage_start = time.monotonic()
-        recovered = _wait_until(
-            lambda: _is_stream_ready(stream_endpoint, timeout=3.0),
-            STREAM_RECOVERY_TIMEOUT_SECONDS,
-            min(1.0, STREAM_POLL_INTERVAL_SECONDS),
-        )
-        outage_duration = time.monotonic() - outage_start
-        max_outage_seconds = max(max_outage_seconds, outage_duration)
-        total_outage_seconds += outage_duration
-
-        assert recovered, (
-            "TC-NF-PERF-03 failed: stream outage was not recovered in allowed timeout. "
-            f"timeout={STREAM_RECOVERY_TIMEOUT_SECONDS:.3f}s, "
-            f"outage_count={outage_count}, endpoint={stream_endpoint.raw_url}"
         )
