@@ -77,11 +77,11 @@ release/
 *.positions
 *.sublime-workspace
 *.sublime-project
-*.jpg
 
 # 개별 실행 파일 (예: Camera/get_metadata 빌드 산출물)
 Camera/get_metadata/app
 Camera/get_metadata/camera_client
+Camera/image_processing/*.jpg
 
 # QT 빌드 결과물 (특히 CMake나 qmake 사용 시)
 CMakeLists.txt.user
