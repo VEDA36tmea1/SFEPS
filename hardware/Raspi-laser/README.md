@@ -217,3 +217,23 @@ sudo python3 keyboard_pwm_control.py --backend sysfs
 
 - **[DECOUPLING_CALIBRATION.md](DECOUPLING_CALIBRATION.md)** — \(J\) 추정(유한차분)과 \(\Delta u=-\alpha J^{-1}e\) 제어식 정리
 
+---
+
+## 9) camera_RBF의 `SET_PWM` 수신해서 바로 PWM 출력(라즈베리)
+
+`Camera/get_metadata/src/camera_RBF.cpp`는 stdout으로 `SET_PWM,PAN=...,TILT=...`를 출력하고, 우분투의 `ubuntu_tcp_server`가 그 라인을 라즈베리로 전달합니다.  
+라즈베리에서는 아래 클라이언트를 실행하면 **SET_PWM을 받는 즉시 GPIO12/13 PWM을 갱신**합니다.
+
+pigpio(권장, DMA 기반):
+
+```bash
+sudo systemctl enable --now pigpiod
+python3 set_pwm_client.py --host 10.42.0.1 --port 5555 -v
+```
+
+sysfs(기존 방식):
+
+```bash
+sudo python3 set_pwm_client.py --backend sysfs --host 10.42.0.1 --port 5555 -v
+```
+
