@@ -97,6 +97,8 @@ make camera_client
 
 ./camera_client                 # 기본: Human 타입만 표시
 ./camera_client --detect-all    # Human 외 모든 타입 객체도 박스로 표시
+./camera_client --pose-off      # MediaPipe Pose 오버레이 비활성화
+./camera_client --pose-print    # pose 오버레이는 켜고, 핵심 키포인트 픽셀 좌표를 stdout에 출력
 ```
 
 실행 후:
@@ -107,6 +109,8 @@ make camera_client
   - 클릭한 픽셀이 포함된 박스를 찾아서
   - 박스 가장 아래 점(bottom Y) 기준으로 빨간 점 찍고
   - stdout 으로 `HUMAN_BOTTOM ...` 라인 출력
+- 클릭한 박스는 **선택(SEL)** 상태가 되며, Pose 추정은 **선택된 객체 bbox(ROI)** 에서만 수행됨 (빠름)
+- `d` 키: **선택 객체 내부**에서 클릭한 픽셀의 정규화 비율 `CLICK_RATIO ... ratio=(rx,ry)` 를 stdout으로 출력 토글
 - 종료: `q` 또는 `ESC` 또는 Ctrl+C
 
 #### 3.3 내부 동작 요약

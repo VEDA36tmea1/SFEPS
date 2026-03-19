@@ -82,6 +82,9 @@ release/
 Camera/get_metadata/app
 Camera/get_metadata/camera_client
 Camera/image_processing/*.jpg
+Camera/get_metadata/camera_RBF
+Camera/get_metadata/*.png
+Camera/get_metadata/*.json
 
 # QT 빌드 결과물 (특히 CMake나 qmake 사용 시)
 CMakeLists.txt.user
