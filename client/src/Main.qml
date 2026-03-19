@@ -6,6 +6,7 @@ import src.views 1.0
 
 Window {
     id: rootWindow
+    objectName: "mainWindow"
     width: 1250
     height: 750
     visible: true
@@ -17,6 +18,48 @@ Window {
     property bool laserTrackingEnabled: true
     property string forcedLogoutMessage: "서버와의 네트워크 연결이 끊어져 강제 로그아웃됩니다."
     property int forcedLogoutSecondsRemaining: 3
+    readonly property int notificationCount: notificationModel.count
+
+    function appendNotificationEvent(objectId, cardAgeText, ageGroup, isFraud) {
+        notificationModel.insert(0, {
+            objectId: objectId,
+            cardAgeText: cardAgeText,
+            ageGroup: ageGroup,
+            isFraud: isFraud,
+            timestamp: Qt.formatDateTime(new Date(), "HH:mm:ss")
+        })
+        unreadCount++
+    }
+
+    // Squish helper: inject a UI event without backend socket dependency.
+    function injectTestNotification(objectId, cardAgeText, ageGroup, isFraud) {
+        appendNotificationEvent(
+            objectId || "TEST-OBJ-001",
+            cardAgeText || "adult",
+            ageGroup || "30s",
+            isFraud !== false
+        )
+    }
+
+    // Squish helper: open detail popup by current notification index.
+    function openNotificationDetailByIndex(targetIndex) {
+        var idx = Number(targetIndex)
+        if (isNaN(idx)) {
+            return false
+        }
+        idx = Math.floor(idx)
+        if (idx < 0 || idx >= notificationModel.count) {
+            return false
+        }
+        var item = notificationModel.get(idx)
+        currentNotificationIndex = idx
+        detailPopup.objectId = item.objectId
+        detailPopup.cardAgeText = item.cardAgeText
+        detailPopup.ageGroup = item.ageGroup
+        detailPopup.isFraud = !!item.isFraud
+        detailPopup.open()
+        return true
+    }
 
     ListModel {
         id: notificationModel
@@ -26,6 +69,7 @@ Window {
 
     Popup {
         id: detailPopup
+        objectName: "detailPopup"
         anchors.centerIn: parent
         width: 1000
         height: 600
@@ -64,6 +108,7 @@ Window {
 
     Popup {
         id: forcedLogoutPopup
+        objectName: "forcedLogoutPopup"
         anchors.centerIn: parent
         width: Math.min(parent.width - 40, 460)
         height: 220
@@ -115,6 +160,7 @@ Window {
 
             Button {
                 id: forcedLogoutConfirmButton
+                objectName: "forcedLogoutConfirmButton"
                 text: "확인"
                 Layout.alignment: Qt.AlignHCenter
                 Layout.preferredWidth: 120
@@ -386,6 +432,7 @@ Window {
                                     { label: "System Settings", idx: 3 }
                                 ]
                                 delegate: Button {
+                                    objectName: "topTabButton_" + modelData.idx
                                     flat: true
                                     checkable: true
                                     checked: currentViewIndex === modelData.idx
@@ -435,6 +482,7 @@ Window {
                         
                         Button {
                             id: bellButton
+                            objectName: "notificationBellButton"
                             flat: true
                             implicitWidth: 32
                             implicitHeight: 32
@@ -449,12 +497,14 @@ Window {
                                     sourceSize: Qt.size(18, 18)
                                 }
                                 Rectangle {
+                                    objectName: "unreadBadge"
                                     visible: unreadCount > 0
                                     anchors.top: parent.top; anchors.right: parent.right
                                     anchors.topMargin: -2; anchors.rightMargin: -2
                                     width: 16; height: 16; radius: 8
                                     color: AppTheme.statusOffline
                                     Text {
+                                        objectName: "unreadBadgeText"
                                         anchors.centerIn: parent
                                         text: unreadCount
                                         color: "white"
@@ -471,6 +521,7 @@ Window {
                         // Logout button: notify server and exit
                         Button {
                             id: logoutButton
+                            objectName: "logoutButton"
                             flat: true
                             implicitWidth: 32
                             implicitHeight: 32
@@ -491,6 +542,7 @@ Window {
 
                         Drawer {
                             id: notificationDrawer
+                            objectName: "notificationDrawer"
                             edge: Qt.RightEdge
                             width: 380
                             height: parent.height
@@ -520,12 +572,14 @@ Window {
                                         ColumnLayout {
                                             spacing: 2
                                             Text { 
+                                                objectName: "notificationDrawerTitleText"
                                                 text: "Notifications"
                                                 color: "white"
                                                 font.pixelSize: 18
                                                 font.bold: true 
                                             }
                                             Text {
+                                                objectName: "notificationDrawerCountText"
                                                 text: unreadCount + " new notifications"
                                                 color: AppTheme.accent
                                                 font.pixelSize: 11
@@ -534,6 +588,7 @@ Window {
                                         }
                                         Item { Layout.fillWidth: true }
                                         Button {
+                                            objectName: "notificationDrawerCloseButton"
                                             flat: true
                                             implicitWidth: 32; implicitHeight: 32
                                             onClicked: notificationDrawer.close()
@@ -552,6 +607,7 @@ Window {
 
                                 ListView {
                                     id: navList
+                                    objectName: "notificationListView"
                                     Layout.fillWidth: true
                                     Layout.fillHeight: true
                                     Layout.margins: 12
@@ -559,6 +615,7 @@ Window {
                                     model: notificationModel
                                     spacing: 10
                                     delegate: Rectangle {
+                                        objectName: "notificationItem_" + index
                                         width: navList.width - 24; height: 95
                                         color: AppTheme.surfaceCard
                                         radius: 10
@@ -578,14 +635,26 @@ Window {
                                             
                                             ColumnLayout {
                                                 spacing: 4
-                                                Text { text: "Object " + objectId; color: "white"; font.bold: true; font.pixelSize: 14 }
-                                                Text { text: cardAgeText.toUpperCase() + " • " + timestamp; color: AppTheme.textSecondary; font.pixelSize: 11 }
+                                                Text {
+                                                    objectName: "notificationObjectText_" + index
+                                                    text: "Object " + objectId
+                                                    color: "white"
+                                                    font.bold: true
+                                                    font.pixelSize: 14
+                                                }
+                                                Text {
+                                                    objectName: "notificationMetaText_" + index
+                                                    text: cardAgeText.toUpperCase() + " • " + timestamp
+                                                    color: AppTheme.textSecondary
+                                                    font.pixelSize: 11
+                                                }
                                             }
                                             
                                             Item { Layout.fillWidth: true }
                                             
                                             Button {
                                                 id: viewBtn
+                                                objectName: "notificationViewButton_" + index
                                                 text: "View"
                                                 font.pixelSize: 11
                                                 palette.buttonText: viewBtn.hovered ? "white" : AppTheme.accent
@@ -595,12 +664,7 @@ Window {
                                                     radius: 6
                                                 }
                                                 onClicked: {
-                                                    currentNotificationIndex = index
-                                                    detailPopup.objectId = objectId
-                                                    detailPopup.cardAgeText = cardAgeText
-                                                    detailPopup.ageGroup = ageGroup
-                                                    detailPopup.isFraud = isFraud
-                                                    detailPopup.open()
+                                                    openNotificationDetailByIndex(index)
                                                     notificationDrawer.close()
                                                 }
                                             }
@@ -612,6 +676,7 @@ Window {
                                 
                                 Button {
                                     id: clearBtn
+                                    objectName: "clearNotificationsButton"
                                     Layout.fillWidth: true
                                     Layout.preferredHeight: 60
                                     text: "Clear All Notifications"
@@ -627,11 +692,14 @@ Window {
 
                 // Content
                 StackLayout {
+                    objectName: "mainContentStack"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     currentIndex: currentViewIndex - 1
 
                     MonitoringView {
+                        id: monitoringView
+                        objectName: "monitoringView"
                         laserTrackingEnabled: rootWindow.laserTrackingEnabled
                         onViewDetailRequest: (objectId, cardAgeText, ageGroup, isFraud) => {
                             detailPopup.objectId = objectId
@@ -656,14 +724,7 @@ Window {
     Connections {
         target: fraudManager
         function onFraudDetected(objectId, cardAgeText, ageGroup, isFraud) {
-            notificationModel.insert(0, {
-                objectId: objectId,
-                cardAgeText: cardAgeText,
-                ageGroup: ageGroup,
-                isFraud: isFraud,
-                timestamp: Qt.formatDateTime(new Date(), "HH:mm:ss")
-            })
-            unreadCount++
+            appendNotificationEvent(objectId, cardAgeText, ageGroup, isFraud)
         }
     }
 

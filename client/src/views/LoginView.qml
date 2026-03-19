@@ -5,6 +5,7 @@ import src 1.0
 
 Window {
     id: root
+    objectName: "loginWindow"
     width: 1000
     height: 600
     visible: true
@@ -261,6 +262,7 @@ Window {
                                     }
                                     TextField {
                                         id: passField
+                                        objectName: "passwordInput"
                                         Layout.fillWidth: true
                                         placeholderText: "••••••••"
                                         echoMode: showPass.checked ? TextInput.Normal : TextInput.Password
@@ -312,6 +314,7 @@ Window {
                         // Error Message
                         Text {
                             id: errorText
+                            objectName: "loginErrorText"
                             visible: false
                             text: ""
                             color: "#ff4444"
@@ -321,6 +324,7 @@ Window {
 
                         Button {
                             id: loginBtn
+                            objectName: "loginButton"
                             Layout.fillWidth: true
                             Layout.preferredHeight: 44
                             activeFocusOnTab: true
