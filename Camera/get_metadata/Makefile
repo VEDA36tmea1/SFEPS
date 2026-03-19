@@ -30,18 +30,27 @@ CAM_SRCS = src/camera_client.cpp \
            src/RTSPClient.cpp \
            src/XMLParser.cpp
 
+# 4. camera_RBF (선택 bbox + ratio -> RBF(PWM) -> UDP 송신)
+RBF_SRCS = src/camera_RBF.cpp \
+           src/RTSPClient.cpp \
+           src/XMLParser.cpp
+
 # 결과물 이름
 TARGET     = app
 CAM_TARGET = camera_client
+RBF_TARGET = camera_RBF
 
 # 빌드 규칙
-all: $(ALL_TARGETS)
+all: $(TARGET) $(CAM_TARGET) $(RBF_TARGET)
 
 $(TARGET): $(SRCS)
 	$(CXX) $(CXXFLAGS) $(SRCS) -o $(TARGET) $(LDLIBS)
 
 $(CAM_TARGET): $(CAM_SRCS)
-	$(CXX) $(CXXFLAGS) $(CAM_SRCS) -o $(CAM_TARGET) $(OPENCV_FLAGS) $(LDLIBS)
+	$(CXX) $(CXXFLAGS) $(CAM_SRCS) -o $(CAM_TARGET) $(OPENCV_FLAGS)
+
+$(RBF_TARGET): $(RBF_SRCS)
+	$(CXX) $(CXXFLAGS) $(RBF_SRCS) -o $(RBF_TARGET) $(OPENCV_FLAGS)
 
 clean:
-	$(CLEAN_CMD)
+	rm -f $(TARGET) $(CAM_TARGET) $(RBF_TARGET)
