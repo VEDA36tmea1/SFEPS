@@ -235,6 +235,19 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
   - 추정 나이 표시(Mock 포함)
   - 발생 시각/게이트ID 표시
 
+### TC-FUNC-UI-04 로그아웃 버튼 클릭 시 로그아웃 요청 전송 및 로그인 화면 복귀
+- **Level/Type/Priority**: System / Functional / Medium
+- **Execution**: Manual
+- **Pre-condition**
+  - 유효 계정으로 로그인 완료
+  - 메인 화면(대시보드/분석/설정) 진입 상태
+- **Input Data**: 없음
+- **Steps**
+  1. 상단 우측 로그아웃 버튼 클릭
+- **Expected Result**
+  - 로그아웃 요청이 서버로 전송됨
+  - 현재 세션이 종료되고 로그인 화면으로 복귀함
+
 ---
 
 ## 5) Functional Test Cases — TRACKING
