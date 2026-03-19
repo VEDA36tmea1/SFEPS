@@ -14,9 +14,9 @@ pipeline {
         string(name: 'PERF_EVENT_INTERVAL_SECONDS', defaultValue: '0', description: 'Optional delay between generated events')
         string(name: 'PERF_EVENT_MAX_MISSING', defaultValue: '0', description: 'Allowed missing event count')
         string(name: 'PERF_EVENT_MAX_DUPLICATES', defaultValue: '0', description: 'Allowed duplicate event count')
-        string(name: 'PERF_STREAM_DURATION_SECONDS', defaultValue: '3600', description: 'TC-NF-RELI-02 stream monitoring duration')
-        string(name: 'PERF_STREAM_POLL_INTERVAL_SECONDS', defaultValue: '1', description: 'TC-NF-RELI-02 polling interval')
-        string(name: 'PERF_STREAM_RECOVERY_TIMEOUT_SECONDS', defaultValue: '10', description: 'TC-NF-RELI-02 max recovery timeout')
+        string(name: 'RELI_STREAM_DURATION_SECONDS', defaultValue: '3600', description: 'TC-NF-RELI-02 stream monitoring duration')
+        string(name: 'RELI_STREAM_POLL_INTERVAL_SECONDS', defaultValue: '1', description: 'TC-NF-RELI-02 polling interval')
+        string(name: 'RELI_STREAM_RECOVERY_TIMEOUT_SECONDS', defaultValue: '10', description: 'TC-NF-RELI-02 max recovery timeout')
     }
 
     environment {
@@ -35,12 +35,14 @@ pipeline {
         SFEPS_PERF_EVENT_INTERVAL_SECONDS = "${params.PERF_EVENT_INTERVAL_SECONDS}"
         SFEPS_PERF_EVENT_MAX_MISSING = "${params.PERF_EVENT_MAX_MISSING}"
         SFEPS_PERF_EVENT_MAX_DUPLICATES = "${params.PERF_EVENT_MAX_DUPLICATES}"
-        SFEPS_PERF_STREAM_DURATION_SECONDS = "${params.PERF_STREAM_DURATION_SECONDS}"
-        SFEPS_PERF_STREAM_POLL_INTERVAL_SECONDS = "${params.PERF_STREAM_POLL_INTERVAL_SECONDS}"
-        SFEPS_PERF_STREAM_RECOVERY_TIMEOUT_SECONDS = "${params.PERF_STREAM_RECOVERY_TIMEOUT_SECONDS}"
-        SFEPS_RELI_STREAM_DURATION_SECONDS = "${params.PERF_STREAM_DURATION_SECONDS}"
-        SFEPS_RELI_STREAM_POLL_INTERVAL_SECONDS = "${params.PERF_STREAM_POLL_INTERVAL_SECONDS}"
-        SFEPS_RELI_STREAM_RECOVERY_TIMEOUT_SECONDS = "${params.PERF_STREAM_RECOVERY_TIMEOUT_SECONDS}"
+        // Reliability renamed from PERF-* to RELI-*.
+        // Keep SFEPS_PERF_STREAM_* populated for backward compatibility with fallback logic in tests.
+        SFEPS_PERF_STREAM_DURATION_SECONDS = "${params.RELI_STREAM_DURATION_SECONDS}"
+        SFEPS_PERF_STREAM_POLL_INTERVAL_SECONDS = "${params.RELI_STREAM_POLL_INTERVAL_SECONDS}"
+        SFEPS_PERF_STREAM_RECOVERY_TIMEOUT_SECONDS = "${params.RELI_STREAM_RECOVERY_TIMEOUT_SECONDS}"
+        SFEPS_RELI_STREAM_DURATION_SECONDS = "${params.RELI_STREAM_DURATION_SECONDS}"
+        SFEPS_RELI_STREAM_POLL_INTERVAL_SECONDS = "${params.RELI_STREAM_POLL_INTERVAL_SECONDS}"
+        SFEPS_RELI_STREAM_RECOVERY_TIMEOUT_SECONDS = "${params.RELI_STREAM_RECOVERY_TIMEOUT_SECONDS}"
 
         // Stream defaults used by perf tests and local publisher.
         SFEPS_STREAM_RTSP_URL = "${env.SFEPS_STREAM_RTSP_URL ?: 'rtsp://127.0.0.1:8554/cam1'}"
