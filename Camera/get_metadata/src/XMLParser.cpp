@@ -252,7 +252,8 @@ std::vector<ParsedMetadataObject> XMLParser::parseHumanObjectsForAnalytics(
         const bool has_top    = parse_float_attr(xml, top_pos,    5, object.top);
         const bool has_bottom = parse_float_attr(xml, bottom_pos, 8, object.bottom);
 
-        const bool type_ok = detect_all || (object.type == "Head");
+        //const bool type_ok = detect_all || (object.type == "Head");
+        const bool type_ok = detect_all || (object.type == "Human");
         if (!object.id.empty() && type_ok && has_x && has_y &&
             has_left && has_right && has_top && has_bottom) {
             results.push_back(object);

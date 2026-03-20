@@ -393,28 +393,77 @@ static void draw_world_grid(cv::Mat& frame, const RbfTps2D& ru, const RbfTps2D& 
     }
 }
 
-struct KalmanBbox2D {
-    double cx{0},cy{0},vx{0},vy{0},w{0},h{0};
-    double alpha_pos{0.6},beta_vel{0.15},alpha_size{0.3};
+struct KalmanBbox2D
+{
+    double cx{0}, cy{0};
+    double vx{0}, vy{0};
+    double w{0}, h{0};
+    double alpha_pos{0.6};
+    double beta_vel{0.15};
+    double alpha_size{0.3};
+    // bbox 측정값이 한 프레임에 크게 튀는 outlier(예: ID/박스 튐)일 때
+    // 속도 업데이트를 망가뜨리지 않도록 게이팅을 둔다.
+    double max_jump_px{120.0};      // predicted->measured까지 최대 허용 이동(px)
+    double max_vel_px_s{2000.0};   // 속도 상한(px/s)
     bool initialized{false};
-    void update(double mx,double my,double mw,double mh,double dt){
-        if(!initialized||dt<=0){cx=mx;cy=my;w=mw;h=mh;vx=vy=0;initialized=true;return;}
-        double px=cx+vx*dt,py=cy+vy*dt,rx=mx-px,ry=my-py;
-        cx=px+alpha_pos*rx; cy=py+alpha_pos*ry;
-        vx+=(beta_vel*rx)/dt; vy+=(beta_vel*ry)/dt;
-        w+=alpha_size*(mw-w); h+=alpha_size*(mh-h);
+
+    void update(double meas_cx, double meas_cy, double meas_w, double meas_h, double dt)
+    {
+        if (!initialized || dt <= 0)
+        {
+            cx = meas_cx; cy = meas_cy;
+            w = meas_w;   h = meas_h;
+            vx = vy = 0;
+            initialized = true;
+            return;
+        }
+
+        // dt가 너무 작으면 (beta_vel*rx)/dt 항이 폭주할 수 있으므로 하한을 건다.
+        dt = std::max(dt, 1e-4);
+
+        double px = cx + vx * dt;
+        double py = cy + vy * dt;
+        double rx = meas_cx - px;
+        double ry = meas_cy - py;
+
+        // outlier 게이팅: 측정이 예측에서 너무 멀면 "속도는 신뢰하지 않고" 위치만 갱신.
+        const double dist2 = rx * rx + ry * ry;
+        if (dist2 > max_jump_px * max_jump_px)
+        {
+            cx = meas_cx;
+            cy = meas_cy;
+            w = meas_w;
+            h = meas_h;
+            vx = 0;
+            vy = 0;
+            return;
+        }
+
+        cx = px + alpha_pos * rx;
+        cy = py + alpha_pos * ry;
+        vx += (beta_vel * rx) / dt;
+        vy += (beta_vel * ry) / dt;
+
+        // velocity 상한으로 pred 흔들림(증폭) 방지
+        vx = std::max(-max_vel_px_s, std::min(max_vel_px_s, vx));
+        vy = std::max(-max_vel_px_s, std::min(max_vel_px_s, vy));
+
+        w += alpha_size * (meas_w - w);
+        h += alpha_size * (meas_h - h);
     }
     void predict(double dt,double&px,double&py)const{px=cx+vx*dt;py=cy+vy*dt;}
     void reset(){initialized=false;cx=cy=vx=vy=w=h=0;}
 };
 
-// ──────────────────────────────────────────────────────────────────────
-// main
-// ──────────────────────────────────────────────────────────────────────
-int main(int argc, char** argv) {
-    double ratio=0.3, alpha=0.5, predict_ms=300.0;
-    int pan_min=500,pan_max=2500,tilt_min=500,tilt_max=2500,send_every_n=1;
-    bool draw_grid=true;
+int main(int argc, char** argv)
+{
+    double ratio = 0.35;
+    double alpha = 0.5;
+    int pan_min = 500, pan_max = 2500;
+    int tilt_min = 500, tilt_max = 2500;
+    int send_every_n = 1;
+    bool draw_grid = true;
+    double predict_ms = 300.0;
 
     for(int i=1;i<argc;i++){
         std::string a=argv[i];
@@ -524,10 +573,12 @@ int main(int argc, char** argv) {
             }
         }
 
-        auto t_now=std::chrono::steady_clock::now();
-        double dt_sec=std::chrono::duration<double>(t_now-t_last_frame).count();
-        t_last_frame=t_now;
-        if(dt_sec<=0||dt_sec>1.0) dt_sec=1.0/30.0;
+        auto t_now = std::chrono::steady_clock::now();
+        double dt_sec = std::chrono::duration<double>(t_now - t_last_frame).count();
+        t_last_frame = t_now;
+        if (dt_sec <= 0 || dt_sec > 1.0) dt_sec = 1.0 / 30.0;
+        // dt가 튀면 속도 추정이 흔들릴 수 있어 범위를 제한한다.
+        dt_sec = std::max(1.0 / 120.0, std::min(1.0 / 15.0, dt_sec));
 
         if(sel_ok&&sel_id!=prev_sel_id){ kf.reset(); prev_pan=1500; prev_tilt=1500; prev_sel_id=sel_id; }
         if(!sel_ok&&!prev_sel_id.empty()){ kf.reset(); prev_sel_id.clear(); }
