@@ -536,27 +536,38 @@ PY
                                                             exit /b 1
                                                         )
 
+                                                        set SQUISH_FAILED=0
                                                         for %%T in (
                                                             tst_tc_func_ui_01
-                                                            tst_tc_func_stream_02
                                                             tst_tc_func_ui_02
                                                             tst_tc_func_ui_03
                                                             tst_tc_func_track_01
                                                             tst_tc_func_track_02
+                                                            tst_tc_func_stream_02
                                                         ) do (
                                                             call "%SQUISH_RUNNER%" --testsuite "%SUITE_PATH%" --testcase %%T --aut "%AUT_PATH%" --reportgen "junit,reports\\squish-%%T.xml"
-                                                            if errorlevel 1 exit /b 1
+                                                            if errorlevel 1 set SQUISH_FAILED=1
                                                         )
 
                                                         if "%STARTED_SQUISH_SERVER%"=="1" (
                                                             taskkill /F /IM squishserver.exe >nul 2>nul
                                                         )
+
+                                                        if "%SQUISH_FAILED%"=="1" exit /b 1
                                                 '''
                                                     } catch (err) {
                                                         squishStepFailed = true
                                                         echo "Squish execution failed on Windows node, but stashing reports before failing stage."
                                                     }
 
+                                                // Generate placeholder XML for any test case that did not produce a report
+                                                def squishTestCases = ['tst_tc_func_ui_01', 'tst_tc_func_ui_02', 'tst_tc_func_ui_03', 'tst_tc_func_track_01', 'tst_tc_func_track_02', 'tst_tc_func_stream_02']
+                                                for (tc in squishTestCases) {
+                                                    if (!fileExists("reports/squish-${tc}.xml")) {
+                                                        writeFile file: "reports/squish-${tc}.xml",
+                                                            text: "<testsuite name=\"${tc}\" tests=\"1\" failures=\"1\" errors=\"0\"><testcase classname=\"squish.${tc}\" name=\"${tc}\" time=\"0\"><failure message=\"squishrunner did not produce a report\"/></testcase></testsuite>"
+                                                    }
+                                                }
                                                 stash name: 'squish-reports', includes: 'reports/**', allowEmpty: true
                                         }
 
