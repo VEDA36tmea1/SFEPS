@@ -9,8 +9,9 @@ def main():
     ensure_monitoring_tab()
     before = monitoring_event_count()
 
-    inject_monitoring_event("TCUI01-001", "adult", "30s", True)
-    after = wait_monitoring_event_added(before, 10000)
+    object_id = "TCUI01-001"
+    inject_monitoring_event(object_id, "adult", "30s", True)
+    after = wait_monitoring_event_added(before, 15000, object_id)
 
     test.verify(str(after) != str(before), "event list updated")
     test.passes("TC-FUNC-UI-01 PASS")

@@ -17,7 +17,6 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-FUNC-LOGIN-01 유효한 ID/PW 입력 시 로그인 성공
 - **Level/Type/Priority**: System / Functional / High
-- **Execution**: Auto
 - **Pre-condition**
   - QT Client 실행 가능
   - Server 접속 가능
@@ -35,7 +34,6 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-FUNC-LOGIN-02 존재하지 않는 ID 입력 시 로그인 실패 및 오류 메시지 표시
 - **Level/Type/Priority**: System / Functional / Medium
-- **Execution**: Auto
 - **Pre-condition**: Server 접속 가능
 - **Input Data**: ID=`no_user_999`, PW=`1111`
 - **Steps**: 존재하지 않는 ID로 로그인 시도
@@ -45,7 +43,6 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-FUNC-LOGIN-03 잘못된 PW 입력 시 로그인 실패 및 오류 메시지 표시
 - **Level/Type/Priority**: System / Functional / Medium
-- **Execution**: Auto
 - **Pre-condition**: `admin` 계정 존재
 - **Input Data**: ID=`admin`, PW=`WrongPW!`
 - **Steps**: 잘못된 비밀번호로 로그인 시도
@@ -55,7 +52,6 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-FUNC-LOGIN-04 ID 또는 PW 공백(미입력 포함) 시 로그인 실패 및 안내
 - **Level/Type/Priority**: System / Functional / Medium
-- **Execution**: Auto
 - **Pre-condition**: 로그인 화면
 - **Input Data(서브케이스)**
   - 4-1: ID=``, PW=`1111`
@@ -74,7 +70,6 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-FUNC-STREAM-01 Server를 통해 Camera 영상 스트림 수신 및 화면 표시
 - **Level/Type/Priority**: Integration / Functional / High
-- **Execution**: Auto / Manual
 - **Pre-condition**
   - Camera(PNO-A9081R) 전원 ON 및 네트워크 연결
   - Server에서 Camera 스트림 수신 설정 완료
@@ -90,7 +85,6 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-FUNC-STREAM-02 네트워크 단절/지연 등으로 스트리밍 불가 시 UI에 오류 상태 표시
 - **Level/Type/Priority**: Integration / Functional / Medium
-- **Execution**: Manual
 - **Pre-condition**: 스트리밍이 정상 표시 중
 - **Input Data**: 네트워크 단절(스위치/케이블/방화벽 룰) 또는 지연/차단 시뮬레이션
 - **Steps**
@@ -102,7 +96,6 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-FUNC-STREAM-03 네트워크 복구 후 스트리밍 자동 재연결/복구 확인
 - **Level/Type/Priority**: Integration / Functional / Medium
-- **Execution**: Auto / Manual
 - **Pre-condition**: 스트리밍 장애 상태
 - **Input Data**: 네트워크 복구
 - **Steps**
@@ -118,7 +111,6 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-FUNC-EVENT-01 무태그 입력 시 서버 판정로직이 의심으로 판정됨
 - **Level/Type/Priority**: Unit / Functional / High
-- **Execution**: Auto
 - **Pre-condition**
   - 서버 판정로직 호출 가능한 테스트 드라이버/테스트 훅 준비
 - **Input Data**
@@ -131,7 +123,6 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-FUNC-EVENT-02 청소년 우대카드 경계값(19/20) 판정 일관성 검증
 - **Level/Type/Priority**: Unit / Functional / Medium
-- **Execution**: Auto
 - **Input Data**
   - A: CardType=청소년, age=19 → 정상
   - B: CardType=청소년, age=20 → 의심
@@ -146,7 +137,6 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-FUNC-EVENT-03 노인 우대카드 경계값(59/60) 판정 일관성 검증
 - **Level/Type/Priority**: Unit / Functional / Medium
-- **Execution**: Auto
 - **Input Data**
   - A: CardType=노인, age=59 → 의심
   - B: CardType=노인, age=60 → 정상
@@ -161,7 +151,6 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-FUNC-EVENT-04 의심 판정 시 의심 이벤트가 생성됨
 - **Level/Type/Priority**: Unit / Functional / High
-- **Execution**: Auto
 - **Pre-condition**: 의심 판정 유도 가능(TC-FUNC-EVENT-06/07 중 하나)
 - **Input Data**: 의심 판정 케이스 1개
 - **Steps**
@@ -172,7 +161,6 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-FUNC-EVENT-05 정상 판정 시 의심 이벤트가 생성되지 않음
 - **Level/Type/Priority**: Unit / Functional / High
-- **Execution**: Auto
 - **Input Data**: 정상 판정 케이스(예: 청소년 age=19 또는 노인 age=60)
 - **Steps**
   1. 정상 판정 입력 수행
@@ -182,7 +170,6 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-FUNC-EVENT-06 잘못된 이벤트 메시지 포맷 처리(크래시 없이 무시/실패 처리)
 - **Level/Type/Priority**: Integration / Functional / Medium
-- **Execution**: Auto
 - **Pre-condition**: Server 또는 테스트 도구로 이벤트 메시지 전송 가능
 - **Input Data(예)**
   - 필수 필드 누락 JSON
@@ -203,7 +190,6 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-FUNC-UI-01 생성된 의심 이벤트가 QT Client에 전달되어 목록에 표시됨
 - **Level/Type/Priority**: System / Functional / High
-- **Execution**: Manual
 - **Pre-condition**
   - QT Client 로그인 후 메인 화면
   - 의심 이벤트 생성 가능
@@ -216,7 +202,6 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-FUNC-UI-02 이벤트 선택 시 상세 팝업 표시 및 상세 정보 확인
 - **Level/Type/Priority**: System / Functional / High
-- **Execution**: Manual
 - **Pre-condition**: 의심 이벤트 목록 표시 상태
 - **Steps**
   1. 이벤트 목록에서 이벤트 1건 Detail View 버튼 클릭
@@ -230,7 +215,6 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-FUNC-UI-03 로그아웃 버튼 클릭 시 로그아웃 요청 전송 및 로그인 화면 복귀
 - **Level/Type/Priority**: System / Functional / Medium
-- **Execution**: Manual
 - **Pre-condition**
   - 유효 계정으로 로그인 완료
   - 메인 화면(대시보드/분석/설정) 진입 상태
@@ -247,7 +231,6 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-FUNC-TRACK-01 관리자가 스트리밍 객체 바운딩박스의 Track 버튼 클릭 시 Laser Tracking 수행
 - **Level/Type/Priority**: System / Functional / High
-- **Execution**: Auto / Manual
 - **Pre-condition**
   - 스트리밍 화면에 추적 대상 객체 바운딩박스 표시
 - **Input Data**: 없음
@@ -261,7 +244,6 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-FUNC-TRACK-02 QT Client에서 Tracking ON/OFF 상태가 UI에 표시됨
 - **Level/Type/Priority**: System / Functional / Medium
-- **Execution**: Manual
 - **Pre-condition**: Tracking 제어 가능 상태
 - **Steps**
   1. 객체 바운딩박스의 `Track` 버튼 클릭 후 UI 상태 표시 확인(ON)
@@ -275,7 +257,6 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-NF-PERF-01 Tracking 명령 전송 시점(Client→Server) → 레이저 ON ACK 수신 시점(STM32→Server) 1초 이내
 - **Level/Type/Priority**: System/Integration / Non-Functional(Performance) / High
-- **Execution**: Auto
 - **Pre-condition**
   - 스트리밍 화면에 추적 대상 객체 바운딩박스 표시
   - 레이저 제어 가능(STM32)
@@ -293,7 +274,6 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-NF-PERF-02 1분 내 50건 이상 의심 이벤트 처리(생성/전달/표시)
 - **Level/Type/Priority**: System / Non-Functional(Performance) / High
-- **Execution**: Auto / Manual
 - **Pre-condition**
   - 의심 이벤트를 자동/시뮬레이션으로 50건 이상 생성 가능
 - **Steps**
@@ -309,7 +289,6 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-NF-RELI-01 Tracking(ON/OFF) 20회 반복 시 오류/상태불일치/비정상 종료 없음
 - **Level/Type/Priority**: System/Integration / Non-Functional(Reliability) / High
-- **Execution**: Auto / Manual
 - **Pre-condition**
   - 의심 이벤트 존재(또는 반복 생성 가능)
   - 레이저 제어 정상
@@ -327,7 +306,6 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-NF-RELI-02 1시간 연속 스트리밍 유지(중단 시 자동 복구 포함 가능)
 - **Level/Type/Priority**: System / Non-Functional(Reliability) / Low
-- **Execution**: Auto
 - **Pre-condition**: 스트리밍 정상 상태
 - **Steps**
   1. 스트리밍을 1시간 연속 실행
@@ -343,7 +321,6 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-NF-REC-01 네트워크 단절(5초 초과) 시 자동 로그아웃 후 재로그인으로 정상 복구
 - **Level/Type/Priority**: Integration/System / Non-Functional(Recoverability) / Low
-- **Execution**: Auto / Manual
 - **Pre-condition**
   - QT Client와 Server 정상 연결
   - 스트리밍 및 이벤트 수신 가능한 상태
@@ -366,7 +343,6 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 
 ### TC-SYS-01 로그인 → 스트리밍 → 의심 이벤트 수신/표시 → 상세 팝업 확인 → Tracking 수행
 - **Level/Type/Priority**: System / Functional(Scenario) / High
-- **Execution**: Manual
 - **Pre-condition**
   - 유효 계정 존재(`admin / 1111`)
   - 스트리밍 가능

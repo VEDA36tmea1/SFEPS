@@ -31,9 +31,15 @@ Page {
                                                     : (videoDisplay ? videoDisplay.streamStatus : "STOPPED")
     readonly property bool trackingActive: visualTrackedId !== ""
 
-    function appendMonitoringEvent(objectId, cardAgeText, ageGroup, isFraud) {
+    // Squish-readable event counter — incremented directly in appendMonitoringEvent.
+    // monitoringView.squishEventCount 를 폴링해 이벤트 추가를 확인.
+    // ListView 내부 proxy 를 거치지 않아 caching 문제에서 자유롭다.
+    property int squishEventCount: 0
+    property var pendingTestMonitoringEvents: []
+
+    function _appendMonitoringEventNow(objectId, cardAgeText, ageGroup, isFraud) {
         if (!monitoringEventModel) {
-            return
+            return false
         }
         var normalizedObjectId = String(objectId)
         var normalizedCardAgeText = cardAgeText !== undefined ? String(cardAgeText) : ""
@@ -69,16 +75,80 @@ Page {
             ageGroup: normalizedAgeGroup,
             isFraud: fraud
         })
+        squishEventCount++  // Squish 폴링 전용 카운터
+        return true
+    }
+
+    function _drainPendingTestMonitoringEvents() {
+        if (!monitoringEventModel || pendingTestMonitoringEvents.length === 0) {
+            return
+        }
+        while (pendingTestMonitoringEvents.length > 0) {
+            var ev = pendingTestMonitoringEvents.shift()
+            _appendMonitoringEventNow(ev.objectId, ev.cardAgeText, ev.ageGroup, ev.isFraud)
+        }
+    }
+
+    Timer {
+        id: pendingTestEventDrainTimer
+        interval: 100
+        repeat: true
+        running: false
+        onTriggered: {
+            _drainPendingTestMonitoringEvents()
+            if (!pendingTestMonitoringEvents || pendingTestMonitoringEvents.length === 0) {
+                stop()
+            }
+        }
+    }
+
+    function appendMonitoringEvent(objectId, cardAgeText, ageGroup, isFraud) {
+        if (!monitoringEventModel) {
+            pendingTestMonitoringEvents.push({
+                objectId: objectId,
+                cardAgeText: cardAgeText,
+                ageGroup: ageGroup,
+                isFraud: isFraud
+            })
+            if (!pendingTestEventDrainTimer.running) {
+                pendingTestEventDrainTimer.start()
+            }
+            return true
+        }
+        _drainPendingTestMonitoringEvents()
+        return _appendMonitoringEventNow(objectId, cardAgeText, ageGroup, isFraud)
     }
 
     // Squish helper: inject monitoring events without backend socket dependency.
     function injectTestMonitoringEvent(objectId, cardAgeText, ageGroup, isFraud) {
-        appendMonitoringEvent(
+        return appendMonitoringEvent(
             objectId || "TEST-OBJ-001",
             cardAgeText || "adult",
             ageGroup || "30s",
             isFraud !== false
         )
+    }
+
+    // Squish helper: check if model contains a given objectId.
+    function hasMonitoringEventObjectIdForTest(targetObjectId) {
+        if (!monitoringEventModel) {
+            return false
+        }
+        var needle = String(targetObjectId)
+        for (var i = 0; i < monitoringEventModel.count; ++i) {
+            var item = monitoringEventModel.get(i)
+            if (item && String(item.objectId) === needle) {
+                return true
+            }
+        }
+        return false
+    }
+
+    Component.onCompleted: {
+        if (!pendingTestEventDrainTimer.running) {
+            pendingTestEventDrainTimer.start()
+        }
+        Qt.callLater(_drainPendingTestMonitoringEvents)
     }
 
     // Squish helper: force stream-state label rendering for UI verification.
@@ -88,6 +158,49 @@ Page {
 
     function clearStreamStatusOverrideForTest() {
         streamStatusOverrideForTest = ""
+    }
+
+    // Squish helper: emit viewDetailRequest for the item at targetIndex, bypassing
+    // delegate visibility / ListView recycling timing issues entirely.
+    function openMonitoringDetailByIndex(targetIndex) {
+        var idx = Number(targetIndex)
+        if (isNaN(idx)) {
+            return false
+        }
+        idx = Math.floor(idx)
+        if (idx < 0 || idx >= monitoringEventModel.count) {
+            return false
+        }
+        var item = monitoringEventModel.get(idx)
+        viewDetailRequest(
+            item.objectId    !== undefined ? item.objectId    : "",
+            item.cardAgeText !== undefined ? item.cardAgeText : "",
+            item.ageGroup    !== undefined ? item.ageGroup    : "",
+            !!item.isFraud
+        )
+        return true
+    }
+
+    // Squish helper: get event model count (for debugging)
+    function _getMonitoringEventModelCount() {
+        if (!monitoringEventModel) {
+            return 0
+        }
+        return monitoringEventModel.count
+    }
+
+    // Squish helper: set selected detection for track testing
+    function setSelectedForTest(objectId) {
+        if (videoDisplay && objectId) {
+            videoDisplay.setSelectedDetection(String(objectId))
+            return true
+        }
+        return false
+    }
+
+    // Squish helper: check if object is currently tracked
+    function isObjectTrackedForTest(objectId) {
+        return String(currentTrackedId) === String(objectId)
     }
 
     onLaserTrackingEnabledChanged: {
