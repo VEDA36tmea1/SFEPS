@@ -370,14 +370,19 @@ std::vector<ParsedMetadataObject> XMLParser::parseHumanObjectsForAnalytics(const
         const bool has_top = parse_float_attr(xml, top_pos, 5, object.top);
         const bool has_bottom = parse_float_attr(xml, bottom_pos, 8, object.bottom);
 
-        const bool type_ok = detect_all || (object.type == "Head");
+        //const bool type_ok = detect_all || (object.type == "Head");
+        const bool type_ok = detect_all || (object.type == "Human");
         if (!object.id.empty() && type_ok && has_x && has_y &&
             has_left && has_right && has_top && has_bottom) {
                 results.push_back(object);
 
             // 디버그용: 파싱된 메타데이터 객체를 전부 로그로 확인하고 싶을 때 사용
+<<<<<<< HEAD
             constexpr bool k_enable_meta_log = true;
             #if(0)
+=======
+            constexpr bool k_enable_meta_log = false;
+>>>>>>> 2e303eba793fe1a6109c0d3f6be1e6851dd3d6d6
             if (k_enable_meta_log) {
                 std::cout << "[META] id=" << object.id
                           << " type=" << object.type
@@ -389,7 +394,10 @@ std::vector<ParsedMetadataObject> XMLParser::parseHumanObjectsForAnalytics(const
                           << " bottom=" << object.bottom
                           << std::endl;
             }
+<<<<<<< HEAD
             #endif
+=======
+>>>>>>> 2e303eba793fe1a6109c0d3f6be1e6851dd3d6d6
         }
 
         search_pos = obj_end;

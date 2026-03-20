@@ -117,13 +117,18 @@ def login_default(user_id=DEFAULT_USER, password=DEFAULT_PASS, timeout_ms=30000)
     if state == "mainWindow":
         return
 
-    login_win = waitForObject(sel, timeout_ms)
-    mouseClick(login_win, 100, 100, 0, Qt.LeftButton)
+    # objectName으로 직접 입력 필드를 찾아 클릭 (좌표 의존 제거)
+    id_field = wait_name("idInput", timeout_ms)
+    mouseClick(id_field)
+    id_field.text = ""
+    type(id_field, str(user_id))
 
-    type(login_win, str(user_id))
-    type(login_win, "<Tab>")
-    type(login_win, str(password))
-    type(login_win, "<Return>")
+    pass_field = wait_name("passwordInput", timeout_ms)
+    mouseClick(pass_field)
+    pass_field.text = ""
+    type(pass_field, str(password))
+
+    click_name("loginButton", timeout_ms)
 
     wait_name("mainWindow", timeout_ms)
 
@@ -139,9 +144,19 @@ def logout_default(timeout_ms=30000):
     wait_name("loginWindow", timeout_ms)
 
 
+def ensure_logged_in(user_id=DEFAULT_USER, password=DEFAULT_PASS, timeout_ms=10000):
+    """서버 끊김으로 로그인 창으로 돌아간 경우 재로그인한다."""
+    if exists_name("loginWindow"):
+        test.log("[INFO] loginWindow detected mid-test - re-logging in")
+        login_default(user_id, password, timeout_ms)
+
+
 # ---- UI-01~03 / STREAM-02 / TRACK-02 helper ----
 
 def ensure_monitoring_tab(timeout_ms=5000):
+    # 서버 끊김으로 로그인 화면으로 돌아간 경우 재로그인
+    ensure_logged_in()
+
     main_win = wait_name("mainWindow", timeout_ms)
 
     # 1) 상태값으로 강제 전환
@@ -245,6 +260,8 @@ def monitoring_event_count(timeout_ms=5000):
 
 
 def inject_monitoring_event(object_id="TC-OBJ-001", card_text="adult", age_group="30s", is_fraud=True):
+    # inject 전에도 서버 끊김으로 로그인 화면으로 돌아간 경우 재로그인 후 탭 복귀
+    ensure_logged_in()
     ensure_monitoring_tab(5000)
 
     count_before = 0

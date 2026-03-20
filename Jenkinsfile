@@ -220,6 +220,7 @@ SQL
                 sh '''
                     set -eu
                     export MYSQL_UNIX_PORT="$WORKSPACE/.ci-mariadb/mysqld.sock"
+                    rm -rf reports
                     mkdir -p reports
                     python3 -m pytest -q tests/test_tc_func_login.py -r a --junitxml=reports/login-tests.xml
 
@@ -415,13 +416,17 @@ PY
                 stage('Run Squish UI Tests') {
                         steps {
                                 script {
+                            def squishStepFailed = false
                                         node(env.SFEPS_WINDOWS_GUI_AGENT_LABEL) {
                                                 deleteDir()
                                                 checkout scm
 
-                                                bat '''
+                                try {
+                                    bat '''
                                                         @echo off
-                                                        if not exist reports mkdir reports
+                                                        setlocal EnableExtensions EnableDelayedExpansion
+                                                        set "REPORT_DIR=%CD%\\reports"
+                                                        if not exist "%REPORT_DIR%" mkdir "%REPORT_DIR%"
 
                                                         set "SQUISH_REQUIRED=1"
 
@@ -510,7 +515,6 @@ PY
                                                         if errorlevel 1 (
                                                             echo ERROR: squishserver port 4322 is NOT listening!
                                                             netstat -ano
-                                                            taskkill /F /IM squishserver.exe >nul 2>nul
                                                             exit /b 1
                                                         )
                                                         echo Squish server port 4322 is LISTENING (confirmed by netstat)
@@ -534,30 +538,67 @@ PY
                                                             exit /b 1
                                                         )
 
+                                                        set SQUISH_FAILED=0
                                                         for %%T in (
-                                                            tst_tc_func_stream_02
                                                             tst_tc_func_ui_01
+                                                            tst_tc_func_stream_02
                                                             tst_tc_func_ui_02
                                                             tst_tc_func_ui_03
                                                             tst_tc_func_track_01
                                                             tst_tc_func_track_02
                                                         ) do (
-                                                            call "%SQUISH_RUNNER%" --testsuite "%SUITE_PATH%" --testcase %%T --aut "%AUT_PATH%" --reportgen "junit,reports\\squish-%%T.xml"
-                                                            if errorlevel 1 exit /b 1
+                                                            set "REPORT_FILE=!REPORT_DIR!\\squish-%%T.xml"
+                                                            if exist "!REPORT_FILE!" del /f /q "!REPORT_FILE!"
+                                                            for /f %%I in ('powershell -NoProfile -Command "[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()"') do set "TC_START_MS=%%I"
+                                                            call "%SQUISH_RUNNER%" --testsuite "%SUITE_PATH%" --testcase %%T --aut "%AUT_PATH%" --reportgen "junit,!REPORT_FILE!" --exitCodeOnFail 1
+                                                            set "TC_RC=!ERRORLEVEL!"
+                                                            for /f %%I in ('powershell -NoProfile -Command "[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()"') do set "TC_END_MS=%%I"
+                                                            set /a TC_ELAPSED_MS=!TC_END_MS!-!TC_START_MS!
+                                                            if !TC_ELAPSED_MS! lss 0 set "TC_ELAPSED_MS=0"
+                                                            for /f %%I in ('powershell -NoProfile -Command "$ms=[double]$env:TC_ELAPSED_MS; [string]::Format([System.Globalization.CultureInfo]::InvariantCulture,'{0:0.000}',$ms/1000.0)"') do set "TC_ELAPSED_SEC=%%I"
+                                                            if not exist "!REPORT_FILE!" (
+                                                                echo Squish did not generate JUnit XML for %%T, writing fallback report.
+                                                                > "!REPORT_FILE!" echo ^<testsuite name="%%T" tests="1" failures="0" errors="0" skipped="0" time="!TC_ELAPSED_SEC!"^>
+                                                                if "!TC_RC!"=="0" (
+                                                                    >> "!REPORT_FILE!" echo   ^<testcase classname="squish.%%T" name="%%T" time="!TC_ELAPSED_SEC!" /^>
+                                                                ) else (
+                                                                    >> "!REPORT_FILE!" echo   ^<testcase classname="squish.%%T" name="%%T" time="!TC_ELAPSED_SEC!"^>^<failure message="squishrunner exited with code !TC_RC!" /^>^</testcase^>
+                                                                    > "!REPORT_FILE!.tmp" (
+                                                                        echo ^<testsuite name="%%T" tests="1" failures="1" errors="0" skipped="0" time="!TC_ELAPSED_SEC!"^>
+                                                                        echo   ^<testcase classname="squish.%%T" name="%%T" time="!TC_ELAPSED_SEC!"^>^<failure message="squishrunner exited with code !TC_RC!" /^>^</testcase^>
+                                                                        echo ^</testsuite^>
+                                                                    )
+                                                                    move /Y "!REPORT_FILE!.tmp" "!REPORT_FILE!" >nul
+                                                                )
+                                                                if "!TC_RC!"=="0" (
+                                                                    >> "!REPORT_FILE!" echo ^</testsuite^>
+                                                                )
+                                                            )
+                                                            if exist "!REPORT_FILE!" echo Generated Squish report: !REPORT_FILE!
+                                                            if not "!TC_RC!"=="0" set SQUISH_FAILED=1
                                                         )
 
                                                         if "%STARTED_SQUISH_SERVER%"=="1" (
                                                             taskkill /F /IM squishserver.exe >nul 2>nul
                                                         )
-                                                '''
 
-                                                stash name: 'squish-reports', includes: 'reports/squish-*.xml', allowEmpty: true
+                                                        if "%SQUISH_FAILED%"=="1" exit /b 1
+                                                '''
+                                                    } catch (err) {
+                                                        squishStepFailed = true
+                                                        echo "Squish execution failed on Windows node, but stashing reports before failing stage."
+                                                    }
+                                                stash name: 'squish-reports', includes: 'reports/**', allowEmpty: true
                                         }
 
                                         try {
                                                 unstash 'squish-reports'
                                         } catch (err) {
                                                 echo "No Squish reports were stashed: ${err}"
+                                        }
+
+                                        if (squishStepFailed) {
+                                            error('Run Squish UI Tests failed.')
                                         }
                                 }
                         }
