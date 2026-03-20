@@ -491,14 +491,14 @@ PY
                                                         )
                                                         
                                                         echo Starting squishserver: %SQUISH_SERVER%
-                                                        start "squishserver" /B "%SQUISH_SERVER%" > "%TEMP%\squishserver.log" 2>&1
+                                                        start "squishserver" /B "%SQUISH_SERVER%" > "%TEMP%\\squishserver.log" 2>&1
                                                         echo Waiting for squishserver to initialize...
                                                         
                                                         timeout /t 1 >nul
                                                         tasklist | find /I "squishserver.exe"
                                                         if errorlevel 1 (
                                                             echo ERROR: squishserver process did not start!
-                                                            if exist "%TEMP%\squishserver.log" type "%TEMP%\squishserver.log"
+                                                            if exist "%TEMP%\\squishserver.log" type "%TEMP%\\squishserver.log"
                                                             exit /b 1
                                                         )
                                                         echo squishserver process is running
