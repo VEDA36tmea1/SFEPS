@@ -60,8 +60,7 @@ void run_image_retention_cleanup_worker(std::atomic<bool>& running_flag,
                     }
                 }
             }
-        } catch (const std::exception& e) {
-            std::cerr << "[Cleanup Error] " << e.what() << std::endl;
+        } catch (const std::exception&) {
         }
 
         auto waited = std::chrono::milliseconds(0);
@@ -95,14 +94,13 @@ void run_file_cleanup_worker(std::atomic<bool>& running_flag, const std::string&
                         auto age = std::chrono::duration_cast<std::chrono::seconds>(now - ftime).count();
                         
                         if (age >= retention_sec) {
-                            //std::cout << "[Cleanup] Del: " << filename << " (Age: " << age << "s)" << std::endl;
+                            // 파일 정리 삭제 로그(비활성화)
                             fs::remove(entry.path());
                         }
                     }
                 }
             }
-        } catch (const std::exception& e) {
-            std::cerr << "[Cleanup Error] " << e.what() << std::endl;
+        } catch (const std::exception&) {
         }
         
         // 종료 신호가 오면 10초를 다 기다리지 않고 빠르게 종료한다.

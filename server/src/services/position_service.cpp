@@ -105,7 +105,7 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
         if (ip.empty()) return;
         const auto due = std::chrono::steady_clock::now() + deauth_grace;
         pending_deauth[ip] = due;
-        std::cout << "[main.cpp] [Auth] deauth scheduled: ip=" << ip
+        std::cout << "[main.cpp] [Auth] 인증 해제 예약: ip=" << ip
                   << ", grace_ms=" << sec_cfg.auth_deauth_grace_ms
                   << ", reason=" << (reason ? reason : "disconnect") << std::endl;
     };
@@ -113,7 +113,7 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
     const auto cancel_pending_deauth = [&](const std::string& ip) {
         if (ip.empty()) return;
         if (pending_deauth.erase(ip) > 0) {
-            std::cout << "[main.cpp] [Auth] deauth canceled (reconnect): ip=" << ip << std::endl;
+            std::cout << "[main.cpp] [Auth] 인증 해제 취소(재연결): ip=" << ip << std::endl;
         }
     };
 
@@ -127,7 +127,7 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
             }
 
             if (active_position_connections_for_ip(ip) > 0) {
-                std::cout << "[main.cpp] [Auth] deauth skipped (active position connection): ip="
+                std::cout << "[main.cpp] [Auth] 인증 해제 건너뜀(활성 position 연결): ip="
                           << ip << std::endl;
                 it = pending_deauth.erase(it);
                 continue;
@@ -135,7 +135,7 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
 
             const bool removed = unmark_ip_authenticated(ip);
             if (removed) {
-                std::cout << "[main.cpp] [Auth] auth session released: ip=" << ip << std::endl;
+                std::cout << "[main.cpp] [Auth] 인증 세션 해제: ip=" << ip << std::endl;
             }
             it = pending_deauth.erase(it);
         }
@@ -148,7 +148,7 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
         const auto sent_it = last_force_logout_sent_at.find(ip);
         if (sent_it != last_force_logout_sent_at.end() &&
             (now - sent_it->second) < force_logout_cooldown) {
-            std::cout << "[main.cpp] [Auth] force logout event skipped (cooldown): ip=" << ip
+            std::cout << "[main.cpp] [Auth] 강제 로그아웃 이벤트 생략(쿨다운): ip=" << ip
                       << ", proto=" << (proto ? proto : "UNKNOWN") << std::endl;
             return;
         }
@@ -157,7 +157,7 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
                                        std::string(proto ? proto : "UNKNOWN") + "\n";
         send_alert_to_ip_clients(ip, logout_msg);
         last_force_logout_sent_at[ip] = now;
-        std::cout << "[main.cpp] [Auth] force logout event dispatched: ip=" << ip
+        std::cout << "[main.cpp] [Auth] 강제 로그아웃 이벤트 전송: ip=" << ip
                   << ", proto=" << (proto ? proto : "UNKNOWN") << std::endl;
     };
 
@@ -210,13 +210,13 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
         }
 
         if (next_target.empty()) {
-            std::cout << "[main.cpp] [Position] clearing ESP track target: no active subscribers"
+            std::cout << "[main.cpp] [Position] 활성 구독자 없음: ESP 추적 대상 해제"
                       << std::endl;
             clear_esp_track_target(esp_active_object_id, "NO_SUBSCRIBER");
             return;
         }
 
-        std::cout << "[main.cpp] [Position] switching ESP track target after disconnect: from="
+        std::cout << "[main.cpp] [Position] 연결 해제 후 ESP 추적 대상 전환: 이전="
                   << esp_active_object_id << ", to=" << next_target << std::endl;
         switch_esp_track_target(next_target);
     };
@@ -242,7 +242,7 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
         const int poll_ret = poll(pfds.data(), pfds.size(), tick_ms);
         if (poll_ret < 0) {
             if (errno == EINTR) continue;
-            std::cerr << "[Position] poll() failed: " << std::strerror(errno) << std::endl;
+            std::cerr << "[Position] poll() 실패: " << std::strerror(errno) << std::endl;
             break;
         }
 
@@ -327,7 +327,7 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
                         const std::string requested_id = normalize_object_id_token(line.substr(8));
                         if (requested_id.empty()) continue;
 
-                        std::cout << "[main.cpp] [Position] SUB_POS received: ip="
+                        std::cout << "[main.cpp] [Position] SUB_POS 수신: ip="
                                   << client.conn.ip << ", object_id=" << requested_id
                                   << std::endl;
                         client.active_object_id = requested_id;
@@ -338,7 +338,7 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
                     if (line.rfind("UNSUB_POS|", 0) == 0) {
                         const std::string requested_id = normalize_object_id_token(line.substr(10));
                         if (requested_id.empty()) continue;
-                        std::cout << "[main.cpp] [Position] UNSUB_POS received: ip="
+                        std::cout << "[main.cpp] [Position] UNSUB_POS 수신: ip="
                                   << client.conn.ip << ", object_id=" << requested_id
                                   << std::endl;
                         if (client.active_object_id == requested_id) {
@@ -481,7 +481,7 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
         close_client(client.conn);
     }
     close_listener_bundle(listeners);
-    std::cout << "[main.cpp] [Position] stream service thread stopped." << std::endl;
+    std::cout << "[main.cpp] [Position] 스트림 서비스 스레드 종료." << std::endl;
 }
 
 }  // namespace app_services_impl

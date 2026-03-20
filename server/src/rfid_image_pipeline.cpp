@@ -109,7 +109,7 @@ void snapshot_rfid_image_for_object(const std::string& object_id) {
     try {
         const fs::path source(kRfidImageSourcePath);
         if (!fs::exists(source) || !fs::is_regular_file(source)) {
-            std::cout << "[main.cpp] [RFID_IMAGE_SNAP] source image missing: " << source
+            std::cout << "[main.cpp] [RFID_IMAGE_SNAP] 원본 이미지 없음: " << source
                       << ", object_id=" << object_id << std::endl;
             return;
         }
@@ -130,8 +130,8 @@ void snapshot_rfid_image_for_object(const std::string& object_id) {
         std::cout << "[main.cpp] [RFID_IMAGE_SNAP] object_id=" << object_id
                   << ", source=" << source << ", saved=" << target << std::endl;
     } catch (const std::exception& e) {
-        std::cerr << "[main.cpp] [RFID_IMAGE_SNAP] failed: object_id=" << object_id
-                  << ", err=" << e.what() << std::endl;
+        std::cerr << "[main.cpp] [RFID_IMAGE_SNAP] 실패: object_id=" << object_id
+                  << ", 오류=" << e.what() << std::endl;
     }
 }
 
@@ -178,12 +178,12 @@ bool finalize_outline_image_for_object(
 
         try {
             const fs::path moved = move_file_to_dir(pending_path, fs::path(kEventImageFailedDir));
-            std::cerr << "[main.cpp] [RFID_IMAGE_DELETE] failed to delete pending image, moved to"
-                      << " failed dir: object_id=" << payload.object_id << ", moved=" << moved
-                      << ", err=" << remove_ec.message() << std::endl;
+            std::cerr << "[main.cpp] [RFID_IMAGE_DELETE] 대기 이미지 삭제 실패, 이동 경로="
+                      << " 실패 디렉터리: object_id=" << payload.object_id << ", moved=" << moved
+                      << ", 오류=" << remove_ec.message() << std::endl;
         } catch (const std::exception& e) {
-            std::cerr << "[main.cpp] [RFID_IMAGE_DELETE] failed: object_id=" << payload.object_id
-                      << ", path=" << pending_path << ", err=" << e.what() << std::endl;
+            std::cerr << "[main.cpp] [RFID_IMAGE_DELETE] 실패: object_id=" << payload.object_id
+                      << ", path=" << pending_path << ", 오류=" << e.what() << std::endl;
         }
         return false;
     }
@@ -203,13 +203,13 @@ bool finalize_outline_image_for_object(
     } catch (const std::exception& keep_err) {
         try {
             const fs::path failed = move_file_to_dir(pending_path, fs::path(kEventImageFailedDir));
-            std::cerr << "[main.cpp] [RFID_IMAGE_KEEP] failed to keep in fraud dir, moved to failed"
+            std::cerr << "[main.cpp] [RFID_IMAGE_KEEP] 사기 디렉터리 보관 실패, 실패 디렉터리로 이동"
                       << ": object_id=" << payload.object_id << ", moved=" << failed
-                      << ", err=" << keep_err.what() << std::endl;
+                      << ", 오류=" << keep_err.what() << std::endl;
         } catch (const std::exception& failed_err) {
-            std::cerr << "[main.cpp] [RFID_IMAGE_KEEP] failed: object_id=" << payload.object_id
-                      << ", path=" << pending_path << ", err=" << keep_err.what()
-                      << ", failed_err=" << failed_err.what() << std::endl;
+            std::cerr << "[main.cpp] [RFID_IMAGE_KEEP] 실패: object_id=" << payload.object_id
+                      << ", path=" << pending_path << ", 오류=" << keep_err.what()
+                      << ", 실패_오류=" << failed_err.what() << std::endl;
         }
     }
     return false;

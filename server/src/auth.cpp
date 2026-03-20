@@ -39,14 +39,14 @@ bool Authenticator::connect() {
 
     authStmt = mysql_stmt_init(conn);
     if (authStmt == nullptr) {
-        std::cerr << "[Auth DB Error] mysql_stmt_init() failed" << std::endl;
+        std::cerr << "[Auth DB Error] mysql_stmt_init() 실패" << std::endl;
         mysql_close(conn);
         conn = nullptr;
         return false;
     }
 
     if (mysql_stmt_prepare(authStmt, kAuthQuery, std::strlen(kAuthQuery)) != 0) {
-        std::cerr << "[Auth DB Error] prepare failed: " << mysql_stmt_error(authStmt) << std::endl;
+        std::cerr << "[Auth DB Error] prepare 실패: " << mysql_stmt_error(authStmt) << std::endl;
         mysql_stmt_close(authStmt);
         authStmt = nullptr;
         mysql_close(conn);
@@ -63,7 +63,7 @@ bool Authenticator::authenticate(const std::string& id, const std::string& pw) {
     std::lock_guard<std::mutex> dbLock(dbMutex);
 
     if (mysql_stmt_reset(authStmt) != 0) {
-        std::cerr << "[Auth DB Error] reset failed: " << mysql_stmt_error(authStmt) << std::endl;
+        std::cerr << "[Auth DB Error] reset 실패: " << mysql_stmt_error(authStmt) << std::endl;
         return false;
     }
 
@@ -86,17 +86,17 @@ bool Authenticator::authenticate(const std::string& id, const std::string& pw) {
     params[1].length = &pw_len;
 
     if (mysql_stmt_bind_param(authStmt, params) != 0) {
-        std::cerr << "[Auth DB Error] bind failed: " << mysql_stmt_error(authStmt) << std::endl;
+        std::cerr << "[Auth DB Error] bind 실패: " << mysql_stmt_error(authStmt) << std::endl;
         return false;
     }
 
     if (mysql_stmt_execute(authStmt) != 0) {
-        std::cerr << "[Auth DB Error] execute failed: " << mysql_stmt_error(authStmt) << std::endl;
+        std::cerr << "[Auth DB Error] execute 실패: " << mysql_stmt_error(authStmt) << std::endl;
         return false;
     }
 
     if (mysql_stmt_store_result(authStmt) != 0) {
-        std::cerr << "[Auth DB Error] store_result failed: " << mysql_stmt_error(authStmt) << std::endl;
+        std::cerr << "[Auth DB Error] store_result 실패: " << mysql_stmt_error(authStmt) << std::endl;
         return false;
     }
 

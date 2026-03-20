@@ -35,13 +35,6 @@ erDiagram
         timestamp created_at
     }
 
-    CARD_LOGS {
-        int id PK
-        varchar card_uid
-        datetime tag_time
-        varchar age_group
-    }
-
     USERS ||..o{ LOGIN_LOGS : "logical reference (username -> users.id)"
 ```
 
@@ -122,21 +115,7 @@ flowchart TB
     F4 -- "DELETE old rows" --> T
 ```
 
-### 2-5) CARD_LOGS
-
-```mermaid
-flowchart TB
-    classDef table fill:#f3f6fa,stroke:#2f3a4a,stroke-width:2px,color:#111;
-    classDef func fill:#ffffff,stroke:#8a94a6,color:#111;
-
-    T[(card_logs)]:::table
-    F0["rfid_monitor.cpp::RfidMonitor::run_loop"]:::func
-
-    F0 -. "DB SQL 접근 없음" .-> T
-```
-
 Notes:
 - DB는 런타임에서 `SFEPS_DB_NAME_ANALYTICS` 단일 스키마를 사용합니다.
 - 물리 FK는 없고 `login_logs.username -> users.id`는 논리 참조입니다.
 - `analytics_logs`는 현재 `object_id/card_age_text/age/is_fraud/created_at` 중심으로 기록합니다.
-- `card_logs`는 코드에서 SQL INSERT/SELECT를 수행하지 않습니다.
