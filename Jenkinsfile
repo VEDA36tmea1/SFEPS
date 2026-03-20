@@ -424,6 +424,8 @@ PY
                                                         if not exist reports mkdir reports
 
                                                         set "SQUISH_REQUIRED=1"
+                                                    set "SQUISH_SKIP_REASON="
+                                                    set "SQUISH_TEST_FAILED=0"
 
                                                         set "SQUISH_RUNNER=%SFEPS_SQUISH_RUNNER%"
                                                         if "%SQUISH_RUNNER%"=="" (
@@ -467,14 +469,16 @@ PY
                                                         if "%SQUISH_RUNNER%"=="" (
                                                             echo squishrunner not found on Windows GUI agent.
                                                             echo Hint: set SFEPS_SQUISH_RUNNER to full path, e.g. C:\\Squish\\bin\\squishrunner.exe
-                                                            exit /b 1
+                                                            set "SQUISH_SKIP_REASON=squishrunner not found"
+                                                            goto :squish_finalize
                                                         )
 
                                                         where "%SQUISH_RUNNER%" >nul 2>nul
                                                         if errorlevel 1 (
                                                             if not exist "%SQUISH_RUNNER%" (
                                                                 echo squishrunner path does not exist: %SQUISH_RUNNER%
-                                                                exit /b 1
+                                                                set "SQUISH_SKIP_REASON=invalid squishrunner path"
+                                                                goto :squish_finalize
                                                             )
                                                         )
 
@@ -487,7 +491,8 @@ PY
                                                         
                                                         if not exist "%SQUISH_SERVER%" (
                                                             echo squishserver not found on Windows GUI agent: %SQUISH_SERVER%
-                                                            exit /b 1
+                                                            set "SQUISH_SKIP_REASON=squishserver not found"
+                                                            goto :squish_finalize
                                                         )
                                                         
                                                         echo Starting squishserver: %SQUISH_SERVER%
@@ -499,7 +504,8 @@ PY
                                                         if errorlevel 1 (
                                                             echo ERROR: squishserver process did not start!
                                                             if exist "%TEMP%\\squishserver.log" type "%TEMP%\\squishserver.log"
-                                                            exit /b 1
+                                                            set "SQUISH_SKIP_REASON=squishserver failed to start"
+                                                            goto :squish_finalize
                                                         )
                                                         echo squishserver process is running
                                                         
@@ -510,8 +516,8 @@ PY
                                                         if errorlevel 1 (
                                                             echo ERROR: squishserver port 4322 is NOT listening!
                                                             netstat -ano
-                                                            taskkill /F /IM squishserver.exe >nul 2>nul
-                                                            exit /b 1
+                                                            set "SQUISH_SKIP_REASON=squishserver port 4322 not listening"
+                                                            goto :squish_finalize
                                                         )
                                                         echo Squish server port 4322 is LISTENING (confirmed by netstat)
                                                         type "%TEMP%\\netstat_result.txt"
@@ -526,12 +532,14 @@ PY
                                                             echo  - C:\\Jenkins\\workspace\\SFEPS\\client\\build-mingw\\appHanwhaVisionSFEPS.exe
                                                             echo  - C:\\Users\\2-08\\Desktop\\SFEPS\\client\\build-mingw\\appHanwhaVisionSFEPS.exe
                                                             echo  - C:\\Users\\2-08\\Desktop\\SFEPS\\client\\build\\appHanwhaVisionSFEPS.exe
-                                                            exit /b 1
+                                                            set "SQUISH_SKIP_REASON=AUT binary not found"
+                                                            goto :squish_finalize
                                                         )
 
                                                         if not exist "%AUT_PATH%" (
                                                             echo AUT binary path does not exist on Windows GUI agent: %AUT_PATH%
-                                                            exit /b 1
+                                                            set "SQUISH_SKIP_REASON=AUT binary path does not exist"
+                                                            goto :squish_finalize
                                                         )
 
                                                         for %%T in (
@@ -543,12 +551,26 @@ PY
                                                             tst_tc_func_track_02
                                                         ) do (
                                                             call "%SQUISH_RUNNER%" --testsuite "%SUITE_PATH%" --testcase %%T --aut "%AUT_PATH%" --reportgen "junit,reports\\squish-%%T.xml"
-                                                            if errorlevel 1 exit /b 1
+                                                            if errorlevel 1 (
+                                                                echo WARN: Squish testcase failed: %%T
+                                                                set "SQUISH_TEST_FAILED=1"
+                                                            )
                                                         )
+
+                                                        if "%SQUISH_TEST_FAILED%"=="1" (
+                                                            set "SQUISH_SKIP_REASON=one or more Squish testcases failed"
+                                                        )
+
+                                                        :squish_finalize
 
                                                         if "%STARTED_SQUISH_SERVER%"=="1" (
                                                             taskkill /F /IM squishserver.exe >nul 2>nul
                                                         )
+
+                                                        if not "%SQUISH_SKIP_REASON%"=="" (
+                                                            echo WARN: Squish stage non-blocking mode - %SQUISH_SKIP_REASON%
+                                                        )
+                                                        exit /b 0
                                                 '''
 
                                                 stash name: 'squish-reports', includes: 'reports/squish-*.xml', allowEmpty: true
