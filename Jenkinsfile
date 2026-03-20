@@ -541,11 +541,11 @@ PY
                                                         set SQUISH_FAILED=0
                                                         for %%T in (
                                                             tst_tc_func_ui_01
+                                                            tst_tc_func_stream_02
                                                             tst_tc_func_ui_02
                                                             tst_tc_func_ui_03
                                                             tst_tc_func_track_01
                                                             tst_tc_func_track_02
-                                                            tst_tc_func_stream_02
                                                         ) do (
                                                             set "REPORT_FILE=!REPORT_DIR!\squish-%%T.xml"
                                                             if exist "!REPORT_FILE!" del /f /q "!REPORT_FILE!"
