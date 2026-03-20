@@ -424,7 +424,9 @@ PY
                                 try {
                                     bat '''
                                                         @echo off
-                                                        if not exist reports mkdir reports
+                                                        setlocal EnableExtensions EnableDelayedExpansion
+                                                        set "REPORT_DIR=%CD%\reports"
+                                                        if not exist "%REPORT_DIR%" mkdir "%REPORT_DIR%"
 
                                                         set "SQUISH_REQUIRED=1"
 
@@ -539,14 +541,36 @@ PY
                                                         set SQUISH_FAILED=0
                                                         for %%T in (
                                                             tst_tc_func_ui_01
-                                                            tst_tc_func_stream_02                                                            
                                                             tst_tc_func_ui_02
                                                             tst_tc_func_ui_03
                                                             tst_tc_func_track_01
                                                             tst_tc_func_track_02
+                                                            tst_tc_func_stream_02
                                                         ) do (
-                                                            call "%SQUISH_RUNNER%" --testsuite "%SUITE_PATH%" --testcase %%T --aut "%AUT_PATH%" --reportgen "junit,reports\\squish-%%T.xml"
-                                                            if errorlevel 1 set SQUISH_FAILED=1
+                                                            set "REPORT_FILE=!REPORT_DIR!\squish-%%T.xml"
+                                                            if exist "!REPORT_FILE!" del /f /q "!REPORT_FILE!"
+                                                            call "%SQUISH_RUNNER%" --testsuite "%SUITE_PATH%" --testcase %%T --aut "%AUT_PATH%" --reportgen "junit,!REPORT_FILE!" --exitCodeOnFail 1
+                                                            set "TC_RC=!ERRORLEVEL!"
+                                                            if not exist "!REPORT_FILE!" (
+                                                                echo Squish did not generate JUnit XML for %%T, writing fallback report.
+                                                                > "!REPORT_FILE!" echo ^<testsuite name="%%T" tests="1" failures="0" errors="0" skipped="0" time="0"^>
+                                                                if "!TC_RC!"=="0" (
+                                                                    >> "!REPORT_FILE!" echo   ^<testcase classname="squish.%%T" name="%%T" time="0" /^>
+                                                                ) else (
+                                                                    >> "!REPORT_FILE!" echo   ^<testcase classname="squish.%%T" name="%%T" time="0"^>^<failure message="squishrunner exited with code !TC_RC!" /^>^</testcase^>
+                                                                    > "!REPORT_FILE!.tmp" (
+                                                                        echo ^<testsuite name="%%T" tests="1" failures="1" errors="0" skipped="0" time="0"^>
+                                                                        echo   ^<testcase classname="squish.%%T" name="%%T" time="0"^>^<failure message="squishrunner exited with code !TC_RC!" /^>^</testcase^>
+                                                                        echo ^</testsuite^>
+                                                                    )
+                                                                    move /Y "!REPORT_FILE!.tmp" "!REPORT_FILE!" >nul
+                                                                )
+                                                                if "!TC_RC!"=="0" (
+                                                                    >> "!REPORT_FILE!" echo ^</testsuite^>
+                                                                )
+                                                            )
+                                                            if exist "!REPORT_FILE!" echo Generated Squish report: !REPORT_FILE!
+                                                            if not "!TC_RC!"=="0" set SQUISH_FAILED=1
                                                         )
 
                                                         if "%STARTED_SQUISH_SERVER%"=="1" (
@@ -559,15 +583,6 @@ PY
                                                         squishStepFailed = true
                                                         echo "Squish execution failed on Windows node, but stashing reports before failing stage."
                                                     }
-
-                                                // Generate placeholder XML for any test case that did not produce a report
-                                                def squishTestCases = ['tst_tc_func_ui_01', 'tst_tc_func_ui_02', 'tst_tc_func_ui_03', 'tst_tc_func_track_01', 'tst_tc_func_track_02', 'tst_tc_func_stream_02']
-                                                for (tc in squishTestCases) {
-                                                    if (!fileExists("reports/squish-${tc}.xml")) {
-                                                        writeFile file: "reports/squish-${tc}.xml",
-                                                            text: "<testsuite name=\"${tc}\" tests=\"1\" failures=\"1\" errors=\"0\"><testcase classname=\"squish.${tc}\" name=\"${tc}\" time=\"0\"><failure message=\"squishrunner did not produce a report\"/></testcase></testsuite>"
-                                                    }
-                                                }
                                                 stash name: 'squish-reports', includes: 'reports/**', allowEmpty: true
                                         }
 
