@@ -70,14 +70,14 @@ int main() {
     RuntimeConfig cfg;
     std::string cfg_err;
     if (!load_runtime_config(cfg, cfg_err)) {
-        std::cerr << "[Fatal] Runtime config error: " << cfg_err << std::endl;
+        std::cerr << "[Fatal] 런타임 설정 오류: " << cfg_err << std::endl;
         return -1;
     }
 
     const SecurityRuntimeOptions sec_cfg = load_security_runtime_options();
     std::string sec_cfg_err;
     if (!validate_security_runtime_options(sec_cfg, sec_cfg_err)) {
-        std::cerr << "[Fatal] Security config error: " << sec_cfg_err << std::endl;
+        std::cerr << "[Fatal] 보안 설정 오류: " << sec_cfg_err << std::endl;
         return -1;
     }
 
@@ -85,7 +85,7 @@ int main() {
         Authenticator auth_probe(cfg.db_host.c_str(), cfg.db_user.c_str(), cfg.db_pass.c_str(),
                                  cfg.db_name_analytics.c_str());
         if (!auth_probe.connect()) {
-            std::cerr << "[Fatal] Auth DB startup check failed (fail-closed)." << std::endl;
+            std::cerr << "[Fatal] Auth DB 시작 점검 실패(fail-closed)." << std::endl;
             return -1;
         }
     }
@@ -122,7 +122,7 @@ int main() {
     DBLogger logger(cfg.db_host.c_str(), cfg.db_user.c_str(), cfg.db_pass.c_str(),
                     cfg.db_name_analytics.c_str());
     if (!logger.connect()) {
-        std::cerr << "[Fatal] DBLogger startup failed (fail-closed)." << std::endl;
+        std::cerr << "[Fatal] DBLogger 시작 실패(fail-closed)." << std::endl;
         return -1;
     }
 
@@ -137,13 +137,13 @@ int main() {
                 return;
             }
             if (sec_cfg.fraud_image_http_base_url.empty()) {
-                std::cerr << "[main.cpp] [RFID_IMAGE_REF_SEND] skipped: empty "
+                std::cerr << "[main.cpp] [RFID_IMAGE_REF_SEND] 생략: 비어 있음 "
                              "SFEPS_FRAUD_IMAGE_HTTP_BASE_URL, object_id="
                           << payload.object_id << std::endl;
                 return;
             }
             if (fraud_image_info.filename.empty()) {
-                std::cerr << "[main.cpp] [RFID_IMAGE_REF_SEND] skipped: missing filename, object_id="
+                std::cerr << "[main.cpp] [RFID_IMAGE_REF_SEND] 생략: 파일명 누락, object_id="
                           << payload.object_id << std::endl;
                 return;
             }
@@ -162,7 +162,7 @@ int main() {
                       << ", name=" << fraud_image_info.filename << ", url=" << url << std::endl;
         });
     if (!analytics.start()) {
-        std::cerr << "[Fatal] AnalyticsProcessor startup failed (fail-closed)." << std::endl;
+        std::cerr << "[Fatal] AnalyticsProcessor 시작 실패(fail-closed)." << std::endl;
         return -1;
     }
 
@@ -173,20 +173,20 @@ int main() {
     esp_cfg.max_clients = sec_cfg.esp_tcp_max_clients;
     esp_cfg.allow_ips = sec_cfg.esp_tcp_allow_ips;
     EspManager esp_manager(std::move(esp_cfg));
-    analytics.setFraudBBoxCallback(
-        [&esp_manager](const AnalyticsProcessor::FraudBBoxPayload& payload) {
-            EspManager::FraudBboxPayload esp_payload;
+    analytics.setTrackPosCallback(
+        [&esp_manager](const AnalyticsProcessor::TrackPosPayload& payload) {
+            EspManager::TrackPosPayload esp_payload;
             esp_payload.object_id = payload.object_id;
-            esp_payload.card_age_text = payload.card_age_text;
-            esp_payload.age = payload.age;
             esp_payload.left = payload.left;
             esp_payload.top = payload.top;
             esp_payload.right = payload.right;
             esp_payload.bottom = payload.bottom;
-            esp_manager.publishFraudBbox(esp_payload);
+            esp_payload.x = payload.x;
+            esp_payload.y = payload.y;
+            esp_manager.publishFraudTrackPosIfIdle(esp_payload);
         });
     if (sec_cfg.esp_tcp_enable && !esp_manager.start(g_running)) {
-        std::cerr << "[Fatal] ESP manager startup failed." << std::endl;
+        std::cerr << "[Fatal] ESP manager 시작 실패." << std::endl;
         analytics.stop();
         return -1;
     }
@@ -239,6 +239,6 @@ int main() {
 
     analytics.stop();
 
-    std::cout << "[main.cpp] [System] server stopped." << std::endl;
+    std::cout << "[main.cpp] [System] 서버 종료." << std::endl;
     return 0;
 }

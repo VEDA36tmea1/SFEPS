@@ -174,21 +174,21 @@ void RfidMonitor::run_loop() {
                             std::string now = get_current_datetime();
                             (void)device_id;
                             (void)tag_timestamp;
-                            std::cout << "[rfid_monitor.cpp] " << ">>> [RFID Tag] UID: " << uid
-                                      << " (" << card_age_text << ") Time: " << now << std::endl;
+                            std::cout << "[rfid_monitor.cpp] " << ">>> [RFID 태그] UID: " << uid
+                                      << " (" << card_age_text << ") 시간: " << now << std::endl;
 
                             if (uid.empty() || card_age_text.empty()) {
                                 std::cerr << "[rfid_monitor.cpp] "
-                                          << "[RFID Warn] missing required field(s): uid_empty="
+                                          << "[RFID 경고] 필수 필드 누락: uid_비었음="
                                           << (uid.empty() ? "true" : "false")
-                                          << ", text_empty="
+                                          << ", text_비었음="
                                           << (card_age_text.empty() ? "true" : "false")
                                           << std::endl;
                             }
                             process_rfid_tag(uid, card_age_text, now);
                         } catch (...) {
                             std::cerr << "[rfid_monitor.cpp] "
-                                      << "[RFID] Parse Error. raw="
+                                      << "[RFID] 파싱 오류. raw="
                                       << sanitize_for_log(json_line) << std::endl;
                         }
                     }

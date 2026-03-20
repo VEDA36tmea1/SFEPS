@@ -30,14 +30,14 @@ bool EspManager::start(std::atomic<bool>& app_running_flag) {
 
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
-        std::cerr << "[esp_manager.cpp] [ESP] socket() failed: " << std::strerror(errno)
+        std::cerr << "[esp_manager.cpp] [ESP] socket() 실패: " << std::strerror(errno)
                   << std::endl;
         return false;
     }
 
     int opt = 1;
     if (::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) != 0) {
-        std::cerr << "[esp_manager.cpp] [ESP] setsockopt(SO_REUSEADDR) failed: "
+        std::cerr << "[esp_manager.cpp] [ESP] setsockopt(SO_REUSEADDR) 실패: "
                   << std::strerror(errno) << std::endl;
         ::close(fd);
         return false;
@@ -47,20 +47,20 @@ bool EspManager::start(std::atomic<bool>& app_running_flag) {
     addr.sin_family = AF_INET;
     addr.sin_port = htons(static_cast<std::uint16_t>(config_.port));
     if (::inet_pton(AF_INET, config_.bind_ip.c_str(), &addr.sin_addr) != 1) {
-        std::cerr << "[esp_manager.cpp] [ESP] invalid bind IP: " << config_.bind_ip << std::endl;
+        std::cerr << "[esp_manager.cpp] [ESP] 잘못된 bind IP: " << config_.bind_ip << std::endl;
         ::close(fd);
         return false;
     }
 
     if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-        std::cerr << "[esp_manager.cpp] [ESP] bind() failed: " << std::strerror(errno)
+        std::cerr << "[esp_manager.cpp] [ESP] bind() 실패: " << std::strerror(errno)
                   << " (" << config_.bind_ip << ":" << config_.port << ")" << std::endl;
         ::close(fd);
         return false;
     }
 
     if (::listen(fd, 8) != 0) {
-        std::cerr << "[esp_manager.cpp] [ESP] listen() failed: " << std::strerror(errno)
+        std::cerr << "[esp_manager.cpp] [ESP] listen() 실패: " << std::strerror(errno)
                   << std::endl;
         ::close(fd);
         return false;
@@ -73,7 +73,7 @@ bool EspManager::start(std::atomic<bool>& app_running_flag) {
     accept_thread_ = std::thread(&EspManager::acceptLoop, this);
     startup_ready_thread_ = std::thread(&EspManager::sendStartupReadyAfterDelay, this);
 
-    std::cout << "[esp_manager.cpp] [ESP] listening on " << config_.bind_ip << ":"
+    std::cout << "[esp_manager.cpp] [ESP] 리스닝 시작: " << config_.bind_ip << ":"
               << config_.port << ", max_clients=" << config_.max_clients << std::endl;
     return true;
 }
@@ -103,42 +103,77 @@ void EspManager::stop() {
     clients_.clear();
 }
 
-bool EspManager::publishFraudBbox(const FraudBboxPayload& payload) {
+void EspManager::setClientTrackObjectId(const std::string& object_id) {
+    std::string ended_fraud_object_id;
+    {
+        std::lock_guard<std::mutex> lock(clients_mutex_);
+        client_track_object_id_ = object_id;
+        if (!fraud_track_object_id_.empty()) {
+            ended_fraud_object_id = fraud_track_object_id_;
+            fraud_track_object_id_.clear();
+        }
+    }
+
+    if (!ended_fraud_object_id.empty()) {
+        publishTrackEnd(ended_fraud_object_id, "CLIENT_TRACK");
+    }
+}
+
+void EspManager::clearClientTrackObjectId() {
+    std::lock_guard<std::mutex> lock(clients_mutex_);
+    client_track_object_id_.clear();
+}
+
+bool EspManager::publishFraudTrackPosIfIdle(const TrackPosPayload& payload) {
     if (!server_running_.load()) return false;
+    if (payload.object_id.empty()) return false;
     if (payload.left < 0.0f || payload.top < 0.0f || payload.right < payload.left ||
         payload.bottom < payload.top) {
         return false;
     }
 
-    char line[256];
-    const float cx = (payload.left + payload.right) * 0.5f;
-    const float cy = (payload.top + payload.bottom) * 0.5f;
-    const float width = payload.right - payload.left;
-    const float height = payload.bottom - payload.top;
-    const int line_len = std::snprintf(
-        line, sizeof(line),
-        "FRAUD_BBOX|%s|%s|%s|CX=%.0f|CY=%.0f|W=%.0f|H=%.0f\n",
-        payload.object_id.c_str(), payload.card_age_text.c_str(), payload.age.c_str(),
-        cx, cy, width, height);
-    if (line_len <= 0 || line_len >= static_cast<int>(sizeof(line))) {
-        return false;
+    std::string ended_fraud_object_id;
+    bool send_start = false;
+    {
+        std::lock_guard<std::mutex> lock(clients_mutex_);
+        if (!client_track_object_id_.empty()) {
+            return false;
+        }
+        if (fraud_track_object_id_ != payload.object_id) {
+            ended_fraud_object_id = fraud_track_object_id_;
+            send_start = true;
+            fraud_track_object_id_ = payload.object_id;
+        }
+        fraud_track_last_sent_at_ = std::chrono::steady_clock::now();
     }
 
-    std::lock_guard<std::mutex> lock(clients_mutex_);
-    if (clients_.empty()) {
-        std::cout << "[esp_manager.cpp] [ESP] no connected clients for fraud bbox: object_id="
-                  << payload.object_id << std::endl;
-        return false;
+    if (!ended_fraud_object_id.empty()) {
+        publishTrackEnd(ended_fraud_object_id, "SWITCH");
+    }
+    if (send_start) {
+        publishTrackStart(payload.object_id);
     }
 
-    const bool delivered =
-        broadcastLineLocked(line, static_cast<std::size_t>(line_len), true);
+    return publishTrackPos(payload);
+}
 
-    if (delivered) {
-        std::cout << "[esp_manager.cpp] [ESP] sent fraud bbox: object_id=" << payload.object_id
-                  << ", clients=" << clients_.size() << std::endl;
+bool EspManager::expireFraudTrackIfStale(std::chrono::seconds max_idle) {
+    if (!server_running_.load()) return false;
+
+    std::string ended_fraud_object_id;
+    {
+        std::lock_guard<std::mutex> lock(clients_mutex_);
+        if (!client_track_object_id_.empty() || fraud_track_object_id_.empty()) {
+            return false;
+        }
+        if ((std::chrono::steady_clock::now() - fraud_track_last_sent_at_) <= max_idle) {
+            return false;
+        }
+        ended_fraud_object_id = fraud_track_object_id_;
+        fraud_track_object_id_.clear();
     }
-    return delivered;
+
+    return publishTrackEnd(ended_fraud_object_id, "STALE");
 }
 
 bool EspManager::publishTrackPos(const TrackPosPayload& payload) {
@@ -149,12 +184,17 @@ bool EspManager::publishTrackPos(const TrackPosPayload& payload) {
         return false;
     }
 
-    char line[320];
+    const float cx = (payload.left + payload.right) * 0.5f;
+    const float cy = (payload.top + payload.bottom) * 0.5f;
+    const float width = payload.right - payload.left;
+    const float height = payload.bottom - payload.top;
+
+    char line[384];
     const int line_len = std::snprintf(
         line, sizeof(line),
-        "TRACK_POS|%s|L=%.1f|T=%.1f|R=%.1f|B=%.1f|X=%.1f|Y=%.1f|TAG=%s\n",
+        "TRACK_POS|%s|L=%.1f|T=%.1f|R=%.1f|B=%.1f|X=%.1f|Y=%.1f|CX=%.1f|CY=%.1f|W=%.1f|H=%.1f\n",
         payload.object_id.c_str(), payload.left, payload.top, payload.right, payload.bottom,
-        payload.x, payload.y, payload.tag_time.c_str());
+        payload.x, payload.y, cx, cy, width, height);
     if (line_len <= 0 || line_len >= static_cast<int>(sizeof(line))) {
         return false;
     }
@@ -162,6 +202,31 @@ bool EspManager::publishTrackPos(const TrackPosPayload& payload) {
     std::lock_guard<std::mutex> lock(clients_mutex_);
     if (clients_.empty()) return false;
     return broadcastLineLocked(line, static_cast<std::size_t>(line_len), false);
+}
+
+bool EspManager::publishTrackChangeSignal(const std::string& from_object_id,
+                                          const std::string& to_object_id) {
+    if (!server_running_.load()) return false;
+    if (from_object_id.empty() || to_object_id.empty()) return false;
+
+    std::string line = "TRACK_SWITCH|FROM=" + from_object_id + "|TO=" + to_object_id;
+    line.push_back('\n');
+
+    std::lock_guard<std::mutex> lock(clients_mutex_);
+    if (clients_.empty()) return false;
+    return broadcastLineLocked(line.c_str(), line.size(), false);
+}
+
+bool EspManager::publishTrackStart(const std::string& object_id) {
+    if (!server_running_.load()) return false;
+    if (object_id.empty()) return false;
+
+    std::string line = "TRACK_START|" + object_id;
+    line.push_back('\n');
+
+    std::lock_guard<std::mutex> lock(clients_mutex_);
+    if (clients_.empty()) return false;
+    return broadcastLineLocked(line.c_str(), line.size(), false);
 }
 
 bool EspManager::publishTrackEnd(const std::string& object_id, const std::string& reason) {
@@ -187,8 +252,8 @@ bool EspManager::broadcastLineLocked(const char* data,
     for (auto it = clients_.begin(); it != clients_.end();) {
         if (!sendLineLocked(*it, data, len)) {
             if (verbose_error_log) {
-                std::cout << "[esp_manager.cpp] [ESP] send failed, closing fd=" << *it
-                          << " err=" << errno << " (" << std::strerror(errno) << ")"
+                std::cout << "[esp_manager.cpp] [ESP] 전송 실패, fd 종료=" << *it
+                          << " 오류=" << errno << " (" << std::strerror(errno) << ")"
                           << std::endl;
             }
             ::close(*it);
@@ -219,14 +284,14 @@ void EspManager::sendStartupReadyAfterDelay() {
     startup_ready_announced_ = true;
     std::lock_guard<std::mutex> lock(clients_mutex_);
     if (clients_.empty()) {
-        std::cout << "[esp_manager.cpp] [ESP] startup ready message queued but no clients connected."
+        std::cout << "[esp_manager.cpp] [ESP] 시작 준비 메시지 대기열 등록됨(연결된 클라이언트 없음)."
                   << std::endl;
         return;
     }
 
     broadcastLineLocked(kStartupReadyMessage, std::strlen(kStartupReadyMessage), true);
 
-    std::cout << "[esp_manager.cpp] [ESP] startup ready message sent." << std::endl;
+    std::cout << "[esp_manager.cpp] [ESP] 시작 준비 메시지 전송 완료." << std::endl;
 }
 
 void EspManager::acceptLoop() {
@@ -239,7 +304,7 @@ void EspManager::acceptLoop() {
         if (poll_ret < 0) {
             if (errno == EINTR) continue;
             if (!server_running_.load()) break;
-            std::cerr << "[esp_manager.cpp] [ESP] poll() failed: " << std::strerror(errno)
+            std::cerr << "[esp_manager.cpp] [ESP] poll() 실패: " << std::strerror(errno)
                       << std::endl;
             break;
         }
@@ -252,14 +317,14 @@ void EspManager::acceptLoop() {
         if (client_fd < 0) {
             if (!server_running_.load()) break;
             if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
-            std::cerr << "[esp_manager.cpp] [ESP] accept() failed: " << std::strerror(errno)
+            std::cerr << "[esp_manager.cpp] [ESP] accept() 실패: " << std::strerror(errno)
                       << std::endl;
             continue;
         }
 
         const std::string client_ip = peer_ip_to_string(peer_addr);
         if (!config_.allow_ips.empty() && !is_ip_allowed(config_.allow_ips, client_ip)) {
-            std::cout << "[esp_manager.cpp] [ESP] reject client by allowlist: ip=" << client_ip
+            std::cout << "[esp_manager.cpp] [ESP] 허용 IP 목록으로 클라이언트 거부: ip=" << client_ip
                       << std::endl;
             ::close(client_fd);
             continue;
@@ -268,7 +333,7 @@ void EspManager::acceptLoop() {
         {
             std::lock_guard<std::mutex> lock(clients_mutex_);
             if (clients_.size() >= config_.max_clients) {
-                std::cout << "[esp_manager.cpp] [ESP] reject client: max_clients="
+                std::cout << "[esp_manager.cpp] [ESP] 클라이언트 거부: max_clients="
                           << config_.max_clients << std::endl;
                 ::close(client_fd);
                 continue;
@@ -277,8 +342,8 @@ void EspManager::acceptLoop() {
             if (startup_ready_announced_.load()) {
                 if (!sendLineLocked(client_fd, kStartupReadyMessage,
                                     std::strlen(kStartupReadyMessage))) {
-                    std::cout << "[esp_manager.cpp] [ESP] startup ready send failed on connect, closing fd="
-                              << client_fd << " err=" << errno << " (" << std::strerror(errno)
+                    std::cout << "[esp_manager.cpp] [ESP] 연결 직후 시작 준비 전송 실패, fd 종료="
+                              << client_fd << " 오류=" << errno << " (" << std::strerror(errno)
                               << ")" << std::endl;
                     ::close(client_fd);
                     clients_.pop_back();
@@ -287,9 +352,9 @@ void EspManager::acceptLoop() {
             }
         }
 
-        std::cout << "[esp_manager.cpp] [ESP] client connected: ip=" << client_ip << ":"
+        std::cout << "[esp_manager.cpp] [ESP] 클라이언트 연결됨: ip=" << client_ip << ":"
                   << ntohs(peer_addr.sin_port) << ", fd=" << client_fd << std::endl;
     }
 
-    std::cout << "[esp_manager.cpp] [ESP] accept loop stopped." << std::endl;
+    std::cout << "[esp_manager.cpp] [ESP] accept 루프 종료." << std::endl;
 }

@@ -187,7 +187,7 @@ void log_allowlist_mode(const char* env_name, const std::unordered_set<std::stri
         return;
     }
 
-    std::cout << "[main.cpp] [Security] " << env_name << " enabled with " << allowlist.size()
+    std::cout << "[main.cpp] [Security] " << env_name << " 활성화됨: " << allowlist.size()
               << " IP(s)." << std::endl;
 }
 
@@ -218,7 +218,7 @@ void log_transport_mode(const SecurityRuntimeOptions& cfg) {
 }
 
 void log_esp_transport_mode(const SecurityRuntimeOptions& cfg) {
-    std::cout << "[main.cpp] [ESP] enabled=" << (cfg.esp_tcp_enable ? "on" : "off")
+    std::cout << "[main.cpp] [ESP] 활성화=" << (cfg.esp_tcp_enable ? "on" : "off")
               << ", bind_ip=" << cfg.esp_tcp_bind_ip
               << ", port=" << cfg.esp_tcp_port
               << ", max_clients=" << cfg.esp_tcp_max_clients << std::endl;
@@ -227,7 +227,7 @@ void log_esp_transport_mode(const SecurityRuntimeOptions& cfg) {
             std::cout << "[main.cpp] [ESP] SFEPS_ESP_TCP_ALLOW_IPS is empty: allow-all within bound interface."
                       << std::endl;
         } else {
-            std::cout << "[main.cpp] [ESP] SFEPS_ESP_TCP_ALLOW_IPS enabled with "
+            std::cout << "[main.cpp] [ESP] SFEPS_ESP_TCP_ALLOW_IPS 활성화됨: "
                       << cfg.esp_tcp_allow_ips.size() << " IP(s)." << std::endl;
         }
     }

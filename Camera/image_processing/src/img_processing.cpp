@@ -314,7 +314,7 @@ static double calculateEntropy(const cv::Mat& frame) {
 // =====================================================================
 // processISPAndGetBest — 공개 인터페이스
 // 입력: CV_8UC3 BGR (runPureISP 결과 or libcamera BGR 직접 입력)
-// 출력: best_frame (엔트로피 최고 후보), tuning_view_out (8분할 비교 뷰)
+// 출력: best_frame (엔트로피 최고 후보), tuning_viesw_out (8분할 비교 뷰)
 // =====================================================================
 cv::Mat processISPAndGetBest(const cv::Mat& raw_frame_in, cv::Mat& tuning_view_out) {
     if (raw_frame_in.empty()) return raw_frame_in;

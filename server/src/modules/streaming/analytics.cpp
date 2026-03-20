@@ -200,14 +200,14 @@ bool AnalyticsProcessor::prepareStatements() {
 
     analyticsInsertStmt = mysql_stmt_init(conn);
     if (analyticsInsertStmt == nullptr) {
-        std::cerr << "[Analytics DB Error] mysql_stmt_init() failed for analytics_logs insert"
+        std::cerr << "[Analytics DB Error] analytics_logs insert용 mysql_stmt_init() 실패"
                   << std::endl;
         return false;
     }
 
     if (mysql_stmt_prepare(analyticsInsertStmt, kAnalyticsInsertQuery,
                            std::strlen(kAnalyticsInsertQuery)) != 0) {
-        std::cerr << "[Analytics DB Error] prepare failed: "
+        std::cerr << "[Analytics DB Error] prepare 실패: "
                   << mysql_stmt_error(analyticsInsertStmt) << std::endl;
         mysql_stmt_close(analyticsInsertStmt);
         analyticsInsertStmt = nullptr;
@@ -229,13 +229,13 @@ bool AnalyticsProcessor::start() {
 
     conn = mysql_init(nullptr);
     if (conn == nullptr) {
-        std::cerr << "[Analytics] mysql_init failed." << std::endl;
+        std::cerr << "[Analytics] mysql_init 실패." << std::endl;
         return false;
     }
 
     if (mysql_real_connect(conn, host.c_str(), user.c_str(), pass.c_str(), db.c_str(), 0, nullptr, 0) ==
         nullptr) {
-        std::cerr << "[Analytics] DB connect error: " << mysql_error(conn) << std::endl;
+        std::cerr << "[Analytics] DB 연결 오류: " << mysql_error(conn) << std::endl;
         mysql_close(conn);
         conn = nullptr;
         return false;
@@ -250,7 +250,7 @@ bool AnalyticsProcessor::start() {
 
     running = true;
     worker = std::thread(&AnalyticsProcessor::workerLoop, this);
-    std::cout << "[analytics.cpp] [Analytics] started." << std::endl;
+    std::cout << "[analytics.cpp] [Analytics] 시작됨." << std::endl;
     return true;
 }
 
@@ -283,8 +283,8 @@ void AnalyticsProcessor::stop() {
     }
 }
 
-void AnalyticsProcessor::setFraudBBoxCallback(FraudBBoxCallback callback) {
-    fraud_bbox_callback = std::move(callback);
+void AnalyticsProcessor::setTrackPosCallback(TrackPosCallback callback) {
+    track_pos_callback = std::move(callback);
 }
 
 void AnalyticsProcessor::setRfidPairedCallback(RfidPairedCallback callback) {
@@ -363,7 +363,7 @@ void AnalyticsProcessor::pruneExpiredPendingLocked(std::chrono::steady_clock::ti
 
     const std::uint64_t total_expired = dropped_pending_expired_count.fetch_add(expired) + expired;
     if (should_sample(total_expired, drop_log_interval)) {
-        std::cout << "[analytics.cpp] [Drop] expired pending object ids: expired=" << expired
+        std::cout << "[analytics.cpp] [Drop] 만료된 pending object id 제거: 만료 수=" << expired
                   << ", total_expired=" << total_expired
                   << ", pending_remaining=" << pending_queue.size() << std::endl;
     }
@@ -415,7 +415,7 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
     bool should_notify_worker = false;
     const auto now = std::chrono::steady_clock::now();
     std::vector<std::string> outbound_alerts;
-    std::vector<FraudBBoxPayload> outbound_esp_bbox;
+    std::vector<TrackPosPayload> outbound_track_pos;
     std::vector<OutlineDecisionPayload> outbound_outline_decisions;
 
     {
@@ -473,7 +473,7 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
 
                     const std::uint64_t dropped = ++dropped_pending_overflow_count;
                     if (should_sample(dropped, drop_log_interval)) {
-                        std::cout << "[analytics.cpp] [Drop] pending object queue overflow: max="
+                        std::cout << "[analytics.cpp] [Drop] pending object 큐 초과: 최대="
                                   << max_pending_size << ", dropped_count=" << dropped << std::endl;
                     }
                 }
@@ -560,7 +560,7 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
                 q.pop();
                 const std::uint64_t dropped = ++dropped_queue_count;
                 if (should_sample(dropped, drop_log_interval)) {
-                    std::cout << "[analytics.cpp] [Drop] analytics queue overflow: max="
+                    std::cout << "[analytics.cpp] [Drop] analytics 큐 초과: 최대="
                               << max_queue_size << ", dropped_count=" << dropped << std::endl;
                 }
             }
@@ -592,15 +592,15 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
                 final_out.bbox_left >= 0.0f && final_out.bbox_top >= 0.0f &&
                 final_out.bbox_right >= final_out.bbox_left &&
                 final_out.bbox_bottom >= final_out.bbox_top) {
-                FraudBBoxPayload bbox_payload;
-                bbox_payload.object_id = final_out.object_id;
-                bbox_payload.card_age_text = final_out.card_age_text;
-                bbox_payload.age = final_out.age;
-                bbox_payload.left = final_out.bbox_left;
-                bbox_payload.top = final_out.bbox_top;
-                bbox_payload.right = final_out.bbox_right;
-                bbox_payload.bottom = final_out.bbox_bottom;
-                outbound_esp_bbox.push_back(std::move(bbox_payload));
+                TrackPosPayload track_pos_payload;
+                track_pos_payload.object_id = final_out.object_id;
+                track_pos_payload.left = final_out.bbox_left;
+                track_pos_payload.top = final_out.bbox_top;
+                track_pos_payload.right = final_out.bbox_right;
+                track_pos_payload.bottom = final_out.bbox_bottom;
+                track_pos_payload.x = final_out.center_x;
+                track_pos_payload.y = final_out.center_y;
+                outbound_track_pos.push_back(std::move(track_pos_payload));
             }
         }
     }
@@ -608,7 +608,7 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
     if (line_limit_hit) {
         const std::uint64_t dropped = ++dropped_line_limit_count;
         if (should_sample(dropped, drop_log_interval)) {
-            std::cout << "[analytics.cpp] [Drop] human object ids exceeded limit: max="
+            std::cout << "[analytics.cpp] [Drop] human object id 제한 초과: 최대="
                       << max_lines_per_batch << ", dropped_count=" << dropped << std::endl;
         }
     }
@@ -616,9 +616,9 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
     for (const auto& msg : outbound_alerts) {
         send_alert_to_clients(msg);
     }
-    if (fraud_bbox_callback) {
-        for (const auto& payload : outbound_esp_bbox) {
-            fraud_bbox_callback(payload);
+    if (track_pos_callback) {
+        for (const auto& payload : outbound_track_pos) {
+            track_pos_callback(payload);
         }
     }
     if (outline_decision_callback) {
@@ -647,7 +647,7 @@ void AnalyticsProcessor::onRfidRead(const std::string& card_age_text_raw) {
             static std::uint64_t no_pending_count = 0;
             ++no_pending_count;
             if (should_sample(no_pending_count, drop_log_interval)) {
-                std::cout << "[analytics.cpp] [Matcher] RFID read ignored: no pending object"
+                std::cout << "[analytics.cpp] [Matcher] RFID 읽기 무시: pending object 없음"
                           << std::endl;
             }
             return;
@@ -666,7 +666,7 @@ void AnalyticsProcessor::onRfidRead(const std::string& card_age_text_raw) {
     static std::uint64_t paired_count = 0;
     ++paired_count;
     if (should_sample(paired_count, std::max<std::size_t>(1000, drop_log_interval))) {
-        std::cout << "[analytics.cpp] [Matcher] RFID paired with enterline object_id="
+        std::cout << "[analytics.cpp] [Matcher] RFID enterline 매칭됨: object_id="
                   << paired_object_id << ", card_age_text=" << card_age.canonical_text
                   << ", paired_count=" << paired_count << std::endl;
     }
@@ -679,7 +679,7 @@ bool AnalyticsProcessor::insertAnalyticsRow(const FraudRecord& record) {
     if (conn == nullptr || analyticsInsertStmt == nullptr) return false;
 
     if (mysql_stmt_reset(analyticsInsertStmt) != 0) {
-        std::cerr << "[Analytics DB Error] stmt reset failed: "
+        std::cerr << "[Analytics DB Error] stmt reset 실패: "
                   << mysql_stmt_error(analyticsInsertStmt) << std::endl;
         return false;
     }
@@ -712,13 +712,13 @@ bool AnalyticsProcessor::insertAnalyticsRow(const FraudRecord& record) {
     params[3].is_unsigned = 0;
 
     if (mysql_stmt_bind_param(analyticsInsertStmt, params) != 0) {
-        std::cerr << "[Analytics DB Error] stmt bind failed: "
+        std::cerr << "[Analytics DB Error] stmt bind 실패: "
                   << mysql_stmt_error(analyticsInsertStmt) << std::endl;
         return false;
     }
 
     if (mysql_stmt_execute(analyticsInsertStmt) != 0) {
-        std::cerr << "[Analytics DB Error] stmt execute failed: "
+        std::cerr << "[Analytics DB Error] stmt execute 실패: "
                   << mysql_stmt_error(analyticsInsertStmt) << std::endl;
         return false;
     }
@@ -746,7 +746,7 @@ void AnalyticsProcessor::workerLoop() {
             if (!record.is_fraud) continue;
 
             if (!insertAnalyticsRow(record)) {
-                std::cerr << "[Analytics DB Error] failed to insert fraud row: object_id="
+                std::cerr << "[Analytics DB Error] fraud row insert 실패: object_id="
                           << record.object_id << ", card_age_text=" << record.card_age_text
                           << std::endl;
             }
