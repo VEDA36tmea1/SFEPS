@@ -45,6 +45,7 @@ pipeline {
         SFEPS_SQUISH_SERVER = "${env.SFEPS_SQUISH_SERVER ?: ''}"
         SFEPS_SQUISH_SUITE_PATH = "${env.SFEPS_SQUISH_SUITE_PATH ?: 'tests/squish/suite_sfeps/suite_sfeps'}"
         SFEPS_SQUISH_AUT_PATH = "${env.SFEPS_SQUISH_AUT_PATH ?: ''}"
+        SFEPS_SQUISH_REQUIRED = "${env.SFEPS_SQUISH_REQUIRED ?: '1'}"
         SFEPS_WINDOWS_GUI_AGENT_LABEL = "${env.SFEPS_WINDOWS_GUI_AGENT_LABEL ?: 'windows-gui'}"
 
     }
@@ -422,8 +423,23 @@ PY
                                                         @echo off
                                                         if not exist reports mkdir reports
 
+                                                        set "SQUISH_REQUIRED=1"
+
                                                         set "SQUISH_RUNNER=%SFEPS_SQUISH_RUNNER%"
-                                                        if "%SQUISH_RUNNER%"=="" set "SQUISH_RUNNER=squishrunner.exe"
+                                                        if "%SQUISH_RUNNER%"=="" (
+                                                            for /f "delims=" %%R in ('where squishrunner.exe 2^>nul') do (
+                                                                set "SQUISH_RUNNER=%%R"
+                                                                goto :runner_found
+                                                            )
+                                                            if exist "C:\\Squish\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\Squish\\bin\\squishrunner.exe"
+                                                            if "%SQUISH_RUNNER%"=="" if exist "C:\\froglogic\\Squish\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\froglogic\\Squish\\bin\\squishrunner.exe"
+                                                            if "%SQUISH_RUNNER%"=="" if exist "C:\\Program Files\\Squish\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\Program Files\\Squish\\bin\\squishrunner.exe"
+                                                            if "%SQUISH_RUNNER%"=="" if exist "C:\\Program Files\\froglogic\\Squish\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\Program Files\\froglogic\\Squish\\bin\\squishrunner.exe"
+                                                            if "%SQUISH_RUNNER%"=="" if exist "C:\\Program Files ^(x86^)\\Squish\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\Program Files ^(x86^)\\Squish\\bin\\squishrunner.exe"
+                                                            if "%SQUISH_RUNNER%"=="" if exist "C:\\Program Files ^(x86^)\\froglogic\\Squish\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\Program Files ^(x86^)\\froglogic\\Squish\\bin\\squishrunner.exe"
+                                                            if "%SQUISH_RUNNER%"=="" if exist "C:\\Users\\2-08\\Squish for Qt 9.2.0\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\Users\\2-08\\Squish for Qt 9.2.0\\bin\\squishrunner.exe"
+                                                        )
+                                                        :runner_found
 
                                                         set "SQUISH_SERVER=%SFEPS_SQUISH_SERVER%"
                                                         if "%SQUISH_SERVER%"=="" (
@@ -439,37 +455,83 @@ PY
                                                                 set "AUT_PATH=client\\build-mingw\\appHanwhaVisionSFEPS.exe"
                                                             ) else if exist "client\\build\\appHanwhaVisionSFEPS.exe" (
                                                                 set "AUT_PATH=client\\build\\appHanwhaVisionSFEPS.exe"
+                                                            ) else if exist "C:\\Jenkins\\workspace\\SFEPS\\client\\build-mingw\\appHanwhaVisionSFEPS.exe" (
+                                                                set "AUT_PATH=C:\\Jenkins\\workspace\\SFEPS\\client\\build-mingw\\appHanwhaVisionSFEPS.exe"
+                                                            ) else if exist "C:\\Users\\2-08\\Desktop\\SFEPS\\client\\build-mingw\\appHanwhaVisionSFEPS.exe" (
+                                                                set "AUT_PATH=C:\\Users\\2-08\\Desktop\\SFEPS\\client\\build-mingw\\appHanwhaVisionSFEPS.exe"
+                                                            ) else if exist "C:\\Users\\2-08\\Desktop\\SFEPS\\client\\build\\appHanwhaVisionSFEPS.exe" (
+                                                                set "AUT_PATH=C:\\Users\\2-08\\Desktop\\SFEPS\\client\\build\\appHanwhaVisionSFEPS.exe"
                                                             )
+                                                        )
+
+                                                        if "%SQUISH_RUNNER%"=="" (
+                                                            echo squishrunner not found on Windows GUI agent.
+                                                            echo Hint: set SFEPS_SQUISH_RUNNER to full path, e.g. C:\\Squish\\bin\\squishrunner.exe
+                                                            exit /b 1
                                                         )
 
                                                         where "%SQUISH_RUNNER%" >nul 2>nul
                                                         if errorlevel 1 (
                                                             if not exist "%SQUISH_RUNNER%" (
-                                                                echo squishrunner not found on Windows GUI agent. Skipping Squish UI tests.
-                                                                exit /b 0
-                                                            )
-                                                        )
-
-                                                        set "STARTED_SQUISH_SERVER=0"
-                                                        tasklist /FI "IMAGENAME eq squishserver.exe" | find /I "squishserver.exe" >nul
-                                                        if errorlevel 1 (
-                                                            if not exist "%SQUISH_SERVER%" (
-                                                                echo squishserver not found on Windows GUI agent: %SQUISH_SERVER%
+                                                                echo squishrunner path does not exist: %SQUISH_RUNNER%
                                                                 exit /b 1
                                                             )
-                                                            start "squishserver" /MIN "%SQUISH_SERVER%" --verbose
-                                                            timeout /t 2 >nul
-                                                            set "STARTED_SQUISH_SERVER=1"
                                                         )
 
+                                                        echo Using squishrunner: %SQUISH_RUNNER%
+
+                                                        set "STARTED_SQUISH_SERVER=0"
+                                                        echo Killing any pre-existing squishserver instances...
+                                                        taskkill /F /IM squishserver.exe >nul 2>nul
+                                                        timeout /t 1 >nul
+                                                        
+                                                        if not exist "%SQUISH_SERVER%" (
+                                                            echo squishserver not found on Windows GUI agent: %SQUISH_SERVER%
+                                                            exit /b 1
+                                                        )
+                                                        
+                                                        echo Starting squishserver: %SQUISH_SERVER%
+                                                        start "squishserver" /B "%SQUISH_SERVER%" > "%TEMP%\\squishserver.log" 2>&1
+                                                        echo Waiting for squishserver to initialize...
+                                                        
+                                                        timeout /t 1 >nul
+                                                        tasklist | find /I "squishserver.exe"
+                                                        if errorlevel 1 (
+                                                            echo ERROR: squishserver process did not start!
+                                                            if exist "%TEMP%\\squishserver.log" type "%TEMP%\\squishserver.log"
+                                                            exit /b 1
+                                                        )
+                                                        echo squishserver process is running
+                                                        
+                                                        timeout /t 3 >nul
+                                                        
+                                                        echo Checking if squishserver port 4322 is open...
+                                                        netstat -ano | find ":4322" > "%TEMP%\\netstat_result.txt"
+                                                        if errorlevel 1 (
+                                                            echo ERROR: squishserver port 4322 is NOT listening!
+                                                            netstat -ano
+                                                            taskkill /F /IM squishserver.exe >nul 2>nul
+                                                            exit /b 1
+                                                        )
+                                                        echo Squish server port 4322 is LISTENING (confirmed by netstat)
+                                                        type "%TEMP%\\netstat_result.txt"
+                                                        set "STARTED_SQUISH_SERVER=1"
+
                                                         if "%AUT_PATH%"=="" (
-                                                            echo AUT binary not found on Windows GUI agent. Set SFEPS_SQUISH_AUT_PATH or build the client on that node. Skipping Squish UI tests.
-                                                            exit /b 0
+                                                            echo AUT binary not found on Windows GUI agent.
+                                                            echo Set SFEPS_SQUISH_AUT_PATH or build the client on that node.
+                                                            echo Checked:
+                                                            echo  - client\\build-mingw\\appHanwhaVisionSFEPS.exe
+                                                            echo  - client\\build\\appHanwhaVisionSFEPS.exe
+                                                            echo  - C:\\Jenkins\\workspace\\SFEPS\\client\\build-mingw\\appHanwhaVisionSFEPS.exe
+                                                            echo  - C:\\Users\\2-08\\Desktop\\SFEPS\\client\\build-mingw\\appHanwhaVisionSFEPS.exe
+                                                            echo  - C:\\Users\\2-08\\Desktop\\SFEPS\\client\\build\\appHanwhaVisionSFEPS.exe
+                                                            exit /b 1
                                                         )
 
                                                         if not exist "%AUT_PATH%" (
                                                             echo AUT binary path does not exist on Windows GUI agent: %AUT_PATH%
-                                                            exit /b 0
+                                                            exit /b 1
                                                         )
 
                                                         for %%T in (
