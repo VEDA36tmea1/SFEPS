@@ -219,13 +219,13 @@ Environment: Windows 11(QT Client), Raspberry Pi(Server), Camera(PNO-A9081R), ST
 - **Execution**: Manual
 - **Pre-condition**: 의심 이벤트 목록 표시 상태
 - **Steps**
-  1. 이벤트 1건 선택/클릭
+  1. 이벤트 목록에서 이벤트 1건 Detail View 버튼 클릭
   2. 상세 팝업 내 각 필드 존재 및 값 표시 확인
 - **Expected Result**
   - 상세 팝업(Detail View)이 표시됨
   - 얼굴 스크린샷(또는 캡처 프레임) 표시
   - 카드 정보 표시
-  - 추정 나이 표시(Mock 포함)
+  - 추정 나이 표시
   - 발생 시각/게이트ID 표시
 
 ### TC-FUNC-UI-03 로그아웃 버튼 클릭 시 로그아웃 요청 전송 및 로그인 화면 복귀

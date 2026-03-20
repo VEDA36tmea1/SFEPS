@@ -513,6 +513,11 @@ PY
                             echo 'missing env file: ${SFEPS_REMOTE_ENV_FILE}' >&2
                             exit 1
                           fi
+                          if grep -nE '^[[:space:]]*(<<<<<<<|=======|>>>>>>>)' '${SFEPS_REMOTE_ENV_FILE}' >/dev/null; then
+                            echo 'env file has unresolved merge conflict markers: ${SFEPS_REMOTE_ENV_FILE}' >&2
+                            grep -nE '^[[:space:]]*(<<<<<<<|=======|>>>>>>>)' '${SFEPS_REMOTE_ENV_FILE}' || true
+                            exit 1
+                          fi
                           if [ ! -S '${SFEPS_REMOTE_MYSQL_SOCK_DIR}/mysqld.sock' ]; then
                             echo 'missing mysql socket: ${SFEPS_REMOTE_MYSQL_SOCK_DIR}/mysqld.sock' >&2
                             exit 1
@@ -596,6 +601,11 @@ PY
                           mkdir -p '${SFEPS_VIDEO_DIR}'
                           if [ ! -r '${SFEPS_REMOTE_ENV_FILE}' ]; then
                             echo 'missing env file: ${SFEPS_REMOTE_ENV_FILE}' >&2
+                            exit 1
+                          fi
+                          if grep -nE '^[[:space:]]*(<<<<<<<|=======|>>>>>>>)' '${SFEPS_REMOTE_ENV_FILE}' >/dev/null; then
+                            echo 'env file has unresolved merge conflict markers: ${SFEPS_REMOTE_ENV_FILE}' >&2
+                            grep -nE '^[[:space:]]*(<<<<<<<|=======|>>>>>>>)' '${SFEPS_REMOTE_ENV_FILE}' || true
                             exit 1
                           fi
                           if [ ! -S '${SFEPS_REMOTE_MYSQL_SOCK_DIR}/mysqld.sock' ]; then
