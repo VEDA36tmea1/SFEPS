@@ -487,8 +487,15 @@ PY
                                                                 echo squishserver not found on Windows GUI agent: %SQUISH_SERVER%
                                                                 exit /b 1
                                                             )
-                                                            start "squishserver" /MIN "%SQUISH_SERVER%" --verbose
-                                                            timeout /t 2 >nul
+                                                            echo Starting squishserver: %SQUISH_SERVER%
+                                                            start "squishserver" /B "%SQUISH_SERVER%"
+                                                            timeout /t 10 >nul
+                                                            powershell -NoProfile -Command "for ($i=0; $i -lt 30; $i++) { try { [System.Net.Sockets.TcpClient]::new().Connect('127.0.0.1', 4322); Write-Host 'Squish server port 4322 is ready'; exit 0 } catch { Start-Sleep -Milliseconds 500 } } Write-Error 'Squish server port 4322 never opened'; exit 1"
+                                                            if errorlevel 1 (
+                                                                echo Squish server failed to open port 4322 in time
+                                                                taskkill /F /IM squishserver.exe >nul 2>nul
+                                                                exit /b 1
+                                                            )
                                                             set "STARTED_SQUISH_SERVER=1"
                                                         )
 
