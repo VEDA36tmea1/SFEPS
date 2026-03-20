@@ -423,11 +423,7 @@ PY
                                                         @echo off
                                                         if not exist reports mkdir reports
 
-                                                        set "SQUISH_REQUIRED=%SFEPS_SQUISH_REQUIRED%"
-                                                        if "%SQUISH_REQUIRED%"=="" set "SQUISH_REQUIRED=1"
-                                                        if /I "%SQUISH_REQUIRED%"=="false" set "SQUISH_REQUIRED=0"
-                                                        if /I "%SQUISH_REQUIRED%"=="no" set "SQUISH_REQUIRED=0"
-                                                        if /I "%SQUISH_REQUIRED%"=="off" set "SQUISH_REQUIRED=0"
+                                                        set "SQUISH_REQUIRED=1"
 
                                                         set "SQUISH_RUNNER=%SFEPS_SQUISH_RUNNER%"
                                                         if "%SQUISH_RUNNER%"=="" (
@@ -437,6 +433,10 @@ PY
                                                             )
                                                             if exist "C:\\Squish\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\Squish\\bin\\squishrunner.exe"
                                                             if "%SQUISH_RUNNER%"=="" if exist "C:\\froglogic\\Squish\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\froglogic\\Squish\\bin\\squishrunner.exe"
+                                                            if "%SQUISH_RUNNER%"=="" if exist "C:\\Program Files\\Squish\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\Program Files\\Squish\\bin\\squishrunner.exe"
+                                                            if "%SQUISH_RUNNER%"=="" if exist "C:\\Program Files\\froglogic\\Squish\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\Program Files\\froglogic\\Squish\\bin\\squishrunner.exe"
+                                                            if "%SQUISH_RUNNER%"=="" if exist "C:\\Program Files (x86)\\Squish\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\Program Files (x86)\\Squish\\bin\\squishrunner.exe"
+                                                            if "%SQUISH_RUNNER%"=="" if exist "C:\\Program Files (x86)\\froglogic\\Squish\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\Program Files (x86)\\froglogic\\Squish\\bin\\squishrunner.exe"
                                                         )
                                                         :runner_found
 
@@ -458,25 +458,17 @@ PY
                                                         )
 
                                                         if "%SQUISH_RUNNER%"=="" (
-                                                            if "%SQUISH_REQUIRED%"=="1" (
-                                                                echo squishrunner not found on Windows GUI agent and SFEPS_SQUISH_REQUIRED=1.
-                                                                exit /b 1
-                                                            ) else (
-                                                                echo squishrunner not found on Windows GUI agent. Skipping Squish UI tests.
-                                                                exit /b 0
-                                                            )
+                                                            echo squishrunner not found on Windows GUI agent.
+                                                            echo PATH=%PATH%
+                                                            echo Hint: set SFEPS_SQUISH_RUNNER to full path, e.g. C:\\Squish\\bin\\squishrunner.exe
+                                                            exit /b 1
                                                         )
 
                                                         where "%SQUISH_RUNNER%" >nul 2>nul
                                                         if errorlevel 1 (
                                                             if not exist "%SQUISH_RUNNER%" (
-                                                                if "%SQUISH_REQUIRED%"=="1" (
-                                                                    echo squishrunner path does not exist and SFEPS_SQUISH_REQUIRED=1: %SQUISH_RUNNER%
-                                                                    exit /b 1
-                                                                ) else (
-                                                                    echo squishrunner path does not exist. Skipping Squish UI tests: %SQUISH_RUNNER%
-                                                                    exit /b 0
-                                                                )
+                                                                echo squishrunner path does not exist: %SQUISH_RUNNER%
+                                                                exit /b 1
                                                             )
                                                         )
 
@@ -495,24 +487,14 @@ PY
                                                         )
 
                                                         if "%AUT_PATH%"=="" (
-                                                            if "%SQUISH_REQUIRED%"=="1" (
-                                                                echo AUT binary not found on Windows GUI agent and SFEPS_SQUISH_REQUIRED=1.
-                                                                echo Set SFEPS_SQUISH_AUT_PATH or build the client on that node.
-                                                                exit /b 1
-                                                            ) else (
-                                                                echo AUT binary not found on Windows GUI agent. Set SFEPS_SQUISH_AUT_PATH or build the client on that node. Skipping Squish UI tests.
-                                                                exit /b 0
-                                                            )
+                                                            echo AUT binary not found on Windows GUI agent.
+                                                            echo Set SFEPS_SQUISH_AUT_PATH or build the client on that node.
+                                                            exit /b 1
                                                         )
 
                                                         if not exist "%AUT_PATH%" (
-                                                            if "%SQUISH_REQUIRED%"=="1" (
-                                                                echo AUT binary path does not exist on Windows GUI agent and SFEPS_SQUISH_REQUIRED=1: %AUT_PATH%
-                                                                exit /b 1
-                                                            ) else (
-                                                                echo AUT binary path does not exist on Windows GUI agent: %AUT_PATH%
-                                                                exit /b 0
-                                                            )
+                                                            echo AUT binary path does not exist on Windows GUI agent: %AUT_PATH%
+                                                            exit /b 1
                                                         )
 
                                                         for %%T in (
