@@ -481,23 +481,59 @@ PY
                                                         echo Using squishrunner: %SQUISH_RUNNER%
 
                                                         set "STARTED_SQUISH_SERVER=0"
-                                                        tasklist /FI "IMAGENAME eq squishserver.exe" | find /I "squishserver.exe" >nul
-                                                        if errorlevel 1 (
-                                                            if not exist "%SQUISH_SERVER%" (
-                                                                echo squishserver not found on Windows GUI agent: %SQUISH_SERVER%
-                                                                exit /b 1
-                                                            )
-                                                            echo Starting squishserver: %SQUISH_SERVER%
-                                                            start "squishserver" /B "%SQUISH_SERVER%"
-                                                            timeout /t 10 >nul
-                                                            powershell -NoProfile -Command "for ($i=0; $i -lt 30; $i++) { try { [System.Net.Sockets.TcpClient]::new().Connect('127.0.0.1', 4322); Write-Host 'Squish server port 4322 is ready'; exit 0 } catch { Start-Sleep -Milliseconds 500 } } Write-Error 'Squish server port 4322 never opened'; exit 1"
-                                                            if errorlevel 1 (
-                                                                echo Squish server failed to open port 4322 in time
-                                                                taskkill /F /IM squishserver.exe >nul 2>nul
-                                                                exit /b 1
-                                                            )
-                                                            set "STARTED_SQUISH_SERVER=1"
+                                                        echo Killing any pre-existing squishserver instances...
+                                                        taskkill /F /IM squishserver.exe >nul 2>nul
+                                                        timeout /t 1 >nul
+                                                        
+                                                        if not exist "%SQUISH_SERVER%" (
+                                                            echo squishserver not found on Windows GUI agent: %SQUISH_SERVER%
+                                                            exit /b 1
                                                         )
+                                                        
+                                                        echo Starting squishserver: %SQUISH_SERVER%
+                                                        start "squishserver" /B "%SQUISH_SERVER%" > "%TEMP%\squishserver.log" 2>&1
+                                                        echo Waiting for squishserver to initialize...
+                                                        
+                                                        timeout /t 1 >nul
+                                                        tasklist | find /I "squishserver.exe"
+                                                        if errorlevel 1 (
+                                                            echo ERROR: squishserver process did not start!
+                                                            if exist "%TEMP%\squishserver.log" type "%TEMP%\squishserver.log"
+                                                            exit /b 1
+                                                        )
+                                                        echo squishserver process is running
+                                                        
+                                                        timeout /t 3 >nul
+                                                        
+                                                        echo Checking port 4322 with netstat...
+                                                        netstat -ano | find ":4322"
+                                                        echo.
+                                                        echo Checking if squishserver port 4322 is open...
+                                                        powershell -NoProfile -Command "^
+$connected = $false; ^
+for ($i=0; $i -lt 40; $i++) { ^
+  try { ^
+    $client = New-Object System.Net.Sockets.TcpClient; ^
+    $client.Connect('127.0.0.1', 4322); ^
+    $client.Close(); ^
+    Write-Host 'Squish server port 4322 is READY (attempt ' ($i+1) ')'; ^
+    $connected = $true; ^
+    exit 0 ^
+  } catch { ^
+    Write-Host 'Attempt ' ($i+1) ': port not ready yet'; ^
+    Start-Sleep -Milliseconds 500 ^
+  } ^
+} ^
+if (-not $connected) { ^
+  Write-Error 'Squish server port 4322 NEVER OPENED after 20 seconds'; ^
+  exit 1 ^
+}"
+                                                        if errorlevel 1 (
+                                                            echo Squish server failed to open port 4322 in time
+                                                            taskkill /F /IM squishserver.exe >nul 2>nul
+                                                            exit /b 1
+                                                        )
+                                                        set "STARTED_SQUISH_SERVER=1"
 
                                                         if "%AUT_PATH%"=="" (
                                                             echo AUT binary not found on Windows GUI agent.
