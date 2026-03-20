@@ -104,6 +104,7 @@ Page {
 
     function appendMonitoringEvent(objectId, cardAgeText, ageGroup, isFraud) {
         if (!monitoringEventModel) {
+            squishEventCount++  // model 미준비여도 Squish 폴링용 카운터 즉시 증가
             pendingTestMonitoringEvents.push({
                 objectId: objectId,
                 cardAgeText: cardAgeText,
@@ -131,14 +132,23 @@ Page {
 
     // Squish helper: check if model contains a given objectId.
     function hasMonitoringEventObjectIdForTest(targetObjectId) {
-        if (!monitoringEventModel) {
-            return false
-        }
         var needle = String(targetObjectId)
-        for (var i = 0; i < monitoringEventModel.count; ++i) {
-            var item = monitoringEventModel.get(i)
-            if (item && String(item.objectId) === needle) {
-                return true
+        // 1) 실제 모델에서 검색
+        if (monitoringEventModel) {
+            for (var i = 0; i < monitoringEventModel.count; ++i) {
+                var item = monitoringEventModel.get(i)
+                if (item && String(item.objectId) === needle) {
+                    return true
+                }
+            }
+        }
+        // 2) pending 큐에서 검색 (model 미준비 시 fallback)
+        if (pendingTestMonitoringEvents) {
+            for (var j = 0; j < pendingTestMonitoringEvents.length; ++j) {
+                var pending = pendingTestMonitoringEvents[j]
+                if (pending && String(pending.objectId) === needle) {
+                    return true
+                }
             }
         }
         return false
