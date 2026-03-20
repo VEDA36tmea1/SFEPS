@@ -220,6 +220,7 @@ SQL
                 sh '''
                     set -eu
                     export MYSQL_UNIX_PORT="$WORKSPACE/.ci-mariadb/mysqld.sock"
+                    rm -rf reports
                     mkdir -p reports
                     python3 -m pytest -q tests/test_tc_func_login.py -r a --junitxml=reports/login-tests.xml
 
@@ -822,7 +823,7 @@ PY
                 fi
                 exit 0
             '''
-            junit testResults: 'reports/*.xml', allowEmptyResults: true
+            junit testResults: 'reports/login-tests.xml,reports/stream-tests.xml,reports/event-tests.xml', allowEmptyResults: true
             archiveArtifacts artifacts: 'reports/*.xml,reports/test-report.html,reports/test-report.pdf,reports/test-report.xls,reports/test-report.xlsx,tests/real_server.log,.ci-mediamtx.log,.ci-ffmpeg-publisher.log', allowEmptyArchive: true
 
             script {
