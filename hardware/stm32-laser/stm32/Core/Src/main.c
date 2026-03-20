@@ -51,8 +51,8 @@
 #define AUTO_HOLD_MS  2000   /* UART 입력 후 이 시간(ms) 동안 고정, 이후 스윕 재개 (AUTO 모드에서만 사용) */
 
 /* ESP8266 → 라즈베리 TCP 서버 자동 재접속 설정 */
-#define WIFI_SERVER_IP           "10.42.0.1"
-#define WIFI_SERVER_PORT         5555
+#define WIFI_SERVER_IP           "192.168.4.1"
+#define WIFI_SERVER_PORT         5565
 #define WIFI_RECONNECT_INTERVAL  5000u   /* ms 단위: 5초마다 상태 체크 */
 #define WIFI_CMD_TIMEOUT         10000u  /* AT 응답 타임아웃 10초 */
 /* USER CODE END PD */
