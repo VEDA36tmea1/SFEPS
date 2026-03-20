@@ -549,18 +549,23 @@ PY
                                                         ) do (
                                                             set "REPORT_FILE=!REPORT_DIR!\\squish-%%T.xml"
                                                             if exist "!REPORT_FILE!" del /f /q "!REPORT_FILE!"
+                                                            for /f %%I in ('powershell -NoProfile -Command "[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()"') do set "TC_START_MS=%%I"
                                                             call "%SQUISH_RUNNER%" --testsuite "%SUITE_PATH%" --testcase %%T --aut "%AUT_PATH%" --reportgen "junit,!REPORT_FILE!" --exitCodeOnFail 1
                                                             set "TC_RC=!ERRORLEVEL!"
+                                                            for /f %%I in ('powershell -NoProfile -Command "[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()"') do set "TC_END_MS=%%I"
+                                                            set /a TC_ELAPSED_MS=!TC_END_MS!-!TC_START_MS!
+                                                            if !TC_ELAPSED_MS! lss 0 set "TC_ELAPSED_MS=0"
+                                                            for /f %%I in ('powershell -NoProfile -Command "$ms=[double]$env:TC_ELAPSED_MS; [string]::Format([System.Globalization.CultureInfo]::InvariantCulture,'{0:0.000}',$ms/1000.0)"') do set "TC_ELAPSED_SEC=%%I"
                                                             if not exist "!REPORT_FILE!" (
                                                                 echo Squish did not generate JUnit XML for %%T, writing fallback report.
-                                                                > "!REPORT_FILE!" echo ^<testsuite name="%%T" tests="1" failures="0" errors="0" skipped="0" time="0"^>
+                                                                > "!REPORT_FILE!" echo ^<testsuite name="%%T" tests="1" failures="0" errors="0" skipped="0" time="!TC_ELAPSED_SEC!"^>
                                                                 if "!TC_RC!"=="0" (
-                                                                    >> "!REPORT_FILE!" echo   ^<testcase classname="squish.%%T" name="%%T" time="0" /^>
+                                                                    >> "!REPORT_FILE!" echo   ^<testcase classname="squish.%%T" name="%%T" time="!TC_ELAPSED_SEC!" /^>
                                                                 ) else (
-                                                                    >> "!REPORT_FILE!" echo   ^<testcase classname="squish.%%T" name="%%T" time="0"^>^<failure message="squishrunner exited with code !TC_RC!" /^>^</testcase^>
+                                                                    >> "!REPORT_FILE!" echo   ^<testcase classname="squish.%%T" name="%%T" time="!TC_ELAPSED_SEC!"^>^<failure message="squishrunner exited with code !TC_RC!" /^>^</testcase^>
                                                                     > "!REPORT_FILE!.tmp" (
-                                                                        echo ^<testsuite name="%%T" tests="1" failures="1" errors="0" skipped="0" time="0"^>
-                                                                        echo   ^<testcase classname="squish.%%T" name="%%T" time="0"^>^<failure message="squishrunner exited with code !TC_RC!" /^>^</testcase^>
+                                                                        echo ^<testsuite name="%%T" tests="1" failures="1" errors="0" skipped="0" time="!TC_ELAPSED_SEC!"^>
+                                                                        echo   ^<testcase classname="squish.%%T" name="%%T" time="!TC_ELAPSED_SEC!"^>^<failure message="squishrunner exited with code !TC_RC!" /^>^</testcase^>
                                                                         echo ^</testsuite^>
                                                                     )
                                                                     move /Y "!REPORT_FILE!.tmp" "!REPORT_FILE!" >nul
