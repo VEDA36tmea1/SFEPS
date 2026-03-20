@@ -505,34 +505,16 @@ PY
                                                         
                                                         timeout /t 3 >nul
                                                         
-                                                        echo Checking port 4322 with netstat...
-                                                        netstat -ano | find ":4322"
-                                                        echo.
                                                         echo Checking if squishserver port 4322 is open...
-                                                        powershell -NoProfile -Command "^
-$connected = $false; ^
-for ($i=0; $i -lt 40; $i++) { ^
-  try { ^
-    $client = New-Object System.Net.Sockets.TcpClient; ^
-    $client.Connect('127.0.0.1', 4322); ^
-    $client.Close(); ^
-    Write-Host 'Squish server port 4322 is READY (attempt ' ($i+1) ')'; ^
-    $connected = $true; ^
-    exit 0 ^
-  } catch { ^
-    Write-Host 'Attempt ' ($i+1) ': port not ready yet'; ^
-    Start-Sleep -Milliseconds 500 ^
-  } ^
-} ^
-if (-not $connected) { ^
-  Write-Error 'Squish server port 4322 NEVER OPENED after 20 seconds'; ^
-  exit 1 ^
-}"
+                                                        netstat -ano | find ":4322" > "%TEMP%\\netstat_result.txt"
                                                         if errorlevel 1 (
-                                                            echo Squish server failed to open port 4322 in time
+                                                            echo ERROR: squishserver port 4322 is NOT listening!
+                                                            netstat -ano
                                                             taskkill /F /IM squishserver.exe >nul 2>nul
                                                             exit /b 1
                                                         )
+                                                        echo Squish server port 4322 is LISTENING (confirmed by netstat)
+                                                        type "%TEMP%\\netstat_result.txt"
                                                         set "STARTED_SQUISH_SERVER=1"
 
                                                         if "%AUT_PATH%"=="" (
