@@ -435,8 +435,9 @@ PY
                                                             if "%SQUISH_RUNNER%"=="" if exist "C:\\froglogic\\Squish\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\froglogic\\Squish\\bin\\squishrunner.exe"
                                                             if "%SQUISH_RUNNER%"=="" if exist "C:\\Program Files\\Squish\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\Program Files\\Squish\\bin\\squishrunner.exe"
                                                             if "%SQUISH_RUNNER%"=="" if exist "C:\\Program Files\\froglogic\\Squish\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\Program Files\\froglogic\\Squish\\bin\\squishrunner.exe"
-                                                            if "%SQUISH_RUNNER%"=="" if exist "C:\\Program Files (x86)\\Squish\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\Program Files (x86)\\Squish\\bin\\squishrunner.exe"
-                                                            if "%SQUISH_RUNNER%"=="" if exist "C:\\Program Files (x86)\\froglogic\\Squish\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\Program Files (x86)\\froglogic\\Squish\\bin\\squishrunner.exe"
+                                                            if "%SQUISH_RUNNER%"=="" if exist "C:\\Program Files ^(x86^)\\Squish\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\Program Files ^(x86^)\\Squish\\bin\\squishrunner.exe"
+                                                            if "%SQUISH_RUNNER%"=="" if exist "C:\\Program Files ^(x86^)\\froglogic\\Squish\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\Program Files ^(x86^)\\froglogic\\Squish\\bin\\squishrunner.exe"
+                                                            if "%SQUISH_RUNNER%"=="" if exist "C:\\Users\\2-08\\Squish for Qt 9.2.0\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\Users\\2-08\\Squish for Qt 9.2.0\\bin\\squishrunner.exe"
                                                         )
                                                         :runner_found
 
@@ -459,7 +460,6 @@ PY
 
                                                         if "%SQUISH_RUNNER%"=="" (
                                                             echo squishrunner not found on Windows GUI agent.
-                                                            echo PATH=%PATH%
                                                             echo Hint: set SFEPS_SQUISH_RUNNER to full path, e.g. C:\\Squish\\bin\\squishrunner.exe
                                                             exit /b 1
                                                         )
