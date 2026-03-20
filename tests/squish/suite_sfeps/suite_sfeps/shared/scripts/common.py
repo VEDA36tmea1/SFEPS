@@ -117,13 +117,18 @@ def login_default(user_id=DEFAULT_USER, password=DEFAULT_PASS, timeout_ms=30000)
     if state == "mainWindow":
         return
 
-    login_win = waitForObject(sel, timeout_ms)
-    mouseClick(login_win, 100, 100, 0, Qt.LeftButton)
+    # objectName으로 직접 입력 필드를 찾아 클릭 (좌표 의존 제거)
+    id_field = wait_name("idInput", timeout_ms)
+    mouseClick(id_field)
+    id_field.text = ""
+    type(id_field, str(user_id))
 
-    type(login_win, str(user_id))
-    type(login_win, "<Tab>")
-    type(login_win, str(password))
-    type(login_win, "<Return>")
+    pass_field = wait_name("passwordInput", timeout_ms)
+    mouseClick(pass_field)
+    pass_field.text = ""
+    type(pass_field, str(password))
+
+    click_name("loginButton", timeout_ms)
 
     wait_name("mainWindow", timeout_ms)
 
