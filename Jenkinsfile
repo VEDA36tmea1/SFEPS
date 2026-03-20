@@ -543,14 +543,13 @@ PY
                                                             goto :squish_finalize
                                                         )
 
-                                                        echo WARN: Temporarily skipping Squish testcase tst_tc_func_ui_01 on Jenkins.
-
                                                         for %%T in (
-                                                            tst_tc_func_stream_02
+                                                            tst_tc_func_ui_01
                                                             tst_tc_func_ui_02
                                                             tst_tc_func_ui_03
                                                             tst_tc_func_track_01
                                                             tst_tc_func_track_02
+                                                            tst_tc_func_stream_02
                                                         ) do (
                                                             call "%SQUISH_RUNNER%" --testsuite "%SUITE_PATH%" --testcase %%T --aut "%AUT_PATH%" --reportgen "junit,reports\\squish-%%T.xml"
                                                             if errorlevel 1 (
