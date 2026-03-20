@@ -153,7 +153,7 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
             // =========================================================
             std::string real_id = obj_id; 
 
-            if (x != -1 && y != -1 && obj_type == "Human") {
+            if (x != -1 && y != -1 && obj_type == "Head") {
                 if (tracking_map.find(obj_id) == tracking_map.end()) {
                     std::string matched_old_id = "";
                     float max_iou = 0.05f; // 매칭을 허용할 최소 교집합 (5%)
@@ -347,12 +347,12 @@ std::vector<ParsedMetadataObject> XMLParser::parseHumanObjectsForAnalytics(const
             }
         }
 
-        const std::size_t type_pos = find_in_range(xml, "<tt:Type>", obj_start, obj_end);
+        const std::size_t type_pos = find_in_range(xml, "<tt:Type Likelihood=", obj_start, obj_end);
         if (type_pos != std::string::npos) {
-            const std::size_t start = type_pos + 9;
+            const std::size_t start = xml.find(">", type_pos) + 1;
             const std::size_t end = xml.find("</tt:Type>", start);
-            if (end != std::string::npos && end < obj_end) {
-                object.type = xml.substr(start, end - start);
+        if (end != std::string::npos && end < obj_end) {
+            object.type = xml.substr(start, end - start);
             }
         }
 
@@ -370,7 +370,7 @@ std::vector<ParsedMetadataObject> XMLParser::parseHumanObjectsForAnalytics(const
         const bool has_top = parse_float_attr(xml, top_pos, 5, object.top);
         const bool has_bottom = parse_float_attr(xml, bottom_pos, 8, object.bottom);
 
-        const bool type_ok = detect_all || (object.type == "Human");
+        const bool type_ok = detect_all || (object.type == "Head");
         if (!object.id.empty() && type_ok && has_x && has_y &&
             has_left && has_right && has_top && has_bottom) {
             results.push_back(object);
