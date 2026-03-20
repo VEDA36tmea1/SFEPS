@@ -144,9 +144,19 @@ def logout_default(timeout_ms=30000):
     wait_name("loginWindow", timeout_ms)
 
 
+def ensure_logged_in(user_id=DEFAULT_USER, password=DEFAULT_PASS, timeout_ms=10000):
+    """서버 끊김으로 로그인 창으로 돌아간 경우 재로그인한다."""
+    if exists_name("loginWindow"):
+        test.log("[INFO] loginWindow detected mid-test - re-logging in")
+        login_default(user_id, password, timeout_ms)
+
+
 # ---- UI-01~03 / STREAM-02 / TRACK-02 helper ----
 
 def ensure_monitoring_tab(timeout_ms=5000):
+    # 서버 끊김으로 로그인 화면으로 돌아간 경우 재로그인
+    ensure_logged_in()
+
     main_win = wait_name("mainWindow", timeout_ms)
 
     # 1) 상태값으로 강제 전환
@@ -250,6 +260,8 @@ def monitoring_event_count(timeout_ms=5000):
 
 
 def inject_monitoring_event(object_id="TC-OBJ-001", card_text="adult", age_group="30s", is_fraud=True):
+    # inject 전에도 서버 끊김으로 로그인 화면으로 돌아간 경우 재로그인 후 탭 복귀
+    ensure_logged_in()
     ensure_monitoring_tab(5000)
 
     count_before = 0
