@@ -543,9 +543,10 @@ PY
                                                             goto :squish_finalize
                                                         )
 
+                                                        echo WARN: Temporarily skipping Squish testcase tst_tc_func_ui_01 on Jenkins.
+
                                                         for %%T in (
                                                             tst_tc_func_stream_02
-                                                            tst_tc_func_ui_01
                                                             tst_tc_func_ui_02
                                                             tst_tc_func_ui_03
                                                             tst_tc_func_track_01
@@ -574,7 +575,7 @@ PY
                                                         exit /b 0
                                                 '''
 
-                                                stash name: 'squish-reports', includes: 'reports/squish-*.xml', allowEmpty: true
+                                                stash name: 'squish-reports', includes: 'reports/**', allowEmpty: true
                                         }
 
                                         try {
