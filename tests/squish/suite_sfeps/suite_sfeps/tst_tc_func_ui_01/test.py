@@ -11,6 +11,7 @@ def main():
 
     object_id = "TCUI01-001"
     inject_monitoring_event(object_id, "adult", "30s", True)
+    snooze(1)  # Wait for event to be registered in UI
     after = wait_monitoring_event_added(before, 15000, object_id)
 
     test.verify(str(after) != str(before), "event list updated")
