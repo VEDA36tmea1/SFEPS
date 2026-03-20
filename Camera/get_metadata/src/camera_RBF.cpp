@@ -128,22 +128,6 @@ struct DeepSortWorker {
         write_fd = pipe_in[1];
         read_fd  = pipe_out[0];
         active   = true;
-
-        // 워커가 즉시 죽는 경우(예: python/모듈 문제)는
-        // stderr가 /dev/null로 가려져도 parent 로그로는 확인이 필요하다.
-        int status = 0;
-        pid_t w = ::waitpid(pid, &status, WNOHANG);
-        if (w == pid)
-        {
-            active = false;
-            ::close(write_fd); write_fd = -1;
-            ::close(read_fd);  read_fd  = -1;
-            std::cerr << "[deepsort] worker exited early pid=" << pid
-                      << " status=" << status << "\n";
-            pid = -1;
-            return false;
-        }
-
         std::cerr << "[deepsort] worker started pid=" << pid << "\n";
 
         // 비동기 처리 스레드 시작
@@ -619,13 +603,6 @@ struct KalmanBbox2D
     double alpha_pos{0.6};
     double beta_vel{0.15};
     double alpha_size{0.3};
-<<<<<<< HEAD
-=======
-    // bbox 측정값이 한 프레임에 크게 튀는 outlier(예: ID/박스 튐)일 때
-    // 속도 업데이트를 망가뜨리지 않도록 게이팅을 둔다.
-    double max_jump_px{120.0};      // predicted->measured까지 최대 허용 이동(px)
-    double max_vel_px_s{2000.0};   // 속도 상한(px/s)
->>>>>>> 2e303eba793fe1a6109c0d3f6be1e6851dd3d6d6
     bool initialized{false};
 
     void update(double meas_cx, double meas_cy, double meas_w, double meas_h, double dt)
@@ -638,39 +615,14 @@ struct KalmanBbox2D
             initialized = true;
             return;
         }
-<<<<<<< HEAD
-=======
-
-        // dt가 너무 작으면 (beta_vel*rx)/dt 항이 폭주할 수 있으므로 하한을 건다.
-        dt = std::max(dt, 1e-4);
-
->>>>>>> 2e303eba793fe1a6109c0d3f6be1e6851dd3d6d6
         double px = cx + vx * dt;
         double py = cy + vy * dt;
         double rx = meas_cx - px;
         double ry = meas_cy - py;
-<<<<<<< HEAD
-=======
-
-        // outlier 게이팅: 측정이 예측에서 너무 멀면 "속도는 신뢰하지 않고" 위치만 갱신.
-        const double dist2 = rx * rx + ry * ry;
-        if (dist2 > max_jump_px * max_jump_px)
-        {
-            cx = meas_cx;
-            cy = meas_cy;
-            w = meas_w;
-            h = meas_h;
-            vx = 0;
-            vy = 0;
-            return;
-        }
-
->>>>>>> 2e303eba793fe1a6109c0d3f6be1e6851dd3d6d6
         cx = px + alpha_pos * rx;
         cy = py + alpha_pos * ry;
         vx += (beta_vel * rx) / dt;
         vy += (beta_vel * ry) / dt;
-<<<<<<< HEAD
         w += alpha_size * (meas_w - w);
         h += alpha_size * (meas_h - h);
     }
@@ -679,15 +631,6 @@ struct KalmanBbox2D
     {
         pred_cx = cx + vx * dt_ahead;
         pred_cy = cy + vy * dt_ahead;
-=======
-
-        // velocity 상한으로 pred 흔들림(증폭) 방지
-        vx = std::max(-max_vel_px_s, std::min(max_vel_px_s, vx));
-        vy = std::max(-max_vel_px_s, std::min(max_vel_px_s, vy));
-
-        w += alpha_size * (meas_w - w);
-        h += alpha_size * (meas_h - h);
->>>>>>> 2e303eba793fe1a6109c0d3f6be1e6851dd3d6d6
     }
 
     void reset() { initialized = false; cx = cy = vx = vy = w = h = 0; }
@@ -695,11 +638,7 @@ struct KalmanBbox2D
 
 int main(int argc, char** argv)
 {
-<<<<<<< HEAD
     double ratio = 0.3;
-=======
-    double ratio = 0.35;
->>>>>>> 2e303eba793fe1a6109c0d3f6be1e6851dd3d6d6
     double alpha = 0.5;
     int pan_min = 500, pan_max = 2500;
     int tilt_min = 500, tilt_max = 2500;
@@ -707,7 +646,6 @@ int main(int argc, char** argv)
     bool draw_grid = true;
     double predict_ms = 300.0;
 
-<<<<<<< HEAD
     for (int i = 1; i < argc; ++i)
     {
         std::string arg = argv[i];
@@ -717,16 +655,6 @@ int main(int argc, char** argv)
         else if (arg == "--send-every" && i + 1 < argc) send_every_n = std::max(1, std::atoi(argv[++i]));
         else if (arg == "--no-grid") draw_grid = false;
         else if (arg == "--predict-ms" && i + 1 < argc) predict_ms = std::atof(argv[++i]);
-=======
-    for(int i=1;i<argc;i++){
-        std::string a=argv[i];
-        if(a=="--detect-all") g_detect_all=true;
-        else if(a=="--ratio"&&i+1<argc)      ratio=std::atof(argv[++i]);
-        else if(a=="--alpha"&&i+1<argc)      alpha=std::atof(argv[++i]);
-        else if(a=="--send-every"&&i+1<argc) send_every_n=std::max(1,std::atoi(argv[++i]));
-        else if(a=="--no-grid")              draw_grid=false;
-        else if(a=="--predict-ms"&&i+1<argc) predict_ms=std::atof(argv[++i]);
->>>>>>> 2e303eba793fe1a6109c0d3f6be1e6851dd3d6d6
     }
 
     std::signal(SIGINT, signal_handler);
@@ -816,7 +744,6 @@ int main(int argc, char** argv)
 
         // ── DeepSORT 비동기 업데이트 ────────────────────────────────
         std::vector<ParsedMetadataObject> raw_objs;
-<<<<<<< HEAD
         { std::lock_guard<std::mutex> lock(g_raw_obj_mutex); raw_objs = g_raw_objects; }
 
         // 새 입력 push (논블로킹)
@@ -829,39 +756,6 @@ int main(int argc, char** argv)
             std::lock_guard<std::mutex> lock(g_obj_mutex);
             // DeepSORT 결과 없으면 raw 그대로
             g_objects = tracked.empty() ? raw_objs : tracked;
-=======
-        { std::lock_guard<std::mutex> lock(g_raw_obj_mutex); raw_objs=g_raw_objects; }
-
-        if(g_deepsort.active && !raw_objs.empty()){
-            auto tracks = g_deepsort.update(frame, raw_objs);
-            std::vector<ParsedMetadataObject> tracked_objs;
-            for(auto&[tid,l,t,r,b]:tracks){
-                ParsedMetadataObject obj;
-                obj.id   = tid;
-                obj.type = "Head";
-                obj.x    = (l+r)/2.0f;
-                obj.y    = (t+b)/2.0f;
-                // 픽셀 좌표를 센서 좌표로 역변환
-                float sx=(float)SENSOR_WIDTH/W, sy=(float)SENSOR_HEIGHT/H;
-                obj.left   = l*sx; obj.right  = r*sx;
-                obj.top    = t*sy; obj.bottom = b*sy;
-                tracked_objs.push_back(obj);
-            }
-            // DeepSORT는 track.is_confirmed() 이후에만 반환하므로,
-            // 초기 워밍업/타임아웃 구간에서는 tracks가 비어 화면 표시가 안 될 수 있다.
-            // 이 경우 raw bbox로 fallback 하여 "표시"부터 복구한다.
-            if (tracked_objs.empty())
-            {
-                { std::lock_guard<std::mutex> lock(g_obj_mutex); g_objects = raw_objs; }
-            }
-            else
-            {
-                { std::lock_guard<std::mutex> lock(g_obj_mutex); g_objects = std::move(tracked_objs); }
-            }
-        } else {
-            // 워커 없으면 raw 그대로 사용
-            std::lock_guard<std::mutex> lock(g_obj_mutex); g_objects=raw_objs;
->>>>>>> 2e303eba793fe1a6109c0d3f6be1e6851dd3d6d6
         }
 
         // copy objs
@@ -871,7 +765,6 @@ int main(int argc, char** argv)
             objs = g_objects;
         }
 
-<<<<<<< HEAD
         // draw boxes
         for (const auto& obj : objs)
         {
@@ -881,17 +774,6 @@ int main(int argc, char** argv)
             cv::putText(frame, obj.id.c_str(), cv::Point(r.x, std::max(0, r.y - 5)),
                         cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1);
         }
-=======
-        auto t_now = std::chrono::steady_clock::now();
-        double dt_sec = std::chrono::duration<double>(t_now - t_last_frame).count();
-        t_last_frame = t_now;
-        if (dt_sec <= 0 || dt_sec > 1.0) dt_sec = 1.0 / 30.0;
-        // dt가 튀면 속도 추정이 흔들릴 수 있어 범위를 제한한다.
-        dt_sec = std::max(1.0 / 120.0, std::min(1.0 / 15.0, dt_sec));
-
-        if(sel_ok&&sel_id!=prev_sel_id){ kf.reset(); prev_pan=1500; prev_tilt=1500; prev_sel_id=sel_id; }
-        if(!sel_ok&&!prev_sel_id.empty()){ kf.reset(); prev_sel_id.clear(); }
->>>>>>> 2e303eba793fe1a6109c0d3f6be1e6851dd3d6d6
 
         // selected rect
         std::string sel_id;
