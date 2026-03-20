@@ -574,7 +574,10 @@ PY
                                                                     >> "!REPORT_FILE!" echo ^</testsuite^>
                                                                 )
                                                             )
-                                                            if exist "!REPORT_FILE!" echo Generated Squish report: !REPORT_FILE!
+                                                            if exist "!REPORT_FILE!" (
+                                                                powershell -NoProfile -Command "$p=$env:REPORT_FILE; $t=$env:TC_ELAPSED_SEC; [xml]$xml=Get-Content -LiteralPath $p; if ($xml.testsuite) { if (-not $xml.testsuite.time -or [double]$xml.testsuite.time -eq 0) { $xml.testsuite.time = $t }; foreach ($tc in @($xml.testsuite.testcase)) { if (-not $tc.time -or [double]$tc.time -eq 0) { $tc.time = $t } }; $xml.Save($p) }"
+                                                                echo Generated Squish report: !REPORT_FILE! ^(time=!TC_ELAPSED_SEC!s^)
+                                                            )
                                                             if not "!TC_RC!"=="0" set SQUISH_FAILED=1
                                                         )
 
