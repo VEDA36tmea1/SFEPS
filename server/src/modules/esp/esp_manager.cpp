@@ -103,42 +103,77 @@ void EspManager::stop() {
     clients_.clear();
 }
 
-bool EspManager::publishFraudBbox(const FraudBboxPayload& payload) {
+void EspManager::setClientTrackObjectId(const std::string& object_id) {
+    std::string ended_fraud_object_id;
+    {
+        std::lock_guard<std::mutex> lock(clients_mutex_);
+        client_track_object_id_ = object_id;
+        if (!fraud_track_object_id_.empty()) {
+            ended_fraud_object_id = fraud_track_object_id_;
+            fraud_track_object_id_.clear();
+        }
+    }
+
+    if (!ended_fraud_object_id.empty()) {
+        publishTrackEnd(ended_fraud_object_id, "CLIENT_TRACK");
+    }
+}
+
+void EspManager::clearClientTrackObjectId() {
+    std::lock_guard<std::mutex> lock(clients_mutex_);
+    client_track_object_id_.clear();
+}
+
+bool EspManager::publishFraudTrackPosIfIdle(const TrackPosPayload& payload) {
     if (!server_running_.load()) return false;
+    if (payload.object_id.empty()) return false;
     if (payload.left < 0.0f || payload.top < 0.0f || payload.right < payload.left ||
         payload.bottom < payload.top) {
         return false;
     }
 
-    char line[256];
-    const float cx = (payload.left + payload.right) * 0.5f;
-    const float cy = (payload.top + payload.bottom) * 0.5f;
-    const float width = payload.right - payload.left;
-    const float height = payload.bottom - payload.top;
-    const int line_len = std::snprintf(
-        line, sizeof(line),
-        "FRAUD_BBOX|%s|%s|%s|CX=%.0f|CY=%.0f|W=%.0f|H=%.0f\n",
-        payload.object_id.c_str(), payload.card_age_text.c_str(), payload.age.c_str(),
-        cx, cy, width, height);
-    if (line_len <= 0 || line_len >= static_cast<int>(sizeof(line))) {
-        return false;
+    std::string ended_fraud_object_id;
+    bool send_start = false;
+    {
+        std::lock_guard<std::mutex> lock(clients_mutex_);
+        if (!client_track_object_id_.empty()) {
+            return false;
+        }
+        if (fraud_track_object_id_ != payload.object_id) {
+            ended_fraud_object_id = fraud_track_object_id_;
+            send_start = true;
+            fraud_track_object_id_ = payload.object_id;
+        }
+        fraud_track_last_sent_at_ = std::chrono::steady_clock::now();
     }
 
-    std::lock_guard<std::mutex> lock(clients_mutex_);
-    if (clients_.empty()) {
-        std::cout << "[esp_manager.cpp] [ESP] fraud bbox 전송 대상 클라이언트 없음: object_id="
-                  << payload.object_id << std::endl;
-        return false;
+    if (!ended_fraud_object_id.empty()) {
+        publishTrackEnd(ended_fraud_object_id, "SWITCH");
+    }
+    if (send_start) {
+        publishTrackStart(payload.object_id);
     }
 
-    const bool delivered =
-        broadcastLineLocked(line, static_cast<std::size_t>(line_len), true);
+    return publishTrackPos(payload);
+}
 
-    if (delivered) {
-        std::cout << "[esp_manager.cpp] [ESP] fraud bbox 전송 완료: object_id=" << payload.object_id
-                  << ", clients=" << clients_.size() << std::endl;
+bool EspManager::expireFraudTrackIfStale(std::chrono::seconds max_idle) {
+    if (!server_running_.load()) return false;
+
+    std::string ended_fraud_object_id;
+    {
+        std::lock_guard<std::mutex> lock(clients_mutex_);
+        if (!client_track_object_id_.empty() || fraud_track_object_id_.empty()) {
+            return false;
+        }
+        if ((std::chrono::steady_clock::now() - fraud_track_last_sent_at_) <= max_idle) {
+            return false;
+        }
+        ended_fraud_object_id = fraud_track_object_id_;
+        fraud_track_object_id_.clear();
     }
-    return delivered;
+
+    return publishTrackEnd(ended_fraud_object_id, "STALE");
 }
 
 bool EspManager::publishTrackPos(const TrackPosPayload& payload) {
@@ -149,12 +184,17 @@ bool EspManager::publishTrackPos(const TrackPosPayload& payload) {
         return false;
     }
 
-    char line[320];
+    const float cx = (payload.left + payload.right) * 0.5f;
+    const float cy = (payload.top + payload.bottom) * 0.5f;
+    const float width = payload.right - payload.left;
+    const float height = payload.bottom - payload.top;
+
+    char line[384];
     const int line_len = std::snprintf(
         line, sizeof(line),
-        "TRACK_POS|%s|L=%.1f|T=%.1f|R=%.1f|B=%.1f|X=%.1f|Y=%.1f|TAG=%s\n",
+        "TRACK_POS|%s|L=%.1f|T=%.1f|R=%.1f|B=%.1f|X=%.1f|Y=%.1f|CX=%.1f|CY=%.1f|W=%.1f|H=%.1f\n",
         payload.object_id.c_str(), payload.left, payload.top, payload.right, payload.bottom,
-        payload.x, payload.y, payload.tag_time.c_str());
+        payload.x, payload.y, cx, cy, width, height);
     if (line_len <= 0 || line_len >= static_cast<int>(sizeof(line))) {
         return false;
     }
@@ -162,6 +202,31 @@ bool EspManager::publishTrackPos(const TrackPosPayload& payload) {
     std::lock_guard<std::mutex> lock(clients_mutex_);
     if (clients_.empty()) return false;
     return broadcastLineLocked(line, static_cast<std::size_t>(line_len), false);
+}
+
+bool EspManager::publishTrackChangeSignal(const std::string& from_object_id,
+                                          const std::string& to_object_id) {
+    if (!server_running_.load()) return false;
+    if (from_object_id.empty() || to_object_id.empty()) return false;
+
+    std::string line = "TRACK_SWITCH|FROM=" + from_object_id + "|TO=" + to_object_id;
+    line.push_back('\n');
+
+    std::lock_guard<std::mutex> lock(clients_mutex_);
+    if (clients_.empty()) return false;
+    return broadcastLineLocked(line.c_str(), line.size(), false);
+}
+
+bool EspManager::publishTrackStart(const std::string& object_id) {
+    if (!server_running_.load()) return false;
+    if (object_id.empty()) return false;
+
+    std::string line = "TRACK_START|" + object_id;
+    line.push_back('\n');
+
+    std::lock_guard<std::mutex> lock(clients_mutex_);
+    if (clients_.empty()) return false;
+    return broadcastLineLocked(line.c_str(), line.size(), false);
 }
 
 bool EspManager::publishTrackEnd(const std::string& object_id, const std::string& reason) {

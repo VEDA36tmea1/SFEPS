@@ -185,6 +185,14 @@ Position:
   - `OBJ_POS|...|FRAUD=<Y|N>|TAG=<...>\n`
   - `OBJ_END|<object_id>|REASON=<...>\n`
 
+ESP TCP:
+- 서버 준비 신호: `ESP_READY|SERVER_ONLINE\n`
+- 추적 이벤트 신호:
+  - `TRACK_SWITCH|FROM=<old_object_id>|TO=<new_object_id>\n` (추적 대상 변경)
+- 추적 시작 신호: `TRACK_START|<object_id>\n`
+- 추적 위치 신호: `TRACK_POS|<object_id>|L=<...>|T=<...>|R=<...>|B=<...>|X=<...>|Y=<...>|CX=<...>|CY=<...>|W=<...>|H=<...>\n`
+- 추적 종료 신호: `TRACK_END|<object_id>|REASON=<...>\n`
+
 Video Catalog:
 - 요청: `LIST_REC|FROM=<...>|TO=<...>|Q=<...>|PAGE=<n>|SIZE=<n>\n`
 - 정상 응답:
