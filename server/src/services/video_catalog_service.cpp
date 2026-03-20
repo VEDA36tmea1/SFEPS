@@ -71,7 +71,7 @@ void run_video_catalog_service_impl(std::atomic<bool>& running,
                                "VideoCatalogTLS",
                                false,
                                false)) {
-        std::cerr << "[main.cpp] [VideoCatalog] no listener available. service disabled."
+        std::cerr << "[main.cpp] [VideoCatalog] 사용 가능한 리스너 없음. 서비스 비활성화."
                   << std::endl;
         return;
     }
@@ -89,7 +89,7 @@ void run_video_catalog_service_impl(std::atomic<bool>& running,
 
         db_conn = mysql_init(nullptr);
         if (db_conn == nullptr) {
-            std::cerr << "[main.cpp] [VideoCatalog] mysql_init failed." << std::endl;
+            std::cerr << "[main.cpp] [VideoCatalog] mysql_init 실패." << std::endl;
             return false;
         }
 
@@ -101,7 +101,7 @@ void run_video_catalog_service_impl(std::atomic<bool>& running,
                                3306,
                                nullptr,
                                0) == nullptr) {
-            std::cerr << "[main.cpp] [VideoCatalog] DB connect failed: " << mysql_error(db_conn)
+            std::cerr << "[main.cpp] [VideoCatalog] DB 연결 실패: " << mysql_error(db_conn)
                       << std::endl;
             close_db();
             return false;
@@ -228,7 +228,7 @@ void run_video_catalog_service_impl(std::atomic<bool>& running,
                                      "|HAS_NEXT=" + std::to_string(has_next) + "\n";
         if (!client_send_line(client, end_line)) return false;
 
-        std::cout << "[main.cpp] [VideoCatalog] served request: ip=" << client.ip
+        std::cout << "[main.cpp] [VideoCatalog] 요청 처리: ip=" << client.ip
                   << ", page=" << request.page << ", size=" << request.size
                   << ", sent=" << sent_records << ", total=" << total_rows << std::endl;
         return true;
@@ -243,7 +243,7 @@ void run_video_catalog_service_impl(std::atomic<bool>& running,
         const int poll_ret = poll(pfds.data(), pfds.size(), 1000);
         if (poll_ret < 0) {
             if (errno == EINTR) continue;
-            std::cerr << "[VideoCatalog] poll() failed: " << std::strerror(errno) << std::endl;
+            std::cerr << "[VideoCatalog] poll() 실패: " << std::strerror(errno) << std::endl;
             break;
         }
         if (poll_ret == 0) continue;
@@ -290,7 +290,7 @@ void run_video_catalog_service_impl(std::atomic<bool>& running,
 
     close_listener_bundle(listeners);
     close_db();
-    std::cout << "[main.cpp] [VideoCatalog] service thread stopped." << std::endl;
+    std::cout << "[main.cpp] [VideoCatalog] 서비스 스레드 종료." << std::endl;
 }
 
 }  // namespace app_services_impl

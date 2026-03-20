@@ -38,7 +38,7 @@ void run_fraud_notifier_impl(std::atomic<bool>& running, const SecurityRuntimeOp
         const int poll_ret = poll(pfds.data(), pfds.size(), 1000);
         if (poll_ret < 0) {
             if (errno == EINTR) continue;
-            std::cerr << "[Alert] poll() failed: " << std::strerror(errno) << std::endl;
+            std::cerr << "[Alert] poll() 실패: " << std::strerror(errno) << std::endl;
             break;
         }
         if (poll_ret == 0) continue;
@@ -59,7 +59,7 @@ void run_fraud_notifier_impl(std::atomic<bool>& running, const SecurityRuntimeOp
 
             if (alert_client_count() >= sec_cfg.alert_max_clients) {
                 std::cout << "[main.cpp] [Alert] " << transport_name(kind)
-                          << " connection rejected: max clients reached ("
+                          << " 연결 거부: 최대 클라이언트 수 도달 ("
                           << sec_cfg.alert_max_clients << ")" << std::endl;
                 close_client(client);
                 continue;
@@ -67,12 +67,12 @@ void run_fraud_notifier_impl(std::atomic<bool>& running, const SecurityRuntimeOp
 
             if (kind == TransportKind::Plain) {
                 add_alert_plain_client(client.fd, client.ip);
-                std::cout << "[main.cpp] [Alert] plain client connected: " << client.ip << ":"
+                std::cout << "[main.cpp] [Alert] plain 클라이언트 연결됨: " << client.ip << ":"
                           << client.port << " (fd=" << client.fd << ")" << std::endl;
                 client.fd = -1;
             } else {
                 add_alert_tls_client(std::move(client.tls_conn), client.ip);
-                std::cout << "[main.cpp] [Alert] TLS client connected: " << client.ip << ":"
+                std::cout << "[main.cpp] [Alert] TLS 클라이언트 연결됨: " << client.ip << ":"
                           << client.port << " (fd=" << client.fd << ")" << std::endl;
                 client.fd = -1;
             }
@@ -81,7 +81,7 @@ void run_fraud_notifier_impl(std::atomic<bool>& running, const SecurityRuntimeOp
 
     close_listener_bundle(listeners);
     close_alert_client_connections();
-    std::cout << "[main.cpp] [Alert] notifier thread stopped." << std::endl;
+    std::cout << "[main.cpp] [Alert] 알림 스레드 종료." << std::endl;
 }
 
 }  // namespace app_services_impl

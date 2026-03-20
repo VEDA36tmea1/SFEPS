@@ -23,12 +23,12 @@ constexpr const char* kRecordingRetentionDeleteByFilenameQuery =
 bool prepare_stmt(MYSQL* conn, MYSQL_STMT*& stmt, const char* query, const char* name) {
     stmt = mysql_stmt_init(conn);
     if (stmt == nullptr) {
-        std::cerr << "[log.cpp] [DB Error] mysql_stmt_init() failed for " << name << std::endl;
+        std::cerr << "[log.cpp] [DB Error] mysql_stmt_init() 실패: " << name << std::endl;
         return false;
     }
 
     if (mysql_stmt_prepare(stmt, query, std::strlen(query)) != 0) {
-        std::cerr << "[log.cpp] [DB Error] prepare failed for " << name << ": "
+        std::cerr << "[log.cpp] [DB Error] prepare 실패: " << name << ": "
                   << mysql_stmt_error(stmt) << std::endl;
         mysql_stmt_close(stmt);
         stmt = nullptr;
@@ -42,19 +42,19 @@ bool execute_stmt(MYSQL_STMT* stmt, MYSQL_BIND* bind, const char* stmt_name) {
     if (stmt == nullptr) return false;
 
     if (mysql_stmt_reset(stmt) != 0) {
-        std::cerr << "[log.cpp] [DB Error] stmt reset failed (" << stmt_name
+        std::cerr << "[log.cpp] [DB Error] stmt reset 실패 (" << stmt_name
                   << "): " << mysql_stmt_error(stmt) << std::endl;
         return false;
     }
 
     if (mysql_stmt_bind_param(stmt, bind) != 0) {
-        std::cerr << "[log.cpp] [DB Error] stmt bind failed (" << stmt_name
+        std::cerr << "[log.cpp] [DB Error] stmt bind 실패 (" << stmt_name
                   << "): " << mysql_stmt_error(stmt) << std::endl;
         return false;
     }
 
     if (mysql_stmt_execute(stmt) != 0) {
-        std::cerr << "[log.cpp] [DB Error] stmt execute failed (" << stmt_name
+        std::cerr << "[log.cpp] [DB Error] stmt execute 실패 (" << stmt_name
                   << "): " << mysql_stmt_error(stmt) << std::endl;
         return false;
     }
@@ -62,12 +62,9 @@ bool execute_stmt(MYSQL_STMT* stmt, MYSQL_BIND* bind, const char* stmt_name) {
     return true;
 }
 
-int execute_delete(MYSQL* conn, const char* query, const char* label, my_ulonglong* affected_rows) {
+int execute_delete(MYSQL* conn, const char* query, my_ulonglong* affected_rows) {
     if (mysql_query(conn, query) != 0) {
-        const int err = mysql_errno(conn);
-        std::cerr << "[log.cpp] [DB Error] cleanup delete failed (" << label
-                  << "): " << mysql_error(conn) << std::endl;
-        return err;
+        return mysql_errno(conn);
     }
     if (affected_rows != nullptr) {
         *affected_rows = mysql_affected_rows(conn);
@@ -112,26 +109,14 @@ void bind_recording_params(const LogItem& item,
 }
 
 void run_cleanup_queries(MYSQL* conn) {
-    my_ulonglong deleted_analytics = 0;
-    if (execute_delete(conn, kAnalyticsRetentionDeleteQuery, "analytics_logs(created_at)",
-                       &deleted_analytics) == 0 &&
-        deleted_analytics > 0) {
-        std::cout << "[log.cpp] [Cleanup] deleted analytics_logs rows: "
-                  << deleted_analytics << std::endl;
-    }
+    execute_delete(conn, kAnalyticsRetentionDeleteQuery, nullptr);
 
-    execute_delete(conn, kLoginLogRetentionDeleteQuery, "login_logs(created_at)", nullptr);
+    execute_delete(conn, kLoginLogRetentionDeleteQuery, nullptr);
 
     const int recording_cleanup_err =
-        execute_delete(conn, kRecordingRetentionDeleteByCreatedAtQuery, "recordings(created_at)",
-                       nullptr);
+        execute_delete(conn, kRecordingRetentionDeleteByCreatedAtQuery, nullptr);
     if (recording_cleanup_err == 1054) {
-        execute_delete(conn, kRecordingRetentionDeleteByFilenameQuery,
-                       "recordings(filename timestamp fallback)", nullptr);
-    } else if (recording_cleanup_err != 0) {
-        std::cerr
-            << "[log.cpp] [DB Error] recordings cleanup skipped due to non-recoverable error."
-            << std::endl;
+        execute_delete(conn, kRecordingRetentionDeleteByFilenameQuery, nullptr);
     }
 }
 }  // namespace
@@ -158,7 +143,7 @@ DBLogger::~DBLogger() {
     if (conn != nullptr) {
         mysql_close(conn);
         conn = nullptr;
-        std::cout << "[log.cpp] [System] DB connection closed." << std::endl;
+        std::cout << "[log.cpp] [System] DB 연결 종료." << std::endl;
     }
 }
 

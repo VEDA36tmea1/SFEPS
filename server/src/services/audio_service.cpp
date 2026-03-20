@@ -54,7 +54,7 @@ void run_audio_receiver_impl(std::atomic<bool>& running, const SecurityRuntimeOp
         const int poll_ret = poll(pfds.data(), pfds.size(), 1000);
         if (poll_ret < 0) {
             if (errno == EINTR) continue;
-            std::cerr << "[Audio] poll() failed: " << std::strerror(errno) << std::endl;
+            std::cerr << "[Audio] poll() 실패: " << std::strerror(errno) << std::endl;
             break;
         }
         if (poll_ret == 0) continue;
@@ -91,13 +91,13 @@ void run_audio_receiver_impl(std::atomic<bool>& running, const SecurityRuntimeOp
                 if (bytes_read == 0) break;
                 if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
                 std::cerr << "[Audio] " << transport_name(kind)
-                          << " read() failed: " << std::strerror(errno) << std::endl;
+                          << " read() 실패: " << std::strerror(errno) << std::endl;
                 break;
             }
 
             if (oversize) {
                 std::cout << "[main.cpp] [Audio] " << transport_name(kind)
-                          << " payload rejected: exceeded SFEPS_AUDIO_MAX_BYTES="
+                          << " payload 거부: 초과 SFEPS_AUDIO_MAX_BYTES="
                           << sec_cfg.audio_max_bytes << " (ip=" << client.ip << ")"
                           << std::endl;
             }
@@ -109,7 +109,7 @@ void run_audio_receiver_impl(std::atomic<bool>& running, const SecurityRuntimeOp
     close_listener_bundle(listeners);
     ring.stop();
     playback.stop();
-    std::cout << "[main.cpp] [Audio] receiver thread stopped." << std::endl;
+    std::cout << "[main.cpp] [Audio] 수신 스레드 종료." << std::endl;
 }
 
 }  // namespace app_services_impl

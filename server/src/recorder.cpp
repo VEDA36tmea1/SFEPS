@@ -51,7 +51,7 @@ RecorderRuntimeLimits load_recorder_runtime_limits() {
     out.meta_xml_doc_max_bytes =
         load_env_size_t("SFEPS_META_XML_DOC_MAX_BYTES", 256 * 1024, 1024, kRecorderLogPrefix);
     if (out.meta_xml_doc_max_bytes > out.meta_xml_buffer_max) {
-        std::cout << "[recorder.cpp] Invalid env relationship: SFEPS_META_XML_DOC_MAX_BYTES("
+        std::cout << "[recorder.cpp] 환경변수 관계 오류: SFEPS_META_XML_DOC_MAX_BYTES("
                   << out.meta_xml_doc_max_bytes << ") > SFEPS_META_XML_BUFFER_MAX("
                   << out.meta_xml_buffer_max << "), clamping doc max to buffer max."
                   << std::endl;
@@ -160,7 +160,7 @@ void RTSPRecorder::process_meta_xml_chunk(const std::uint8_t* data,
             ++meta_xml_dropped_docs;
             meta_xml_dropped_bytes += (original_size - keep_tail);
             if (should_sample(meta_xml_dropped_docs, drop_log_interval)) {
-                std::cout << "[recorder.cpp] [Drop] metadata XML buffer overflow: size="
+                std::cout << "[recorder.cpp] [Drop] metadata XML 버퍼 오버플로: size="
                           << original_size << ", max=" << meta_xml_buffer_max
                           << ", kept_tail=" << keep_tail
                           << ", dropped_docs=" << meta_xml_dropped_docs
@@ -193,7 +193,7 @@ void RTSPRecorder::process_meta_xml_chunk(const std::uint8_t* data,
                 ++meta_xml_dropped_docs;
                 meta_xml_dropped_bytes += pending_size;
                 if (should_sample(meta_xml_dropped_docs, drop_log_interval)) {
-                    std::cout << "[recorder.cpp] [Drop] metadata XML pending doc exceeded max: pending="
+                    std::cout << "[recorder.cpp] [Drop] metadata XML 대기 문서 최대치 초과: pending="
                               << pending_size << ", doc_max=" << meta_xml_doc_max_bytes
                               << ", dropped_docs=" << meta_xml_dropped_docs
                               << ", dropped_bytes=" << meta_xml_dropped_bytes << std::endl;
@@ -210,7 +210,7 @@ void RTSPRecorder::process_meta_xml_chunk(const std::uint8_t* data,
             ++meta_xml_dropped_docs;
             meta_xml_dropped_bytes += doc_size;
             if (should_sample(meta_xml_dropped_docs, drop_log_interval)) {
-                std::cout << "[recorder.cpp] [Drop] metadata XML doc exceeded max: size="
+                std::cout << "[recorder.cpp] [Drop] metadata XML 문서 최대치 초과: size="
                           << doc_size << ", doc_max=" << meta_xml_doc_max_bytes
                           << ", dropped_docs=" << meta_xml_dropped_docs
                           << ", dropped_bytes=" << meta_xml_dropped_bytes << std::endl;
@@ -297,7 +297,7 @@ bool RTSPRecorder::connect_and_record() {
     
     input_ctx = avformat_alloc_context();
     if (!input_ctx) {
-        std::cerr << "[Error] Failed to allocate ffmpeg format context." << std::endl;
+        std::cerr << "[Error] ffmpeg format context 할당 실패." << std::endl;
         return false;
     }
     input_ctx->interrupt_callback.callback = ffmpeg_interrupt_cb;
@@ -386,13 +386,13 @@ bool RTSPRecorder::connect_and_record() {
                 ++bad_meta_streak;
                 std::uint64_t dropped = ++dropped_meta_packets;
                 if (should_sample(dropped, limits.drop_log_interval)) {
-                    std::cout << "[recorder.cpp] " << "[Drop] metadata packet rejected: size=" << pkt.size
+                    std::cout << "[recorder.cpp] " << "[Drop] metadata 패킷 거부: size=" << pkt.size
                               << ", max=" << limits.max_meta_packet_bytes
                               << ", bad_streak=" << bad_meta_streak
                               << ", dropped_count=" << dropped << std::endl;
                 }
                 if (bad_meta_streak >= limits.bad_meta_streak_limit) {
-                    std::cerr << "[recorder.cpp] " << "[Security] metadata bad streak reached limit ("
+                    std::cerr << "[recorder.cpp] " << "[Security] metadata 연속 이상치 제한 도달 ("
                               << limits.bad_meta_streak_limit
                               << "), reconnecting RTSP session." << std::endl;
                     force_reconnect = true;
@@ -417,7 +417,7 @@ bool RTSPRecorder::connect_and_record() {
 
 void RTSPRecorder::run() {
     while (running_flag) {
-        if (!connect_and_record()) std::cerr << "[System] Connection Retry in 5s..." << std::endl;
+        if (!connect_and_record()) std::cerr << "[System] 5초 후 연결 재시도..." << std::endl;
         cleanup();
         auto waited = std::chrono::milliseconds(0);
         constexpr auto kRetrySleep = std::chrono::seconds(5);
