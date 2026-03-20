@@ -128,22 +128,6 @@ struct DeepSortWorker {
         write_fd = pipe_in[1];
         read_fd  = pipe_out[0];
         active   = true;
-
-        // 워커가 즉시 죽는 경우(예: python/모듈 문제)는
-        // stderr가 /dev/null로 가려져도 parent 로그로는 확인이 필요하다.
-        int status = 0;
-        pid_t w = ::waitpid(pid, &status, WNOHANG);
-        if (w == pid)
-        {
-            active = false;
-            ::close(write_fd); write_fd = -1;
-            ::close(read_fd);  read_fd  = -1;
-            std::cerr << "[deepsort] worker exited early pid=" << pid
-                      << " status=" << status << "\n";
-            pid = -1;
-            return false;
-        }
-
         std::cerr << "[deepsort] worker started pid=" << pid << "\n";
 
         // 비동기 처리 스레드 시작
