@@ -11,8 +11,8 @@ def main():
 
     object_id = "TCUI01-001"
     inject_monitoring_event(object_id, "adult", "30s", True)
-    snooze(1)  # Wait for event to be registered in UI
-    after = wait_monitoring_event_added(before, 15000, object_id)
+    snooze(3)  # Wait for event to be registered in UI (Jenkins CI environment needs longer wait)
+    after = wait_monitoring_event_added(before, 20000, object_id)
 
     test.verify(str(after) != str(before), "event list updated")
     test.passes("TC-FUNC-UI-01 PASS")
