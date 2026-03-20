@@ -425,7 +425,7 @@ PY
                                     bat '''
                                                         @echo off
                                                         setlocal EnableExtensions EnableDelayedExpansion
-                                                        set "REPORT_DIR=%CD%\reports"
+                                                        set "REPORT_DIR=%CD%\\reports"
                                                         if not exist "%REPORT_DIR%" mkdir "%REPORT_DIR%"
 
                                                         set "SQUISH_REQUIRED=1"
@@ -547,7 +547,7 @@ PY
                                                             tst_tc_func_track_01
                                                             tst_tc_func_track_02
                                                         ) do (
-                                                            set "REPORT_FILE=!REPORT_DIR!\squish-%%T.xml"
+                                                            set "REPORT_FILE=!REPORT_DIR!\\squish-%%T.xml"
                                                             if exist "!REPORT_FILE!" del /f /q "!REPORT_FILE!"
                                                             call "%SQUISH_RUNNER%" --testsuite "%SUITE_PATH%" --testcase %%T --aut "%AUT_PATH%" --reportgen "junit,!REPORT_FILE!" --exitCodeOnFail 1
                                                             set "TC_RC=!ERRORLEVEL!"
