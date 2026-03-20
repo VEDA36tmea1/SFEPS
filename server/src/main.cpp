@@ -173,17 +173,17 @@ int main() {
     esp_cfg.max_clients = sec_cfg.esp_tcp_max_clients;
     esp_cfg.allow_ips = sec_cfg.esp_tcp_allow_ips;
     EspManager esp_manager(std::move(esp_cfg));
-    analytics.setFraudBBoxCallback(
-        [&esp_manager](const AnalyticsProcessor::FraudBBoxPayload& payload) {
-            EspManager::FraudBboxPayload esp_payload;
+    analytics.setTrackPosCallback(
+        [&esp_manager](const AnalyticsProcessor::TrackPosPayload& payload) {
+            EspManager::TrackPosPayload esp_payload;
             esp_payload.object_id = payload.object_id;
-            esp_payload.card_age_text = payload.card_age_text;
-            esp_payload.age = payload.age;
             esp_payload.left = payload.left;
             esp_payload.top = payload.top;
             esp_payload.right = payload.right;
             esp_payload.bottom = payload.bottom;
-            esp_manager.publishFraudBbox(esp_payload);
+            esp_payload.x = payload.x;
+            esp_payload.y = payload.y;
+            esp_manager.publishFraudTrackPosIfIdle(esp_payload);
         });
     if (sec_cfg.esp_tcp_enable && !esp_manager.start(g_running)) {
         std::cerr << "[Fatal] ESP manager 시작 실패." << std::endl;

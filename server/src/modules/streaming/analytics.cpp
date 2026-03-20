@@ -283,8 +283,8 @@ void AnalyticsProcessor::stop() {
     }
 }
 
-void AnalyticsProcessor::setFraudBBoxCallback(FraudBBoxCallback callback) {
-    fraud_bbox_callback = std::move(callback);
+void AnalyticsProcessor::setTrackPosCallback(TrackPosCallback callback) {
+    track_pos_callback = std::move(callback);
 }
 
 void AnalyticsProcessor::setRfidPairedCallback(RfidPairedCallback callback) {
@@ -415,7 +415,7 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
     bool should_notify_worker = false;
     const auto now = std::chrono::steady_clock::now();
     std::vector<std::string> outbound_alerts;
-    std::vector<FraudBBoxPayload> outbound_esp_bbox;
+    std::vector<TrackPosPayload> outbound_track_pos;
     std::vector<OutlineDecisionPayload> outbound_outline_decisions;
 
     {
@@ -592,15 +592,15 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
                 final_out.bbox_left >= 0.0f && final_out.bbox_top >= 0.0f &&
                 final_out.bbox_right >= final_out.bbox_left &&
                 final_out.bbox_bottom >= final_out.bbox_top) {
-                FraudBBoxPayload bbox_payload;
-                bbox_payload.object_id = final_out.object_id;
-                bbox_payload.card_age_text = final_out.card_age_text;
-                bbox_payload.age = final_out.age;
-                bbox_payload.left = final_out.bbox_left;
-                bbox_payload.top = final_out.bbox_top;
-                bbox_payload.right = final_out.bbox_right;
-                bbox_payload.bottom = final_out.bbox_bottom;
-                outbound_esp_bbox.push_back(std::move(bbox_payload));
+                TrackPosPayload track_pos_payload;
+                track_pos_payload.object_id = final_out.object_id;
+                track_pos_payload.left = final_out.bbox_left;
+                track_pos_payload.top = final_out.bbox_top;
+                track_pos_payload.right = final_out.bbox_right;
+                track_pos_payload.bottom = final_out.bbox_bottom;
+                track_pos_payload.x = final_out.center_x;
+                track_pos_payload.y = final_out.center_y;
+                outbound_track_pos.push_back(std::move(track_pos_payload));
             }
         }
     }
@@ -616,9 +616,9 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
     for (const auto& msg : outbound_alerts) {
         send_alert_to_clients(msg);
     }
-    if (fraud_bbox_callback) {
-        for (const auto& payload : outbound_esp_bbox) {
-            fraud_bbox_callback(payload);
+    if (track_pos_callback) {
+        for (const auto& payload : outbound_track_pos) {
+            track_pos_callback(payload);
         }
     }
     if (outline_decision_callback) {
