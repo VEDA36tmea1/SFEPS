@@ -116,6 +116,22 @@ struct DeepSortWorker {
         write_fd = pipe_in[1];
         read_fd  = pipe_out[0];
         active   = true;
+
+        // 워커가 즉시 죽는 경우(예: python/모듈 문제)는
+        // stderr가 /dev/null로 가려져도 parent 로그로는 확인이 필요하다.
+        int status = 0;
+        pid_t w = ::waitpid(pid, &status, WNOHANG);
+        if (w == pid)
+        {
+            active = false;
+            ::close(write_fd); write_fd = -1;
+            ::close(read_fd);  read_fd  = -1;
+            std::cerr << "[deepsort] worker exited early pid=" << pid
+                      << " status=" << status << "\n";
+            pid = -1;
+            return false;
+        }
+
         std::cerr << "[deepsort] worker started pid=" << pid << "\n";
         return true;
     }
@@ -541,7 +557,17 @@ int main(int argc, char** argv)
                 obj.top    = t*sy; obj.bottom = b*sy;
                 tracked_objs.push_back(obj);
             }
-            { std::lock_guard<std::mutex> lock(g_obj_mutex); g_objects=std::move(tracked_objs); }
+            // DeepSORT는 track.is_confirmed() 이후에만 반환하므로,
+            // 초기 워밍업/타임아웃 구간에서는 tracks가 비어 화면 표시가 안 될 수 있다.
+            // 이 경우 raw bbox로 fallback 하여 "표시"부터 복구한다.
+            if (tracked_objs.empty())
+            {
+                { std::lock_guard<std::mutex> lock(g_obj_mutex); g_objects = raw_objs; }
+            }
+            else
+            {
+                { std::lock_guard<std::mutex> lock(g_obj_mutex); g_objects = std::move(tracked_objs); }
+            }
         } else {
             // 워커 없으면 raw 그대로 사용
             std::lock_guard<std::mutex> lock(g_obj_mutex); g_objects=raw_objs;
