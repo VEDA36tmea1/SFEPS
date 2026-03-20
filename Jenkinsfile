@@ -416,11 +416,13 @@ PY
                 stage('Run Squish UI Tests') {
                         steps {
                                 script {
+                            def squishStepFailed = false
                                         node(env.SFEPS_WINDOWS_GUI_AGENT_LABEL) {
                                                 deleteDir()
                                                 checkout scm
 
-                                                bat '''
+                                try {
+                                    bat '''
                                                         @echo off
                                                         if not exist reports mkdir reports
 
@@ -550,6 +552,10 @@ PY
                                                             taskkill /F /IM squishserver.exe >nul 2>nul
                                                         )
                                                 '''
+                                                    } catch (err) {
+                                                        squishStepFailed = true
+                                                        echo "Squish execution failed on Windows node, but stashing reports before failing stage."
+                                                    }
 
                                                 stash name: 'squish-reports', includes: 'reports/**', allowEmpty: true
                                         }
@@ -558,6 +564,10 @@ PY
                                                 unstash 'squish-reports'
                                         } catch (err) {
                                                 echo "No Squish reports were stashed: ${err}"
+                                        }
+
+                                        if (squishStepFailed) {
+                                            error('Run Squish UI Tests failed.')
                                         }
                                 }
                         }
