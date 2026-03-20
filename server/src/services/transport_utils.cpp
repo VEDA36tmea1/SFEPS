@@ -42,10 +42,10 @@ bool start_listener_bundle(ListenerBundle& bundle,
                 close_listener_bundle(bundle);
                 return false;
             }
-            std::cerr << "[main.cpp] [" << service_tag << "] plaintext listener disabled."
+            std::cerr << "[main.cpp] [" << service_tag << "] plaintext 리스너 비활성화."
                       << std::endl;
         } else {
-            std::cout << "[main.cpp] [" << service_tag << "] listening plaintext on port "
+            std::cout << "[main.cpp] [" << service_tag << "] plaintext 포트 리스닝 시작: "
                       << plain_port << std::endl;
         }
     }
@@ -61,14 +61,14 @@ bool start_listener_bundle(ListenerBundle& bundle,
         tls_cfg.tag = tls_tag;
 
         if (!init_tls_server(bundle.tls_server, tls_cfg, tls_err)) {
-            std::cerr << "[main.cpp] [" << service_tag << "] failed to start TLS listener: "
+            std::cerr << "[main.cpp] [" << service_tag << "] TLS 리스너 시작 실패: "
                       << tls_err << std::endl;
             if (tls_required) {
                 close_listener_bundle(bundle);
                 return false;
             }
         } else {
-            std::cout << "[main.cpp] [" << service_tag << "] listening TLS on port " << tls_port
+            std::cout << "[main.cpp] [" << service_tag << "] TLS 포트 리스닝 시작: " << tls_port
                       << std::endl;
         }
     }
@@ -122,18 +122,18 @@ bool accept_client(const ListenerBundle& bundle,
             bundle.plain_server_fd, reinterpret_cast<sockaddr*>(&peer_addr), &peer_len);
         if (client_fd < 0) {
             if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
-                std::cerr << "[" << service_tag << "] accept() failed: " << std::strerror(errno)
+                std::cerr << "[" << service_tag << "] accept() 실패: " << std::strerror(errno)
                           << std::endl;
             }
             return false;
         }
 
         const std::string client_ip = peer_ip_to_string(peer_addr);
-        std::cout << "[main.cpp] [" << service_tag << "] Plain connection attempt: ip="
+        std::cout << "[main.cpp] [" << service_tag << "] Plain 연결 시도: ip="
                   << client_ip << ", fd=" << client_fd << std::endl;
         if (!is_ip_allowed(allowlist, client_ip)) {
             std::cout << "[main.cpp] [" << service_tag
-                      << "] Plain connection rejected by allowlist: ip=" << client_ip
+                      << "] Plain 연결 허용목록 거부: ip=" << client_ip
                       << std::endl;
             close(client_fd);
             return false;
@@ -152,17 +152,17 @@ bool accept_client(const ListenerBundle& bundle,
     const int client_fd = accept_tls_client(bundle.tls_server, tls_client, peer_addr, tls_err);
     if (client_fd < 0) {
         if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
-            std::cerr << "[main.cpp] [" << service_tag << "] TLS accept failed: " << tls_err
+            std::cerr << "[main.cpp] [" << service_tag << "] TLS accept 실패: " << tls_err
                       << std::endl;
         }
         return false;
     }
 
     const std::string client_ip = peer_ip_to_string(peer_addr);
-    std::cout << "[main.cpp] [" << service_tag << "] TLS connection attempt: ip=" << client_ip
+    std::cout << "[main.cpp] [" << service_tag << "] TLS 연결 시도: ip=" << client_ip
               << ", fd=" << client_fd << std::endl;
     if (!is_ip_allowed(allowlist, client_ip)) {
-        std::cout << "[main.cpp] [" << service_tag << "] TLS connection rejected by allowlist: ip="
+        std::cout << "[main.cpp] [" << service_tag << "] TLS 연결 허용목록 거부: ip="
                   << client_ip << std::endl;
         close_tls_client(tls_client);
         return false;

@@ -28,7 +28,7 @@ void apply_socket_read_timeout(int fd, int timeout_ms) {
     tv.tv_sec = timeout_ms / 1000;
     tv.tv_usec = (timeout_ms % 1000) * 1000;
     if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0) {
-        std::cerr << "[main.cpp] [Security] failed to set SO_RCVTIMEO: " << std::strerror(errno)
+        std::cerr << "[main.cpp] [Security] SO_RCVTIMEO 설정 실패: " << std::strerror(errno)
                   << std::endl;
     }
 }
@@ -36,13 +36,13 @@ void apply_socket_read_timeout(int fd, int timeout_ms) {
 int create_listen_socket(int port, const char* tag, const std::string& bind_ip) {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) {
-        std::cerr << "[" << tag << "] socket() failed: " << std::strerror(errno) << std::endl;
+        std::cerr << "[" << tag << "] socket() 실패: " << std::strerror(errno) << std::endl;
         return -1;
     }
 
     int opt = 1;
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) != 0) {
-        std::cerr << "[" << tag << "] setsockopt(SO_REUSEADDR) failed: " << std::strerror(errno)
+        std::cerr << "[" << tag << "] setsockopt(SO_REUSEADDR) 실패: " << std::strerror(errno)
                   << std::endl;
         close(server_fd);
         return -1;
@@ -52,19 +52,19 @@ int create_listen_socket(int port, const char* tag, const std::string& bind_ip) 
     addr.sin_family = AF_INET;
     addr.sin_port = htons(static_cast<uint16_t>(port));
     if (inet_pton(AF_INET, bind_ip.c_str(), &addr.sin_addr) != 1) {
-        std::cerr << "[" << tag << "] invalid bind IP: " << bind_ip << std::endl;
+        std::cerr << "[" << tag << "] 잘못된 bind IP: " << bind_ip << std::endl;
         close(server_fd);
         return -1;
     }
 
     if (bind(server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-        std::cerr << "[" << tag << "] bind() failed: " << std::strerror(errno) << std::endl;
+        std::cerr << "[" << tag << "] bind() 실패: " << std::strerror(errno) << std::endl;
         close(server_fd);
         return -1;
     }
 
     if (listen(server_fd, 16) != 0) {
-        std::cerr << "[" << tag << "] listen() failed: " << std::strerror(errno) << std::endl;
+        std::cerr << "[" << tag << "] listen() 실패: " << std::strerror(errno) << std::endl;
         close(server_fd);
         return -1;
     }

@@ -41,7 +41,7 @@ void run_login_auth_impl(std::atomic<bool>& running,
                        cfg.db_pass.c_str(),
                        cfg.db_name_analytics.c_str());
     if (!auth.connect()) {
-        std::cerr << "[main.cpp] [Fatal] Auth DB connection failed (fail-closed)." << std::endl;
+        std::cerr << "[main.cpp] [Fatal] Auth DB 연결 실패(fail-closed)." << std::endl;
         running = false;
         return;
     }
@@ -51,11 +51,11 @@ void run_login_auth_impl(std::atomic<bool>& running,
                          cfg.db_pass.c_str(),
                          cfg.db_name_analytics.c_str());
     if (!auth_logger.connect()) {
-        std::cerr << "[main.cpp] [Warn] Auth logger DB connection failed. "
+        std::cerr << "[main.cpp] [Warn] Auth logger DB 연결 실패. "
                   << "Login service will continue without auth DB log writes." << std::endl;
     }
 
-    std::cout << "[AuthFlow][4] run_login_auth started. "
+    std::cout << "[AuthFlow][4] run_login_auth 시작. "
               << "plaintext=" << (sec_cfg.app_plaintext_enable ? "on" : "off")
               << ", tls=" << (sec_cfg.app_tls_enable ? "on" : "off")
               << ", auth_tls_port=" << sec_cfg.auth_tls_port << std::endl;
@@ -154,7 +154,7 @@ void run_login_auth_impl(std::atomic<bool>& running,
         const int poll_ret = poll(pfds.data(), pfds.size(), 1000);
         if (poll_ret < 0) {
             if (errno == EINTR) continue;
-            std::cerr << "[Auth] poll() failed: " << std::strerror(errno) << std::endl;
+            std::cerr << "[Auth] poll() 실패: " << std::strerror(errno) << std::endl;
             break;
         }
         if (poll_ret == 0) continue;
@@ -182,7 +182,7 @@ void run_login_auth_impl(std::atomic<bool>& running,
             if (bytes_read <= 0) {
                 if (bytes_read < 0 && errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
                     std::cerr << "[Auth] " << transport_name(kind)
-                              << " read() failed: " << std::strerror(errno) << std::endl;
+                              << " read() 실패: " << std::strerror(errno) << std::endl;
                 }
                 close_client(client);
                 continue;
@@ -202,7 +202,7 @@ void run_login_auth_impl(std::atomic<bool>& running,
 
             if (oversized) {
                 std::cout << "[main.cpp] [Auth] " << transport_name(kind)
-                          << " payload rejected: exceeded SFEPS_AUTH_MAX_BYTES="
+                          << " payload 거부: 초과 SFEPS_AUTH_MAX_BYTES="
                           << sec_cfg.auth_max_bytes << " (ip=" << client.ip << ")"
                           << std::endl;
             }
@@ -224,7 +224,7 @@ void run_login_auth_impl(std::atomic<bool>& running,
     }
 
     close_listener_bundle(listeners);
-    std::cout << "[main.cpp] [Auth] auth thread stopped." << std::endl;
+    std::cout << "[main.cpp] [Auth] auth 스레드 종료." << std::endl;
 }
 
 }  // namespace app_services_impl

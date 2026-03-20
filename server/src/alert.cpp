@@ -89,7 +89,7 @@ void dispatch_plain_alerts(const std::string& msg,
         ++stats.target_count;
         if (!send_all_plain(it->fd, msg.data(), msg.size())) {
             std::cout << "[alert.cpp] [Alert] " << fail_prefix << " (" << describe_plain_peer(*it)
-                      << ") err=" << errno << " (" << std::strerror(errno) << ")" << std::endl;
+                      << ") 오류=" << errno << " (" << std::strerror(errno) << ")" << std::endl;
             close(it->fd);
             it = g_plain_clients.erase(it);
             ++stats.fail_count;
@@ -112,7 +112,7 @@ void dispatch_tls_alerts(const std::string& msg,
         ++stats.target_count;
         if (!send_all_tls(it->conn, msg.data(), msg.size())) {
             std::cout << "[alert.cpp] [Alert] " << fail_prefix << " (" << describe_tls_peer(*it)
-                      << ") err=" << errno << " (" << std::strerror(errno) << ")" << std::endl;
+                      << ") 오류=" << errno << " (" << std::strerror(errno) << ")" << std::endl;
             close_tls_client(it->conn);
             it = g_tls_clients.erase(it);
             ++stats.fail_count;
@@ -169,24 +169,24 @@ void send_alert_to_clients(const std::string& msg) {
     std::lock_guard<std::mutex> lock(g_alert_clients_mutex);
     const size_t total_clients_before = g_plain_clients.size() + g_tls_clients.size();
 
-    std::cout << "[alert.cpp] [Alert] Dispatch start: clients=" << total_clients_before
-              << ", len=" << msg.size() << std::endl;
+    std::cout << "[alert.cpp] [Alert] 전송 시작: 클라이언트 수=" << total_clients_before
+              << ", 길이=" << msg.size() << std::endl;
 
     if (total_clients_before == 0) {
         return;
     }
 
     AlertDispatchStats stats;
-    dispatch_plain_alerts(msg, nullptr, stats, "send failed");
-    dispatch_tls_alerts(msg, nullptr, stats, "TLS send failed");
+    dispatch_plain_alerts(msg, nullptr, stats, "전송 실패");
+    dispatch_tls_alerts(msg, nullptr, stats, "TLS 전송 실패");
 
     if (stats.sent_count == 0) {
-        std::cout << "[alert.cpp] [Alert] No data delivered. success=" << stats.sent_count
-                  << ", fail=" << stats.fail_count << ", payload_len=" << msg.size()
+        std::cout << "[alert.cpp] [Alert] 데이터 전달 없음. 성공=" << stats.sent_count
+                  << ", 실패=" << stats.fail_count << ", payload_len=" << msg.size()
                   << std::endl;
     } else {
-        std::cout << "[alert.cpp] [Alert] Sent to clients: success=" << stats.sent_count
-                  << ", fail=" << stats.fail_count << ", payload='" << msg << "'" << std::endl;
+        std::cout << "[alert.cpp] [Alert] 클라이언트 전송 완료: 성공=" << stats.sent_count
+                  << ", 실패=" << stats.fail_count << ", payload='" << msg << "'" << std::endl;
     }
 }
 
@@ -196,15 +196,15 @@ void send_alert_to_ip_clients(const std::string& ip, const std::string& msg) {
     std::lock_guard<std::mutex> lock(g_alert_clients_mutex);
     const size_t target_clients = count_targets(&ip);
 
-    std::cout << "[alert.cpp] [Alert] Target dispatch start: ip=" << ip
-              << ", targets=" << target_clients << ", len=" << msg.size() << std::endl;
+    std::cout << "[alert.cpp] [Alert] 대상 전송 시작: ip=" << ip
+              << ", 대상수=" << target_clients << ", 길이=" << msg.size() << std::endl;
     if (target_clients == 0) return;
 
     AlertDispatchStats stats;
-    dispatch_plain_alerts(msg, &ip, stats, "target send failed");
-    dispatch_tls_alerts(msg, &ip, stats, "target TLS send failed");
+    dispatch_plain_alerts(msg, &ip, stats, "대상 전송 실패");
+    dispatch_tls_alerts(msg, &ip, stats, "대상 TLS 전송 실패");
 
-    std::cout << "[alert.cpp] [Alert] Target dispatch done: ip=" << ip
-              << ", success=" << stats.sent_count << ", fail=" << stats.fail_count
+    std::cout << "[alert.cpp] [Alert] 대상 전송 완료: ip=" << ip
+              << ", 성공=" << stats.sent_count << ", 실패=" << stats.fail_count
               << ", payload='" << msg << "'" << std::endl;
 }
