@@ -119,7 +119,7 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
                 h = bottom - top;
             }
 
-            if (x != -1 && y != -1 && obj_type == "Head") {
+            if (x != -1 && y != -1 && obj_type == "Human") {
                 results.push_back({obj_id, obj_type, x, y, likelihood, w, h});
 
                 constexpr bool k_enable_object_log = true;
