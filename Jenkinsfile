@@ -455,6 +455,12 @@ PY
                                                                 set "AUT_PATH=client\\build-mingw\\appHanwhaVisionSFEPS.exe"
                                                             ) else if exist "client\\build\\appHanwhaVisionSFEPS.exe" (
                                                                 set "AUT_PATH=client\\build\\appHanwhaVisionSFEPS.exe"
+                                                            ) else if exist "C:\\Jenkins\\workspace\\SFEPS\\client\\build-mingw\\appHanwhaVisionSFEPS.exe" (
+                                                                set "AUT_PATH=C:\\Jenkins\\workspace\\SFEPS\\client\\build-mingw\\appHanwhaVisionSFEPS.exe"
+                                                            ) else if exist "C:\\Users\\2-08\\Desktop\\SFEPS\\client\\build-mingw\\appHanwhaVisionSFEPS.exe" (
+                                                                set "AUT_PATH=C:\\Users\\2-08\\Desktop\\SFEPS\\client\\build-mingw\\appHanwhaVisionSFEPS.exe"
+                                                            ) else if exist "C:\\Users\\2-08\\Desktop\\SFEPS\\client\\build\\appHanwhaVisionSFEPS.exe" (
+                                                                set "AUT_PATH=C:\\Users\\2-08\\Desktop\\SFEPS\\client\\build\\appHanwhaVisionSFEPS.exe"
                                                             )
                                                         )
 
@@ -489,6 +495,12 @@ PY
                                                         if "%AUT_PATH%"=="" (
                                                             echo AUT binary not found on Windows GUI agent.
                                                             echo Set SFEPS_SQUISH_AUT_PATH or build the client on that node.
+                                                            echo Checked:
+                                                            echo  - client\\build-mingw\\appHanwhaVisionSFEPS.exe
+                                                            echo  - client\\build\\appHanwhaVisionSFEPS.exe
+                                                            echo  - C:\\Jenkins\\workspace\\SFEPS\\client\\build-mingw\\appHanwhaVisionSFEPS.exe
+                                                            echo  - C:\\Users\\2-08\\Desktop\\SFEPS\\client\\build-mingw\\appHanwhaVisionSFEPS.exe
+                                                            echo  - C:\\Users\\2-08\\Desktop\\SFEPS\\client\\build\\appHanwhaVisionSFEPS.exe
                                                             exit /b 1
                                                         )
 
