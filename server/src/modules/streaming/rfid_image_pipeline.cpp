@@ -15,7 +15,7 @@ namespace fs = std::filesystem;
 namespace {
 
 constexpr const char* kRfidImageSourcePath =
-    "/home/iam/SFEPS/Camera/image_processing/3_best_shot.jpg";
+    "/home/iam/SFEPS/Camera/image_processing/4_best_shot.jpg";
 constexpr const char* kEventImageBaseDir = "/home/iam/SFEPS/event_images";
 constexpr const char* kEventImagePendingDir = "/home/iam/SFEPS/event_images/pending";
 constexpr const char* kEventImageFraudDir = "/home/iam/SFEPS/event_images/fraud";
