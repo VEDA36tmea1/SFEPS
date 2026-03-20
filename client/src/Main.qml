@@ -61,6 +61,42 @@ Window {
         return true
     }
 
+    // Squish helper: inject into MonitoringView via stable root object.
+    function injectTestMonitoringEventFromMain(objectId, cardAgeText, ageGroup, isFraud) {
+        if (!monitoringView || !monitoringView.injectTestMonitoringEvent) {
+            return false
+        }
+        currentViewIndex = 1
+        return !!monitoringView.injectTestMonitoringEvent(
+            objectId || "TEST-OBJ-001",
+            cardAgeText || "adult",
+            ageGroup || "30s",
+            isFraud !== false
+        )
+    }
+
+    // Squish helper: read monitoring event count via root object.
+    function getMonitoringEventCountForTest() {
+        if (!monitoringView) {
+            return -1
+        }
+        if (monitoringView.squishEventCount !== undefined) {
+            return Number(monitoringView.squishEventCount)
+        }
+        if (monitoringView.totalBoardingCount !== undefined) {
+            return Number(monitoringView.totalBoardingCount)
+        }
+        return -1
+    }
+
+    // Squish helper: check event existence by objectId via root object.
+    function hasMonitoringEventObjectIdForTest(targetObjectId) {
+        if (!monitoringView || !monitoringView.hasMonitoringEventObjectIdForTest) {
+            return false
+        }
+        return !!monitoringView.hasMonitoringEventObjectIdForTest(targetObjectId)
+    }
+
     ListModel {
         id: notificationModel
     }

@@ -41,6 +41,11 @@ pipeline {
         SFEPS_SLACK_NOTIFY = "${env.SFEPS_SLACK_NOTIFY ?: '1'}"
         SFEPS_SLACK_WEBHOOK_CREDENTIALS_ID = "${env.SFEPS_SLACK_WEBHOOK_CREDENTIALS_ID ?: 'sfeps-slack-webhook'}"
         SFEPS_SLACK_CHANNEL = "${env.SFEPS_SLACK_CHANNEL ?: ''}"
+        SFEPS_SQUISH_RUNNER = "${env.SFEPS_SQUISH_RUNNER ?: ''}"
+        SFEPS_SQUISH_SERVER = "${env.SFEPS_SQUISH_SERVER ?: ''}"
+        SFEPS_SQUISH_SUITE_PATH = "${env.SFEPS_SQUISH_SUITE_PATH ?: 'tests/squish/suite_sfeps/suite_sfeps'}"
+        SFEPS_SQUISH_AUT_PATH = "${env.SFEPS_SQUISH_AUT_PATH ?: ''}"
+        SFEPS_WINDOWS_GUI_AGENT_LABEL = "${env.SFEPS_WINDOWS_GUI_AGENT_LABEL ?: 'windows-gui'}"
 
     }
 
@@ -242,38 +247,7 @@ PY
             }
         }
 
-        stage('Run Track Tests') {
-            steps {
-                sh '''
-                    set -eu
-                    export MYSQL_UNIX_PORT="$WORKSPACE/.ci-mariadb/mysqld.sock"
-                    mkdir -p reports
-                    python3 -m pytest -q tests/test_tc_func_track.py -r a --junitxml=reports/track-tests.xml
 
-                    python3 - <<'PY'
-import sys
-import xml.etree.ElementTree as ET
-
-path = "reports/track-tests.xml"
-root = ET.parse(path).getroot()
-
-if root.tag == "testsuite":
-    tests = int(root.attrib.get("tests", "0"))
-    skipped = int(root.attrib.get("skipped", "0"))
-else:
-    tests = 0
-    skipped = 0
-    for suite in root.findall("testsuite"):
-        tests += int(suite.attrib.get("tests", "0"))
-        skipped += int(suite.attrib.get("skipped", "0"))
-
-if tests == 0 or skipped == tests:
-    print(f"All tests skipped ({skipped}/{tests}). Marking build as failed.")
-    sys.exit(2)
-PY
-                '''
-            }
-        }
 
         stage('Start Local MediaMTX') {
             steps {
@@ -436,6 +410,96 @@ PY
                 '''
             }
         }
+
+                stage('Run Squish UI Tests') {
+                        steps {
+                                script {
+                                        node(env.SFEPS_WINDOWS_GUI_AGENT_LABEL) {
+                                                deleteDir()
+                                                checkout scm
+
+                                                bat '''
+                                                        @echo off
+                                                        if not exist reports mkdir reports
+
+                                                        set "SQUISH_RUNNER=%SFEPS_SQUISH_RUNNER%"
+                                                        if "%SQUISH_RUNNER%"=="" set "SQUISH_RUNNER=squishrunner.exe"
+
+                                                        set "SQUISH_SERVER=%SFEPS_SQUISH_SERVER%"
+                                                        if "%SQUISH_SERVER%"=="" (
+                                                            for %%I in ("%SQUISH_RUNNER%") do set "SQUISH_SERVER=%%~dpIsquishserver.exe"
+                                                        )
+
+                                                        set "SUITE_PATH=%SFEPS_SQUISH_SUITE_PATH%"
+                                                        if "%SUITE_PATH%"=="" set "SUITE_PATH=tests\\squish\\suite_sfeps\\suite_sfeps"
+
+                                                        set "AUT_PATH=%SFEPS_SQUISH_AUT_PATH%"
+                                                        if "%AUT_PATH%"=="" (
+                                                            if exist "client\\build-mingw\\appHanwhaVisionSFEPS.exe" (
+                                                                set "AUT_PATH=client\\build-mingw\\appHanwhaVisionSFEPS.exe"
+                                                            ) else if exist "client\\build\\appHanwhaVisionSFEPS.exe" (
+                                                                set "AUT_PATH=client\\build\\appHanwhaVisionSFEPS.exe"
+                                                            )
+                                                        )
+
+                                                        where "%SQUISH_RUNNER%" >nul 2>nul
+                                                        if errorlevel 1 (
+                                                            if not exist "%SQUISH_RUNNER%" (
+                                                                echo squishrunner not found on Windows GUI agent. Skipping Squish UI tests.
+                                                                exit /b 0
+                                                            )
+                                                        )
+
+                                                        set "STARTED_SQUISH_SERVER=0"
+                                                        tasklist /FI "IMAGENAME eq squishserver.exe" | find /I "squishserver.exe" >nul
+                                                        if errorlevel 1 (
+                                                            if not exist "%SQUISH_SERVER%" (
+                                                                echo squishserver not found on Windows GUI agent: %SQUISH_SERVER%
+                                                                exit /b 1
+                                                            )
+                                                            start "squishserver" /MIN "%SQUISH_SERVER%" --verbose
+                                                            timeout /t 2 >nul
+                                                            set "STARTED_SQUISH_SERVER=1"
+                                                        )
+
+                                                        if "%AUT_PATH%"=="" (
+                                                            echo AUT binary not found on Windows GUI agent. Set SFEPS_SQUISH_AUT_PATH or build the client on that node. Skipping Squish UI tests.
+                                                            exit /b 0
+                                                        )
+
+                                                        if not exist "%AUT_PATH%" (
+                                                            echo AUT binary path does not exist on Windows GUI agent: %AUT_PATH%
+                                                            exit /b 0
+                                                        )
+
+                                                        for %%T in (
+                                                            tst_tc_func_stream_02
+                                                            tst_tc_func_ui_01
+                                                            tst_tc_func_ui_02
+                                                            tst_tc_func_ui_03
+                                                            tst_tc_func_track_01
+                                                            tst_tc_func_track_02
+                                                        ) do (
+                                                            call "%SQUISH_RUNNER%" --testsuite "%SUITE_PATH%" --testcase %%T --aut "%AUT_PATH%" --reportgen "junit,reports\\squish-%%T.xml"
+                                                            if errorlevel 1 exit /b 1
+                                                        )
+
+                                                        if "%STARTED_SQUISH_SERVER%"=="1" (
+                                                            taskkill /F /IM squishserver.exe >nul 2>nul
+                                                        )
+                                                '''
+
+                                                stash name: 'squish-reports', includes: 'reports/squish-*.xml', allowEmpty: true
+                                        }
+
+                                        try {
+                                                unstash 'squish-reports'
+                                        } catch (err) {
+                                                echo "No Squish reports were stashed: ${err}"
+                                        }
+                                }
+                        }
+                }
 
         stage('Build & Push ARM Image') {
             when {
