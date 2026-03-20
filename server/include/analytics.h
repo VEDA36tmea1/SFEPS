@@ -35,14 +35,14 @@ public:
         std::chrono::steady_clock::time_point updated_at;
     };
 
-    struct FraudBBoxPayload {
+    struct TrackPosPayload {
         std::string object_id;
-        std::string card_age_text;
-        std::string age;
         float left = -1.0f;
         float top = -1.0f;
         float right = -1.0f;
         float bottom = -1.0f;
+        float x = -1.0f;
+        float y = -1.0f;
     };
 
     struct OutlineDecisionPayload {
@@ -53,7 +53,7 @@ public:
         std::string tag_time;
     };
 
-    using FraudBBoxCallback = std::function<void(const FraudBBoxPayload&)>;
+    using TrackPosCallback = std::function<void(const TrackPosPayload&)>;
     using RfidPairedCallback = std::function<void(const std::string&)>;
     using OutlineDecisionCallback = std::function<void(const OutlineDecisionPayload&)>;
 
@@ -74,7 +74,7 @@ public:
     bool getObjectPositionSnapshot(const std::string& object_id,
                                    ObjectPositionSnapshot& out) const;
     void getAllObjectSnapshots(std::vector<ObjectPositionSnapshot>& out) const;
-    void setFraudBBoxCallback(FraudBBoxCallback callback);
+    void setTrackPosCallback(TrackPosCallback callback);
     void setRfidPairedCallback(RfidPairedCallback callback);
     void setOutlineDecisionCallback(OutlineDecisionCallback callback);
 
@@ -153,7 +153,7 @@ private:
     std::atomic<std::uint64_t> dropped_pending_expired_count;
     std::atomic<std::uint64_t> dropped_pending_overflow_count;
     std::atomic<std::uint64_t> parsed_xml_ok_count;
-    FraudBBoxCallback fraud_bbox_callback;
+    TrackPosCallback track_pos_callback;
     RfidPairedCallback rfid_paired_callback;
     OutlineDecisionCallback outline_decision_callback;
     XMLParser xml_parser;

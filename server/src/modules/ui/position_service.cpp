@@ -161,23 +161,64 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
                   << ", proto=" << (proto ? proto : "UNKNOWN") << std::endl;
     };
 
+    const auto try_publish_esp_track_pos = [&](const std::string& object_id) -> bool {
+        if (object_id.empty()) return false;
+
+        AnalyticsProcessor::ObjectPositionSnapshot snapshot;
+        if (!analytics.getObjectPositionSnapshot(object_id, snapshot)) {
+            return false;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        const auto esp_stale_limit =
+            std::chrono::seconds(static_cast<long long>(sec_cfg.position_stale_seconds));
+        if ((now - snapshot.updated_at) > esp_stale_limit) {
+            return false;
+        }
+
+        EspManager::TrackPosPayload payload;
+        payload.object_id = snapshot.object_id;
+        payload.left = snapshot.left;
+        payload.top = snapshot.top;
+        payload.right = snapshot.right;
+        payload.bottom = snapshot.bottom;
+        payload.x = snapshot.x;
+        payload.y = snapshot.y;
+        payload.tag_time = snapshot.tag_time;
+        if (!esp_manager.publishTrackPos(payload)) {
+            return false;
+        }
+
+        esp_last_sent = snapshot;
+        esp_has_last_sent = true;
+        return true;
+    };
+
     const auto switch_esp_track_target = [&](const std::string& requested_id) {
         if (requested_id.empty()) return;
-        if (!esp_active_object_id.empty() && esp_active_object_id != requested_id) {
+        if (esp_active_object_id == requested_id) return;
+
+        const bool was_tracking = !esp_active_object_id.empty();
+        if (was_tracking) {
+            esp_manager.publishTrackChangeSignal(esp_active_object_id, requested_id);
             esp_manager.publishTrackEnd(esp_active_object_id, "SWITCH");
         }
-        if (esp_active_object_id != requested_id) {
-            esp_active_object_id = requested_id;
-            esp_has_last_sent = false;
-        }
+
+        esp_active_object_id = requested_id;
+        esp_has_last_sent = false;
+        esp_manager.setClientTrackObjectId(esp_active_object_id);
+        esp_manager.publishTrackStart(esp_active_object_id);
+        try_publish_esp_track_pos(esp_active_object_id);
     };
 
     const auto clear_esp_track_target = [&](const std::string& requested_id, const char* reason) {
         if (requested_id.empty()) return;
         if (esp_active_object_id == requested_id) {
-            esp_manager.publishTrackEnd(esp_active_object_id, reason ? reason : "UNSUB");
+            const std::string reason_text = reason ? reason : "UNSUB";
+            esp_manager.publishTrackEnd(esp_active_object_id, reason_text);
             esp_active_object_id.clear();
             esp_has_last_sent = false;
+            esp_manager.clearClientTrackObjectId();
         }
     };
 
@@ -380,6 +421,8 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
         const auto obj_min_send_interval =
             std::chrono::milliseconds(std::max(1, sec_cfg.position_min_send_ms));
 
+        esp_manager.expireFraudTrackIfStale(esp_stale_limit);
+
         if (!esp_active_object_id.empty()) {
             AnalyticsProcessor::ObjectPositionSnapshot snapshot;
             const bool has_snapshot =
@@ -387,23 +430,9 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
             const bool is_stale = (!has_snapshot) || ((now - snapshot.updated_at) > esp_stale_limit);
 
             if (is_stale) {
-                esp_manager.publishTrackEnd(esp_active_object_id, "STALE");
-                esp_active_object_id.clear();
-                esp_has_last_sent = false;
+                clear_esp_track_target(esp_active_object_id, "STALE");
             } else if (!esp_has_last_sent || !snapshots_equal(esp_last_sent, snapshot)) {
-                EspManager::TrackPosPayload payload;
-                payload.object_id = snapshot.object_id;
-                payload.left = snapshot.left;
-                payload.top = snapshot.top;
-                payload.right = snapshot.right;
-                payload.bottom = snapshot.bottom;
-                payload.x = snapshot.x;
-                payload.y = snapshot.y;
-                payload.tag_time = snapshot.tag_time;
-                if (esp_manager.publishTrackPos(payload)) {
-                    esp_last_sent = snapshot;
-                    esp_has_last_sent = true;
-                }
+                try_publish_esp_track_pos(esp_active_object_id);
             }
         }
 
