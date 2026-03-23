@@ -692,18 +692,17 @@ PY
                             echo 'missing mysql socket: ${SFEPS_REMOTE_MYSQL_SOCK_DIR}/mysqld.sock' >&2
                             exit 1
                           fi
-                          TMP_ENV_FILE='/tmp/${SFEPS_TEST_CONTAINER_NAME}.env'
-                          rm -rf "\$TMP_ENV_FILE"
+                          rm -rf '/tmp/sfeps-server-test.env'
                           grep -Ev '^(SFEPS_APP_BIND_IP|SFEPS_APP_TLS_ENABLE|SFEPS_APP_PLAINTEXT_ENABLE|SFEPS_APP_TLS_CERT_FILE|SFEPS_APP_TLS_KEY_FILE|SFEPS_ESP_TCP_ENABLE|SFEPS_ESP_TCP_BIND_IP|SFEPS_ESP_TCP_PORT|SFEPS_ESP_TCP_MAX_CLIENTS|SFEPS_ESP_TCP_ALLOW_IPS)=' \
-                            '${SFEPS_REMOTE_ENV_FILE}' > "\$TMP_ENV_FILE"
+                            '${SFEPS_REMOTE_ENV_FILE}' > '/tmp/sfeps-server-test.env'
                           {
                             echo 'SFEPS_APP_BIND_IP=0.0.0.0'
                             echo 'SFEPS_APP_TLS_ENABLE=0'
                             echo 'SFEPS_APP_PLAINTEXT_ENABLE=1'
                             echo 'SFEPS_ESP_TCP_ENABLE=0'
-                          } >> "\$TMP_ENV_FILE"
+                          } >> '/tmp/sfeps-server-test.env'
                           if ! docker run -d --name '${SFEPS_TEST_CONTAINER_NAME}' --restart unless-stopped --network host \
-                            -v "\$TMP_ENV_FILE:${SFEPS_CONTAINER_ENV_FILE}:ro" \
+                            -v '/tmp/sfeps-server-test.env:${SFEPS_CONTAINER_ENV_FILE}:ro' \
                             -v '${SFEPS_REMOTE_PKI_DIR}:${SFEPS_REMOTE_PKI_DIR}:ro' \
                             -v '${SFEPS_REMOTE_MYSQL_SOCK_DIR}:${SFEPS_REMOTE_MYSQL_SOCK_DIR}' \
                             -v '${SFEPS_VIDEO_DIR}:${SFEPS_VIDEO_DIR}' \
@@ -784,16 +783,15 @@ PY
                             echo 'missing mysql socket: ${SFEPS_REMOTE_MYSQL_SOCK_DIR}/mysqld.sock' >&2
                             exit 1
                           fi
-                          TMP_ENV_FILE='/tmp/${SFEPS_PROD_CONTAINER_NAME}.env'
-                          rm -rf "\$TMP_ENV_FILE"
+                          rm -rf '/tmp/sfeps-server-prod.env'
                           grep -Ev '^(SFEPS_APP_TLS_ENABLE|SFEPS_APP_PLAINTEXT_ENABLE|SFEPS_APP_TLS_CERT_FILE|SFEPS_APP_TLS_KEY_FILE)=' \
-                            '${SFEPS_REMOTE_ENV_FILE}' > "\$TMP_ENV_FILE"
+                            '${SFEPS_REMOTE_ENV_FILE}' > '/tmp/sfeps-server-prod.env'
                           {
                             echo 'SFEPS_APP_TLS_ENABLE=0'
                             echo 'SFEPS_APP_PLAINTEXT_ENABLE=1'
-                          } >> "\$TMP_ENV_FILE"
+                          } >> '/tmp/sfeps-server-prod.env'
                           if ! docker run -d --name '${SFEPS_PROD_CONTAINER_NAME}' --restart unless-stopped --network host \
-                            -v "\$TMP_ENV_FILE:${SFEPS_CONTAINER_ENV_FILE}:ro" \
+                            -v '/tmp/sfeps-server-prod.env:${SFEPS_CONTAINER_ENV_FILE}:ro' \
                             -v '${SFEPS_REMOTE_PKI_DIR}:${SFEPS_REMOTE_PKI_DIR}:ro' \
                             -v '${SFEPS_REMOTE_MYSQL_SOCK_DIR}:${SFEPS_REMOTE_MYSQL_SOCK_DIR}' \
                             -v '${SFEPS_VIDEO_DIR}:${SFEPS_VIDEO_DIR}' \
