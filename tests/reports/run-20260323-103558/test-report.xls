@@ -1,0 +1,245 @@
+<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+<Styles>
+<Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Vertical="Top"/><Font ss:FontName="Calibri" ss:Size="10"/></Style>
+<Style ss:ID="Header"><Font ss:Bold="1"/><Interior ss:Color="#DCEBFF" ss:Pattern="Solid"/></Style>
+<Style ss:ID="Wrap"><Alignment ss:Vertical="Top" ss:WrapText="1"/></Style>
+<Style ss:ID="Pass"><Font ss:Color="#166534" ss:Bold="1"/></Style>
+<Style ss:ID="Fail"><Font ss:Color="#991B1B" ss:Bold="1"/></Style>
+<Style ss:ID="Error"><Font ss:Color="#B91C1C" ss:Bold="1"/></Style>
+<Style ss:ID="Skip"><Font ss:Color="#92400E" ss:Bold="1"/></Style>
+</Styles>
+<Worksheet ss:Name="Summary"><Table>
+<Row>
+<Cell ss:StyleID="Header"><Data ss:Type="String">Metric</Data></Cell>
+<Cell ss:StyleID="Header"><Data ss:Type="String">Value</Data></Cell>
+</Row>
+<Row><Cell><Data ss:Type="String">Tests</Data></Cell><Cell><Data ss:Type="Number">25</Data></Cell></Row>
+<Row><Cell><Data ss:Type="String">Failures</Data></Cell><Cell><Data ss:Type="Number">0</Data></Cell></Row>
+<Row><Cell><Data ss:Type="String">Errors</Data></Cell><Cell><Data ss:Type="Number">0</Data></Cell></Row>
+<Row><Cell><Data ss:Type="String">Skipped</Data></Cell><Cell><Data ss:Type="Number">19</Data></Cell></Row>
+<Row><Cell><Data ss:Type="String">Duration(sec)</Data></Cell><Cell><Data ss:Type="Number">1.733</Data></Cell></Row>
+</Table>
+<WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"></WorksheetOptions>
+</Worksheet>
+<Worksheet ss:Name="TestCases"><Table>
+<Column ss:Width="180"/>
+<Column ss:Width="220"/>
+<Column ss:Width="340"/>
+<Column ss:Width="95"/>
+<Column ss:Width="95"/>
+<Column ss:Width="540"/>
+<Row>
+<Cell ss:StyleID="Header"><Data ss:Type="String">Suite</Data></Cell>
+<Cell ss:StyleID="Header"><Data ss:Type="String">Class</Data></Cell>
+<Cell ss:StyleID="Header"><Data ss:Type="String">Test Case</Data></Cell>
+<Cell ss:StyleID="Header"><Data ss:Type="String">Status</Data></Cell>
+<Cell ss:StyleID="Header"><Data ss:Type="String">Time (s)</Data></Cell>
+<Cell ss:StyleID="Header"><Data ss:Type="String">Detail</Data></Cell>
+</Row>
+<Row>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">pytest</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">tests.test_tc_func_event</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">test_tc_func_event_01</Data></Cell>
+<Cell ss:StyleID="Pass"><Data ss:Type="String">passed</Data></Cell>
+<Cell><Data ss:Type="Number">0.017</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String"></Data></Cell>
+</Row>
+<Row>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">pytest</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">tests.test_tc_func_event</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">test_tc_func_event_02</Data></Cell>
+<Cell ss:StyleID="Pass"><Data ss:Type="String">passed</Data></Cell>
+<Cell><Data ss:Type="Number">0.033</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String"></Data></Cell>
+</Row>
+<Row>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">pytest</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">tests.test_tc_func_event</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">test_tc_func_event_03</Data></Cell>
+<Cell ss:StyleID="Pass"><Data ss:Type="String">passed</Data></Cell>
+<Cell><Data ss:Type="Number">0.028</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String"></Data></Cell>
+</Row>
+<Row>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">pytest</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">tests.test_tc_func_event</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">test_tc_func_event_04</Data></Cell>
+<Cell ss:StyleID="Pass"><Data ss:Type="String">passed</Data></Cell>
+<Cell><Data ss:Type="Number">0.015</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String"></Data></Cell>
+</Row>
+<Row>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">pytest</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">tests.test_tc_func_event</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">test_tc_func_event_05</Data></Cell>
+<Cell ss:StyleID="Pass"><Data ss:Type="String">passed</Data></Cell>
+<Cell><Data ss:Type="Number">0.016</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String"></Data></Cell>
+</Row>
+<Row>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">pytest</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">tests.test_tc_func_event</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">test_tc_func_event_06</Data></Cell>
+<Cell ss:StyleID="Pass"><Data ss:Type="String">passed</Data></Cell>
+<Cell><Data ss:Type="Number">0.052</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String"></Data></Cell>
+</Row>
+<Row>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">pytest</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">tests.test_tc_func_login</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">test_tc_func_login_01</Data></Cell>
+<Cell ss:StyleID="Skip"><Data ss:Type="String">skipped</Data></Cell>
+<Cell><Data ss:Type="Number">0.218</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">Failed to start real SFEPS auth server on 127.0.0.1:5555 (exit_code=255). Check tests/real_server.log. [main.cpp] [Security] SFEPS_AUTH_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_AUDIO_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_ALERT_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] App port mode: plaintext-only. [main.cpp] [Security] Bind IP=127.0.0.1 [main.cpp] [ESP] enabled=on, bind_ip=192.168.4.1, port=5565, max_clients=4 [main.cpp] [ESP] SFEPS_ESP_TCP_ALLOW_IPS is empty: allow-all within bound interface. [main.cpp] [Security] auth_max_bytes=256, audio_max_bytes=4194304, alert_max_clients=64, position_max_clients=64, position_tick_ms=100, position_stale_sec=3, socket_read_timeout_ms=5000 [analytics.cpp] [Analytics] started. [esp_manager.cpp] [ESP] bind() failed: Cannot assign requested address (192.168.4.1:5565) [Fatal] ESP manager startup failed. [log.cpp] [System] DB connection closed.</Data></Cell>
+</Row>
+<Row>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">pytest</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">tests.test_tc_func_login</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">test_tc_func_login_02</Data></Cell>
+<Cell ss:StyleID="Skip"><Data ss:Type="String">skipped</Data></Cell>
+<Cell><Data ss:Type="Number">0.002</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">Failed to start real SFEPS auth server on 127.0.0.1:5555 (exit_code=255). Check tests/real_server.log. [main.cpp] [Security] SFEPS_AUTH_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_AUDIO_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_ALERT_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] App port mode: plaintext-only. [main.cpp] [Security] Bind IP=127.0.0.1 [main.cpp] [ESP] enabled=on, bind_ip=192.168.4.1, port=5565, max_clients=4 [main.cpp] [ESP] SFEPS_ESP_TCP_ALLOW_IPS is empty: allow-all within bound interface. [main.cpp] [Security] auth_max_bytes=256, audio_max_bytes=4194304, alert_max_clients=64, position_max_clients=64, position_tick_ms=100, position_stale_sec=3, socket_read_timeout_ms=5000 [analytics.cpp] [Analytics] started. [esp_manager.cpp] [ESP] bind() failed: Cannot assign requested address (192.168.4.1:5565) [Fatal] ESP manager startup failed. [log.cpp] [System] DB connection closed.</Data></Cell>
+</Row>
+<Row>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">pytest</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">tests.test_tc_func_login</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">test_tc_func_login_03</Data></Cell>
+<Cell ss:StyleID="Skip"><Data ss:Type="String">skipped</Data></Cell>
+<Cell><Data ss:Type="Number">0.001</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">Failed to start real SFEPS auth server on 127.0.0.1:5555 (exit_code=255). Check tests/real_server.log. [main.cpp] [Security] SFEPS_AUTH_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_AUDIO_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_ALERT_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] App port mode: plaintext-only. [main.cpp] [Security] Bind IP=127.0.0.1 [main.cpp] [ESP] enabled=on, bind_ip=192.168.4.1, port=5565, max_clients=4 [main.cpp] [ESP] SFEPS_ESP_TCP_ALLOW_IPS is empty: allow-all within bound interface. [main.cpp] [Security] auth_max_bytes=256, audio_max_bytes=4194304, alert_max_clients=64, position_max_clients=64, position_tick_ms=100, position_stale_sec=3, socket_read_timeout_ms=5000 [analytics.cpp] [Analytics] started. [esp_manager.cpp] [ESP] bind() failed: Cannot assign requested address (192.168.4.1:5565) [Fatal] ESP manager startup failed. [log.cpp] [System] DB connection closed.</Data></Cell>
+</Row>
+<Row>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">pytest</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">tests.test_tc_func_login</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">test_tc_func_login_04[-1111]</Data></Cell>
+<Cell ss:StyleID="Skip"><Data ss:Type="String">skipped</Data></Cell>
+<Cell><Data ss:Type="Number">0.002</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">Failed to start real SFEPS auth server on 127.0.0.1:5555 (exit_code=255). Check tests/real_server.log. [main.cpp] [Security] SFEPS_AUTH_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_AUDIO_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_ALERT_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] App port mode: plaintext-only. [main.cpp] [Security] Bind IP=127.0.0.1 [main.cpp] [ESP] enabled=on, bind_ip=192.168.4.1, port=5565, max_clients=4 [main.cpp] [ESP] SFEPS_ESP_TCP_ALLOW_IPS is empty: allow-all within bound interface. [main.cpp] [Security] auth_max_bytes=256, audio_max_bytes=4194304, alert_max_clients=64, position_max_clients=64, position_tick_ms=100, position_stale_sec=3, socket_read_timeout_ms=5000 [analytics.cpp] [Analytics] started. [esp_manager.cpp] [ESP] bind() failed: Cannot assign requested address (192.168.4.1:5565) [Fatal] ESP manager startup failed. [log.cpp] [System] DB connection closed.</Data></Cell>
+</Row>
+<Row>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">pytest</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">tests.test_tc_func_login</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">test_tc_func_login_04[admin-]</Data></Cell>
+<Cell ss:StyleID="Skip"><Data ss:Type="String">skipped</Data></Cell>
+<Cell><Data ss:Type="Number">0.002</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">Failed to start real SFEPS auth server on 127.0.0.1:5555 (exit_code=255). Check tests/real_server.log. [main.cpp] [Security] SFEPS_AUTH_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_AUDIO_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_ALERT_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] App port mode: plaintext-only. [main.cpp] [Security] Bind IP=127.0.0.1 [main.cpp] [ESP] enabled=on, bind_ip=192.168.4.1, port=5565, max_clients=4 [main.cpp] [ESP] SFEPS_ESP_TCP_ALLOW_IPS is empty: allow-all within bound interface. [main.cpp] [Security] auth_max_bytes=256, audio_max_bytes=4194304, alert_max_clients=64, position_max_clients=64, position_tick_ms=100, position_stale_sec=3, socket_read_timeout_ms=5000 [analytics.cpp] [Analytics] started. [esp_manager.cpp] [ESP] bind() failed: Cannot assign requested address (192.168.4.1:5565) [Fatal] ESP manager startup failed. [log.cpp] [System] DB connection closed.</Data></Cell>
+</Row>
+<Row>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">pytest</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">tests.test_tc_func_login</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">test_tc_func_login_04[-]</Data></Cell>
+<Cell ss:StyleID="Skip"><Data ss:Type="String">skipped</Data></Cell>
+<Cell><Data ss:Type="Number">0.001</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">Failed to start real SFEPS auth server on 127.0.0.1:5555 (exit_code=255). Check tests/real_server.log. [main.cpp] [Security] SFEPS_AUTH_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_AUDIO_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_ALERT_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] App port mode: plaintext-only. [main.cpp] [Security] Bind IP=127.0.0.1 [main.cpp] [ESP] enabled=on, bind_ip=192.168.4.1, port=5565, max_clients=4 [main.cpp] [ESP] SFEPS_ESP_TCP_ALLOW_IPS is empty: allow-all within bound interface. [main.cpp] [Security] auth_max_bytes=256, audio_max_bytes=4194304, alert_max_clients=64, position_max_clients=64, position_tick_ms=100, position_stale_sec=3, socket_read_timeout_ms=5000 [analytics.cpp] [Analytics] started. [esp_manager.cpp] [ESP] bind() failed: Cannot assign requested address (192.168.4.1:5565) [Fatal] ESP manager startup failed. [log.cpp] [System] DB connection closed.</Data></Cell>
+</Row>
+<Row>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">pytest</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">tests.test_tc_func_login</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">test_tc_func_login_04_client_guard</Data></Cell>
+<Cell ss:StyleID="Skip"><Data ss:Type="String">skipped</Data></Cell>
+<Cell><Data ss:Type="Number">0.002</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">Failed to start real SFEPS auth server on 127.0.0.1:5555 (exit_code=255). Check tests/real_server.log. [main.cpp] [Security] SFEPS_AUTH_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_AUDIO_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_ALERT_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] App port mode: plaintext-only. [main.cpp] [Security] Bind IP=127.0.0.1 [main.cpp] [ESP] enabled=on, bind_ip=192.168.4.1, port=5565, max_clients=4 [main.cpp] [ESP] SFEPS_ESP_TCP_ALLOW_IPS is empty: allow-all within bound interface. [main.cpp] [Security] auth_max_bytes=256, audio_max_bytes=4194304, alert_max_clients=64, position_max_clients=64, position_tick_ms=100, position_stale_sec=3, socket_read_timeout_ms=5000 [analytics.cpp] [Analytics] started. [esp_manager.cpp] [ESP] bind() failed: Cannot assign requested address (192.168.4.1:5565) [Fatal] ESP manager startup failed. [log.cpp] [System] DB connection closed.</Data></Cell>
+</Row>
+<Row>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">pytest</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">tests.test_tc_func_stream</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">test_tc_func_stream_01</Data></Cell>
+<Cell ss:StyleID="Skip"><Data ss:Type="String">skipped</Data></Cell>
+<Cell><Data ss:Type="Number">0.218</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">Failed to start real SFEPS auth server on 127.0.0.1:5555 (exit_code=255). Check tests/real_server.log. [main.cpp] [Security] SFEPS_AUTH_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_AUDIO_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_ALERT_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] App port mode: plaintext-only. [main.cpp] [Security] Bind IP=127.0.0.1 [main.cpp] [ESP] enabled=on, bind_ip=192.168.4.1, port=5565, max_clients=4 [main.cpp] [ESP] SFEPS_ESP_TCP_ALLOW_IPS is empty: allow-all within bound interface. [main.cpp] [Security] auth_max_bytes=256, audio_max_bytes=4194304, alert_max_clients=64, position_max_clients=64, position_tick_ms=100, position_stale_sec=3, socket_read_timeout_ms=5000 [analytics.cpp] [Analytics] started. [esp_manager.cpp] [ESP] bind() failed: Cannot assign requested address (192.168.4.1:5565) [Fatal] ESP manager startup failed. [log.cpp] [System] DB connection closed.</Data></Cell>
+</Row>
+<Row>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">pytest</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">tests.test_tc_func_stream</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">test_tc_func_stream_03</Data></Cell>
+<Cell ss:StyleID="Skip"><Data ss:Type="String">skipped</Data></Cell>
+<Cell><Data ss:Type="Number">0.002</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">Failed to start real SFEPS auth server on 127.0.0.1:5555 (exit_code=255). Check tests/real_server.log. [main.cpp] [Security] SFEPS_AUTH_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_AUDIO_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_ALERT_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] App port mode: plaintext-only. [main.cpp] [Security] Bind IP=127.0.0.1 [main.cpp] [ESP] enabled=on, bind_ip=192.168.4.1, port=5565, max_clients=4 [main.cpp] [ESP] SFEPS_ESP_TCP_ALLOW_IPS is empty: allow-all within bound interface. [main.cpp] [Security] auth_max_bytes=256, audio_max_bytes=4194304, alert_max_clients=64, position_max_clients=64, position_tick_ms=100, position_stale_sec=3, socket_read_timeout_ms=5000 [analytics.cpp] [Analytics] started. [esp_manager.cpp] [ESP] bind() failed: Cannot assign requested address (192.168.4.1:5565) [Fatal] ESP manager startup failed. [log.cpp] [System] DB connection closed.</Data></Cell>
+</Row>
+<Row>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">pytest</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">tests.test_tc_nf_perf</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">test_tc_nf_perf_02</Data></Cell>
+<Cell ss:StyleID="Skip"><Data ss:Type="String">skipped</Data></Cell>
+<Cell><Data ss:Type="Number">0.217</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">Failed to start real SFEPS auth server on 127.0.0.1:5555 (exit_code=255). Check tests/real_server.log. [main.cpp] [Security] SFEPS_AUTH_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_AUDIO_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_ALERT_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] App port mode: plaintext-only. [main.cpp] [Security] Bind IP=127.0.0.1 [main.cpp] [ESP] enabled=on, bind_ip=192.168.4.1, port=5565, max_clients=4 [main.cpp] [ESP] SFEPS_ESP_TCP_ALLOW_IPS is empty: allow-all within bound interface. [main.cpp] [Security] auth_max_bytes=256, audio_max_bytes=4194304, alert_max_clients=64, position_max_clients=64, position_tick_ms=100, position_stale_sec=3, socket_read_timeout_ms=5000 [analytics.cpp] [Analytics] started. [esp_manager.cpp] [ESP] bind() failed: Cannot assign requested address (192.168.4.1:5565) [Fatal] ESP manager startup failed. [log.cpp] [System] DB connection closed.</Data></Cell>
+</Row>
+<Row>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">pytest</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">tests.test_tc_nf_rec</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">test_tc_nf_rec_01</Data></Cell>
+<Cell ss:StyleID="Skip"><Data ss:Type="String">skipped</Data></Cell>
+<Cell><Data ss:Type="Number">0.221</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">Failed to start real SFEPS auth server on 127.0.0.1:5555 (exit_code=255). Check tests/real_server.log. [main.cpp] [Security] SFEPS_AUTH_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_AUDIO_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_ALERT_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] App port mode: plaintext-only. [main.cpp] [Security] Bind IP=127.0.0.1 [main.cpp] [ESP] enabled=on, bind_ip=192.168.4.1, port=5565, max_clients=4 [main.cpp] [ESP] SFEPS_ESP_TCP_ALLOW_IPS is empty: allow-all within bound interface. [main.cpp] [Security] auth_max_bytes=256, audio_max_bytes=4194304, alert_max_clients=64, position_max_clients=64, position_tick_ms=100, position_stale_sec=3, socket_read_timeout_ms=5000 [analytics.cpp] [Analytics] started. [esp_manager.cpp] [ESP] bind() failed: Cannot assign requested address (192.168.4.1:5565) [Fatal] ESP manager startup failed. [log.cpp] [System] DB connection closed.</Data></Cell>
+</Row>
+<Row>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">pytest</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">tests.test_tc_nf_reli</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">test_tc_nf_reli_01</Data></Cell>
+<Cell ss:StyleID="Skip"><Data ss:Type="String">skipped</Data></Cell>
+<Cell><Data ss:Type="Number">0.220</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">Failed to start real SFEPS auth server on 127.0.0.1:5555 (exit_code=255). Check tests/real_server.log. [main.cpp] [Security] SFEPS_AUTH_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_AUDIO_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_ALERT_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] App port mode: plaintext-only. [main.cpp] [Security] Bind IP=127.0.0.1 [main.cpp] [ESP] enabled=on, bind_ip=192.168.4.1, port=5565, max_clients=4 [main.cpp] [ESP] SFEPS_ESP_TCP_ALLOW_IPS is empty: allow-all within bound interface. [main.cpp] [Security] auth_max_bytes=256, audio_max_bytes=4194304, alert_max_clients=64, position_max_clients=64, position_tick_ms=100, position_stale_sec=3, socket_read_timeout_ms=5000 [analytics.cpp] [Analytics] started. [esp_manager.cpp] [ESP] bind() failed: Cannot assign requested address (192.168.4.1:5565) [Fatal] ESP manager startup failed. [log.cpp] [System] DB connection closed.</Data></Cell>
+</Row>
+<Row>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">pytest</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">tests.test_tc_nf_reli</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">test_tc_nf_reli_02</Data></Cell>
+<Cell ss:StyleID="Skip"><Data ss:Type="String">skipped</Data></Cell>
+<Cell><Data ss:Type="Number">0.002</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">Failed to start real SFEPS auth server on 127.0.0.1:5555 (exit_code=255). Check tests/real_server.log. [main.cpp] [Security] SFEPS_AUTH_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_AUDIO_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] SFEPS_ALERT_ALLOW_IPS enabled with 2 IP(s). [main.cpp] [Security] App port mode: plaintext-only. [main.cpp] [Security] Bind IP=127.0.0.1 [main.cpp] [ESP] enabled=on, bind_ip=192.168.4.1, port=5565, max_clients=4 [main.cpp] [ESP] SFEPS_ESP_TCP_ALLOW_IPS is empty: allow-all within bound interface. [main.cpp] [Security] auth_max_bytes=256, audio_max_bytes=4194304, alert_max_clients=64, position_max_clients=64, position_tick_ms=100, position_stale_sec=3, socket_read_timeout_ms=5000 [analytics.cpp] [Analytics] started. [esp_manager.cpp] [ESP] bind() failed: Cannot assign requested address (192.168.4.1:5565) [Fatal] ESP manager startup failed. [log.cpp] [System] DB connection closed.</Data></Cell>
+</Row>
+<Row>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">squish</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">squish</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">squish::tst_tc_func_stream_02</Data></Cell>
+<Cell ss:StyleID="Skip"><Data ss:Type="String">skipped</Data></Cell>
+<Cell><Data ss:Type="Number">0.000</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">Squish skipped: runner/suite missing (runner='', suite='/home/iam/SFEPS/tests/squish/suite_sfeps/suite_sfeps')</Data></Cell>
+</Row>
+<Row>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">squish</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">squish</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">squish::tst_tc_func_track_01</Data></Cell>
+<Cell ss:StyleID="Skip"><Data ss:Type="String">skipped</Data></Cell>
+<Cell><Data ss:Type="Number">0.000</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">Squish skipped: runner/suite missing (runner='', suite='/home/iam/SFEPS/tests/squish/suite_sfeps/suite_sfeps')</Data></Cell>
+</Row>
+<Row>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">squish</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">squish</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">squish::tst_tc_func_track_02</Data></Cell>
+<Cell ss:StyleID="Skip"><Data ss:Type="String">skipped</Data></Cell>
+<Cell><Data ss:Type="Number">0.000</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">Squish skipped: runner/suite missing (runner='', suite='/home/iam/SFEPS/tests/squish/suite_sfeps/suite_sfeps')</Data></Cell>
+</Row>
+<Row>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">squish</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">squish</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">squish::tst_tc_func_ui_01</Data></Cell>
+<Cell ss:StyleID="Skip"><Data ss:Type="String">skipped</Data></Cell>
+<Cell><Data ss:Type="Number">0.000</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">Squish skipped: runner/suite missing (runner='', suite='/home/iam/SFEPS/tests/squish/suite_sfeps/suite_sfeps')</Data></Cell>
+</Row>
+<Row>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">squish</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">squish</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">squish::tst_tc_func_ui_02</Data></Cell>
+<Cell ss:StyleID="Skip"><Data ss:Type="String">skipped</Data></Cell>
+<Cell><Data ss:Type="Number">0.000</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">Squish skipped: runner/suite missing (runner='', suite='/home/iam/SFEPS/tests/squish/suite_sfeps/suite_sfeps')</Data></Cell>
+</Row>
+<Row>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">squish</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">squish</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">squish::tst_tc_func_ui_03</Data></Cell>
+<Cell ss:StyleID="Skip"><Data ss:Type="String">skipped</Data></Cell>
+<Cell><Data ss:Type="Number">0.000</Data></Cell>
+<Cell ss:StyleID="Wrap"><Data ss:Type="String">Squish skipped: runner/suite missing (runner='', suite='/home/iam/SFEPS/tests/squish/suite_sfeps/suite_sfeps')</Data></Cell>
+</Row>
+</Table>
+<AutoFilter x:Range="R1C1:R26C6" xmlns="urn:schemas-microsoft-com:office:excel"></AutoFilter>
+<WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><FreezePanes/><FrozenNoSplit/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane><ActivePane>2</ActivePane><Panes><Pane><Number>2</Number><ActiveRow>1</ActiveRow></Pane></Panes></WorksheetOptions>
+</Worksheet>
+</Workbook>
