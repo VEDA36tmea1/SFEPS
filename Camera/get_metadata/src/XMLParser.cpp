@@ -333,7 +333,6 @@ std::vector<ParsedMetadataObject> XMLParser::parseHumanObjectsForAnalytics(const
             has_left && has_right && has_top && has_bottom) {
             results.push_back(object);
 
-            // 디버그용: 파싱된 메타데이터 객체를 전부 로그로 확인하고 싶을 때 사용
             constexpr bool k_enable_meta_log = true;
             #if(0)
             if (k_enable_meta_log) {
