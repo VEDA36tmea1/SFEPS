@@ -296,6 +296,12 @@ python tests/run_tests.py --profile all --engine pytest
 - `tests/reports/run-YYYYMMDD-HHMMSS/test-report.xlsx`
 - `tests/reports/run-YYYYMMDD-HHMMSS/test-report.pdf`
 
+보관 정책:
+
+- 기본값으로 최근 `5`개 실행 결과만 `tests/reports`에 보관합니다.
+- 오래된 결과를 더 보관하려면 `--retain-runs N`을 사용하세요.
+- `--retain-runs 0` 또는 음수는 자동 삭제를 비활성화합니다.
+
 ### Squish 관련 옵션
 
 - `--squish-runner`: `squishrunner` 실행 파일 경로
@@ -312,3 +318,16 @@ python tests/run_tests.py \
   --squish-runner "C:/Squish/bin/squishrunner.exe" \
   --squish-aut "C:/path/to/appHanwhaVisionSFEPS.exe"
 ```
+
+## 13) Web UI 테스트 툴 (tests/tools)
+
+`tests/tools/test_ui_server.py`로 Jenkins 연동 Web UI를 실행할 수 있습니다.
+
+```bash
+cd /home/iam/SFEPS
+python3 tests/tools/test_ui_server.py
+```
+
+상세 설정/환경변수/파라미터 매핑은 아래 문서를 참고하세요.
+
+- `tests/tools/README.md`
