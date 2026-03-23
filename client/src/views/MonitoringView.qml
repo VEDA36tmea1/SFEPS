@@ -11,7 +11,7 @@ Page {
         color: AppTheme.background
     }
 
-    signal viewDetailRequest(string objectId, string cardAgeText, string ageGroup, bool isFraud)
+    signal viewDetailRequest(string objectId, string cardAgeText, string ageGroup, bool isFraud, string imagePath)
 
     // Properties for live stats
     property int totalBoardingCount: 0
@@ -37,7 +37,7 @@ Page {
     property int squishEventCount: 0
     property var pendingTestMonitoringEvents: []
 
-    function _appendMonitoringEventNow(objectId, cardAgeText, ageGroup, isFraud) {
+    function _appendMonitoringEventNow(objectId, cardAgeText, ageGroup, isFraud, tag="", imagePath="") {
         if (!monitoringEventModel) {
             return false
         }
@@ -45,6 +45,8 @@ Page {
         var normalizedCardAgeText = cardAgeText !== undefined ? String(cardAgeText) : ""
         var normalizedAgeGroup = ageGroup !== undefined ? String(ageGroup) : ""
         var fraud = !!isFraud
+        var normalizedTag = tag !== undefined ? String(tag) : ""
+        var normalizedImagePath = imagePath !== undefined ? String(imagePath) : ""
         var key = normalizedObjectId
         var hasPrev = Object.prototype.hasOwnProperty.call(boardingDecisionByObject, key)
 
@@ -73,7 +75,9 @@ Page {
             objectId: normalizedObjectId,
             cardAgeText: normalizedCardAgeText,
             ageGroup: normalizedAgeGroup,
-            isFraud: fraud
+            isFraud: fraud,
+            tag: normalizedTag,
+            imagePath: normalizedImagePath
         })
         squishEventCount++  // Squish 폴링 전용 카운터
         return true
@@ -85,7 +89,7 @@ Page {
         }
         while (pendingTestMonitoringEvents.length > 0) {
             var ev = pendingTestMonitoringEvents.shift()
-            _appendMonitoringEventNow(ev.objectId, ev.cardAgeText, ev.ageGroup, ev.isFraud)
+            _appendMonitoringEventNow(ev.objectId, ev.cardAgeText, ev.ageGroup, ev.isFraud, ev.tag, ev.imagePath)
         }
     }
 
@@ -102,14 +106,16 @@ Page {
         }
     }
 
-    function appendMonitoringEvent(objectId, cardAgeText, ageGroup, isFraud) {
+    function appendMonitoringEvent(objectId, cardAgeText, ageGroup, isFraud, tag="", imagePath="") {
         if (!monitoringEventModel) {
             squishEventCount++  // model 미준비여도 Squish 폴링용 카운터 즉시 증가
             pendingTestMonitoringEvents.push({
                 objectId: objectId,
                 cardAgeText: cardAgeText,
                 ageGroup: ageGroup,
-                isFraud: isFraud
+                isFraud: isFraud,
+                tag: tag,
+                imagePath: imagePath
             })
             if (!pendingTestEventDrainTimer.running) {
                 pendingTestEventDrainTimer.start()
@@ -117,7 +123,7 @@ Page {
             return true
         }
         _drainPendingTestMonitoringEvents()
-        return _appendMonitoringEventNow(objectId, cardAgeText, ageGroup, isFraud)
+        return _appendMonitoringEventNow(objectId, cardAgeText, ageGroup, isFraud, tag, imagePath)
     }
 
     // Squish helper: inject monitoring events without backend socket dependency.
@@ -333,6 +339,7 @@ Page {
                     anchors.fill: parent
                     anchors.margins: 1 // inside border
                     brightness: brightnessSlider.value
+                    contrast: contrastSlider.value
                     running: true
 
                     // Zoom Selection logic
@@ -629,9 +636,14 @@ Page {
                         Slider {
                             id: brightnessSlider
                             Layout.fillWidth: true
-                            from: 0
+                            from: 1
                             to: 100
-                            value: 50
+                            value: 53
+                            // 카메라에서 실제값 fetch 완료 시 슬라이더 갱신 (누르는 중엔 간섭 없음)
+                            Binding on value {
+                                value: videoDisplay.brightness
+                                when: !brightnessSlider.pressed
+                            }
                             background: Rectangle {
                                 x: parent.leftPadding
                                 y: parent.topPadding + parent.availableHeight / 2 - height / 2
@@ -683,9 +695,14 @@ Page {
                         Slider {
                             id: contrastSlider
                             Layout.fillWidth: true
-                            from: 0
+                            from: 1
                             to: 100
-                            value: 50
+                            value: 52
+                            // 카메라에서 실제값 fetch 완료 시 슬라이더 갱신 (누르는 중엔 간섭 없음)
+                            Binding on value {
+                                value: videoDisplay.contrast
+                                when: !contrastSlider.pressed
+                            }
                             background: Rectangle {
                                 x: parent.leftPadding
                                 y: parent.topPadding + parent.availableHeight / 2 - height / 2
@@ -862,8 +879,23 @@ Page {
 
                     Connections {
                         target: fraudManager
-                        function onFraudDetected(objectId, cardAgeText, ageGroup, isFraud) {
-                            appendMonitoringEvent(objectId, cardAgeText, ageGroup, isFraud)
+                        function onFraudDetected(objectId, cardAgeText, ageGroup, isFraud, tag, imagePath) {
+                            appendMonitoringEvent(objectId, cardAgeText, ageGroup, isFraud, tag, imagePath)
+                        }
+                    }
+
+                    // Handle image downloads that arrive after FRAUD message
+                    Connections {
+                        target: fraudManager
+                        function onImageReceived(objectId, tag, localFilePath) {
+                            // Find and update the event with the downloaded image
+                            for (let i = 0; i < monitoringEventModel.count; i++) {
+                                var item = monitoringEventModel.get(i)
+                                if (item.objectId === objectId && item.tag === tag) {
+                                    monitoringEventModel.setProperty(i, "imagePath", localFilePath)
+                                    console.debug("[MonitoringView] Updated event image:", objectId, tag, "->", localFilePath)
+                                }
+                            }
                         }
                     }
 
@@ -950,7 +982,7 @@ Page {
                                         horizontalAlignment: Text.AlignHCenter
                                         verticalAlignment: Text.AlignVCenter
                                     }
-                                    onClicked: viewDetailRequest(objectId, cardAgeText, ageGroup, isFraud)
+                                    onClicked: viewDetailRequest(objectId, cardAgeText, ageGroup, isFraud, imagePath)
                                 }
 
                                 Button {
