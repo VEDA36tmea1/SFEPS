@@ -242,3 +242,73 @@ EVENT 테스트는 pytest 출력 또는 driver stderr를 확인합니다.
 - 스트림 테스트는 실제 장애 유도를 위해 `mediamtx`를 중단/재기동할 수 있습니다.
 - Squish UI 테스트는 Windows GUI 세션과 Squish 실행 환경이 필요합니다.
 - 운영 장비에서 실행 시 서비스 영향이 있을 수 있으므로 테스트 환경에서 실행하세요.
+
+## 12) 통합 테스트 실행기 (신규)
+
+`tests/run_tests.py`로 `pytest + squish`를 프로필 기반으로 한 번에 실행할 수 있습니다.
+비기능 테스트(REC/RELI/PERF)도 `nonfunctional`/`all` 프로필에서 자동 포함됩니다.
+
+```bash
+cd /home/iam/SFEPS
+source .venv/bin/activate
+python tests/run_tests.py --profile functional --engine both
+```
+
+### 주요 실행 예시
+
+스모크(빠른 점검):
+
+```bash
+python tests/run_tests.py --profile smoke --engine both
+```
+
+기능 테스트만(pytest+squish):
+
+```bash
+python tests/run_tests.py --profile functional --engine both
+```
+
+비기능 테스트만(pytest):
+
+```bash
+python tests/run_tests.py --profile nonfunctional --engine pytest
+```
+
+전체 테스트:
+
+```bash
+python tests/run_tests.py --profile all --engine both
+```
+
+Squish가 없는 Linux 환경에서 pytest만:
+
+```bash
+python tests/run_tests.py --profile all --engine pytest
+```
+
+### 리포트/아티팩트
+
+실행 결과는 기본적으로 아래 경로에 생성됩니다.
+
+- `tests/reports/run-YYYYMMDD-HHMMSS/junit/*.xml`
+- `tests/reports/run-YYYYMMDD-HHMMSS/logs/*.log`
+- `tests/reports/run-YYYYMMDD-HHMMSS/test-report.html`
+- `tests/reports/run-YYYYMMDD-HHMMSS/test-report.xlsx`
+- `tests/reports/run-YYYYMMDD-HHMMSS/test-report.pdf`
+
+### Squish 관련 옵션
+
+- `--squish-runner`: `squishrunner` 실행 파일 경로
+- `--squish-suite`: testsuite 경로(기본: `tests/squish/suite_sfeps/suite_sfeps`)
+- `--squish-aut`: AUT 실행 파일 경로
+- `--strict-squish`: Squish 실행 불가 시 skip 대신 실패 처리
+
+예시:
+
+```bash
+python tests/run_tests.py \
+  --profile functional \
+  --engine both \
+  --squish-runner "C:/Squish/bin/squishrunner.exe" \
+  --squish-aut "C:/path/to/appHanwhaVisionSFEPS.exe"
+```
