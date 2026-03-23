@@ -212,6 +212,13 @@ cd /home/iam/SFEPS
 "/path/to/squishrunner" --testsuite tests/squish/suite_sfeps/suite_sfeps --testcase tst_tc_func_track_01 --aut /path/to/appHanwhaVisionSFEPS
 ```
 
+Jenkins 에이전트(Windows 노드) 실행 예시:
+
+```bat
+cd C:\Jenkins
+java -jar agent.jar -url http://192.168.56.101:8080/ -secret @C:\Jenkins\secret-file -name "win-squish" -webSocket -workDir "C:\Jenkins"
+```
+
 ## 10) 로그 확인
 
 실서버 로그:
