@@ -27,6 +27,8 @@
 #include <math.h>
 #include "servo_driver.h"
 #include "led_driver.h"
+#include "ESP_Parser.h"
+#include "UART_Parser.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -85,6 +87,8 @@ static uint8_t   wifi_link_ok      = 0;
 static uint8_t   wifi_connecting   = 0;
 static uint32_t  wifi_last_check   = 0;
 static uint32_t  wifi_last_cmd_tick = 0;
+/* AT 패스스루 디버그: AT 보낸 직후 일정 시간 동안 ESP 응답을 강제 에코 */
+static uint32_t  at_echo_until_tick = 0;
 /* WiFi(TCP)로 보낼 사용자 데이터(PING→PONG 등)를 AT+CIPSEND로 전송하기 위한 버퍼 */
 static uint8_t   wifi_send_pending = 0;
 static char      wifi_send_buf[WIFI_RX_DMA_SIZE];
@@ -96,6 +100,10 @@ static uint8_t          debug_rx_byte = 0;
 
 /* B1 버튼으로 AUTO 모드 진입 요청 플래그 */
 static volatile uint8_t button_auto_pending = 0;
+
+/* PB0 레이저 enable 수동 제어 우선순위 플래그
+ * - B1 버튼으로 사용자가 토글한 이후에는 ESP TRACK_START/END 가 PB0를 덮어쓰지 않게 한다. */
+static volatile uint8_t laser_manual_override = 0;
 
 /* 제어 모드: 기본은 수동(MANUAL) */
 static uint8_t   control_mode = MODE_MANUAL;
@@ -167,6 +175,131 @@ static float clampf(float v, float vmin, float vmax)
   if (v < vmin) return vmin;
   if (v > vmax) return vmax;
   return v;
+}
+
+/* USER CODE BEGIN 0: PC13 외부 출력 토글 보조
+ *
+ * - B1 버튼은 PC13에 물려 있고, 현재 펌웨어는 PC13을 입력(EXTI)으로 사용한다.
+ * - 사용자가 PC13 라인에 외부 회로를 물려서, B1 누를 때 PC13의 High/Low가
+ *   펌웨어 제어로도 "바뀌는 것"을 원할 수 있다.
+ * - 입력(EXTI) 모드에서는 HAL_GPIO_WritePin이 실질적으로 동작하지 않으므로,
+ *   버튼 이벤트 처리 순간에 잠깐 출력 모드로 전환해 토글을 가하고 다시
+ *   EXTI 입력 모드로 되돌린다.
+ */
+static void PC13_PulseToggleOutput(uint32_t hold_ms)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+  /* EXTI 비활성화(전환 중 스파이크 방지) */
+  HAL_NVIC_DisableIRQ(EXTI15_10_IRQn);
+
+  /* PC13을 출력으로 전환 */
+  HAL_GPIO_DeInit(B1_GPIO_Port, B1_Pin);
+  GPIO_InitStruct.Pin = B1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
+
+  /* 요구사항: 버튼 누를 때마다 High -> Low -> High 펄스 */
+  HAL_GPIO_WritePin(B1_GPIO_Port, B1_Pin, GPIO_PIN_RESET); /* High->Low */
+  HAL_Delay(hold_ms);
+  HAL_GPIO_WritePin(B1_GPIO_Port, B1_Pin, GPIO_PIN_SET);   /* Low->High */
+
+  /* 다시 입력(EXTI)으로 복귀 */
+  GPIO_InitStruct.Pin = B1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
+
+  /* EXTI 플래그/인터럽트 복구 */
+  __HAL_GPIO_EXTI_CLEAR_IT(B1_Pin);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+}
+
+/* B1 버튼 누를 때마다 PB0(GPIOB pin0) 토글 */
+static void PB0_ToggleOnButton(void)
+{
+  laser_manual_override = 1;
+  HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);
+}
+
+/* PB0를 레이저 enable 핀으로 직접 on/off */
+static void PB0_SetLaser(uint8_t on)
+{
+  if (laser_manual_override)
+    return;
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
+
+/* TCP payload 라인(개행 포함 권장)을 전송 큐에 넣기.
+ * - 내부적으로 wifi_send_pending / wifi_send_buf / CIPSEND '>' 핸들러를 사용 */
+static void Wifi_QueueTcpPayload(const char *payload)
+{
+  if (!payload)
+    return;
+  if (wifi_send_pending)
+    return; /* 이미 CIPSEND pending 상태면 무시 */
+
+  size_t len = strlen(payload);
+  if (len == 0)
+    return;
+  if (len >= sizeof(wifi_send_buf))
+    len = sizeof(wifi_send_buf) - 1;
+
+  memcpy(wifi_send_buf, payload, len);
+  wifi_send_buf[len] = '\0';
+  wifi_send_len = (uint16_t)len;
+
+  char cmd[48];
+  int cn = snprintf(cmd, sizeof(cmd), "AT+CIPSEND=%u", (unsigned)wifi_send_len);
+  if (cn > 0)
+  {
+    Wifi_SendLine(cmd); /* CRLF 포함 */
+    wifi_last_cmd_tick = HAL_GetTick();
+    wifi_send_pending = 1;
+  }
+}
+
+/* UART_Parser callback wrappers */
+static void UART_SendToEsp(const char *at_line)
+{
+  if (!at_line)
+    return;
+  Wifi_SendLine(at_line);
+}
+
+static void UART_TxPc(const char *msg)
+{
+  if (!msg)
+    return;
+  size_t len = strlen(msg);
+  if (len == 0)
+    return;
+  HAL_UART_Transmit(&huart2, (const uint8_t *)msg, (uint16_t)len, 50);
+}
+
+static void UART_SetMode(uint8_t mode)
+{
+  control_mode = mode;
+  Led_SetAutoMode(control_mode == MODE_AUTO);
+}
+
+static void UART_NotifyLastTick(void)
+{
+  last_uart_tick = HAL_GetTick();
+}
+
+static void UART_SetAutoPwmVal(uint32_t us_ch1)
+{
+  auto_pwm_val = us_ch1;
+}
+
+static void UART_NotifyAtSent(void)
+{
+  /* TCP 연결 전이라도 잠깐 ESP 응답을 에코하도록 */
+  at_echo_until_tick = HAL_GetTick() + 2500u;
 }
 
 /* IBVS PID 축 초기화 (PAN/TILT 공통) */
@@ -388,6 +521,30 @@ int main(void)
   auto_last_tick = HAL_GetTick();
   Led_Init();
   Led_SetAutoMode(control_mode == MODE_AUTO);
+
+  /* Parser 모듈 콜백 세팅 */
+  {
+    uart_parser_callbacks_t uart_cb = {0};
+    uart_cb.pwm_min_us = PWM_US_MIN;
+    uart_cb.pwm_max_us = PWM_US_MAX;
+    uart_cb.send_to_esp = UART_SendToEsp;
+    uart_cb.tx_pc = UART_TxPc;
+    uart_cb.set_mode = UART_SetMode;
+    uart_cb.set_servo_all = Servo_SetAllUs;
+    uart_cb.set_servo_ch1 = Servo_SetCh1Us;
+    uart_cb.set_servo_ch2 = Servo_SetCh2Us;
+    uart_cb.notify_last_tick = UART_NotifyLastTick;
+    uart_cb.set_auto_pwm_val = UART_SetAutoPwmVal;
+    uart_cb.notify_at_sent = UART_NotifyAtSent;
+    UART_Parser_SetCallbacks(&uart_cb);
+  }
+  {
+    esp_parser_callbacks_t esp_cb = {0};
+    esp_cb.laser_set = PB0_SetLaser;
+    esp_cb.tcp_send = Wifi_QueueTcpPayload;
+    ESP_Parser_SetCallbacks(&esp_cb);
+  }
+
   /* IBVS PID 초기화 (호스트에서 픽셀 오차를 보내는 경우에 사용) */
   IbvsPid_Init();
   {
@@ -431,6 +588,12 @@ int main(void)
         const char *msg = "auto mode 실행\r\n";
         HAL_UART_Transmit(&huart2, (const uint8_t *)msg, (uint16_t)strlen(msg), 50);
       }
+
+      /* 요청: B1 누르면 PC13 라인의 High/Low도 바뀌게 펄스 토글 */
+      PC13_PulseToggleOutput(50);
+
+      /* 요청: B1 누르면 PB0 High/Low 토글 */
+      PB0_ToggleOnButton();
     }
 
     /* 디버그: 수신된 마지막 바이트를 에코 (USART2용) */
@@ -456,10 +619,10 @@ int main(void)
         wifi_line[len] = '\0';
         const char crlf[2] = {'\r', '\n'};
 
-        /* ESP → PC: 연결이 성립된 이후에만 에코.
-           - 자동 재접속(AT+CIPSTART / ERROR / CLOSED) 반복 시 터미널 스팸을 줄이기 위해
-           - wifi_link_ok == 1 인 상태에서만 WiFi 모듈의 원문 라인을 보여준다. */
-        if (wifi_link_ok)
+        /* ESP → PC 에코 조건
+           - 평소: TCP 연결이 성립된 이후에만 에코(wifi_link_ok)
+           - 단, PC에서 AT를 보낸 직후에는(디버그 목적) TCP 연결 전이라도 에코 */
+        if (wifi_link_ok || HAL_GetTick() < at_echo_until_tick)
         {
           HAL_UART_Transmit(&huart2, (uint8_t *)wifi_line, len, 50);
           HAL_UART_Transmit(&huart2, (uint8_t*)crlf, 2, 50);
@@ -502,6 +665,16 @@ int main(void)
 
                 char saved = *line_end;
                 *line_end = '\0';
+
+                /* TRACK_START/POS/END 등 추적 명령은 ESP_Parser에서 먼저 처리 */
+                if (ESP_Parser_HandleIpdLine(cursor))
+                {
+                  *line_end = saved;
+                  if (!saved)
+                    break;
+                  cursor = line_end + 1;
+                  continue;
+                }
 
                 /* 형식 0: EX=...,EY=... (ubuntu_tcp_server에서 보낸 픽셀 오차 등)
                  * - EX : X축 오차 (픽셀)
@@ -715,172 +888,19 @@ int main(void)
       rx_ready = 0;
       rx_line_buf[rx_idx] = '\0';
 
+      /* 입력 라인 앞 공백 스킵 (시리얼 모니터에서 공백/탭이 붙는 경우 대응) */
+      char *line_ptr = rx_line_buf;
+      while (*line_ptr == ' ' || *line_ptr == '\t') line_ptr++;
+
       /* 공백/개행만 들어온 경우 무시 */
-      if (rx_idx == 0 || rx_line_buf[0] == '\r' || rx_line_buf[0] == '\n')
+      if (rx_idx == 0 || *line_ptr == '\r' || *line_ptr == '\n' || *line_ptr == '\0')
       {
         rx_idx = 0;
         HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
         continue;
       }
 
-      /* ESP: 프리픽스로 시작하는 라인은 ESP(USART1)로 그대로 AT 명령 전달 */
-      if (strncmp(rx_line_buf, "ESP:", 4) == 0 || strncmp(rx_line_buf, "esp:", 4) == 0)
-      {
-        char *cmd = rx_line_buf + 4;
-        /* 프리픽스 뒤 공백 스킵 */
-        while (*cmd == ' ' || *cmd == '\t')
-          cmd++;
-        if (*cmd != '\0')
-        {
-          Wifi_SendLine(cmd);  /* ESP(USART1)로 전송 (CRLF 자동 첨부) */
-
-          /* PC 터미널에도 내가 보낸 ESP 명령을 에코 */
-          size_t cmd_len = strlen(cmd);
-          HAL_UART_Transmit(&huart2, (uint8_t *)"ESP:", 4, 50);
-          HAL_UART_Transmit(&huart2, (uint8_t *)cmd, (uint16_t)cmd_len, 50);
-          const char crlf2[2] = {'\r', '\n'};
-          HAL_UART_Transmit(&huart2, (const uint8_t *)crlf2, 2, 50);
-        }
-        rx_idx = 0;
-        HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
-        continue;
-      }
-
-      /* AT 명령: PC(USART2)에서 들어온 라인을 ESP(USART1)로 그대로 패스스루 */
-      if (strncmp(rx_line_buf, "AT", 2) == 0 || strncmp(rx_line_buf, "at", 2) == 0)
-      {
-        size_t at_len = strlen(rx_line_buf);
-        /* ESP 쪽으로 AT 라인 + CRLF 전송 */
-        if (at_len > 0)
-        {
-          Wifi_SendLine(rx_line_buf);
-
-          /* PC 터미널에도 내가 보낸 AT 명령을 에코 */
-          HAL_UART_Transmit(&huart2, (uint8_t *)rx_line_buf, (uint16_t)at_len, 100);
-          const char crlf2[2] = {'\r', '\n'};
-          HAL_UART_Transmit(&huart2, (const uint8_t *)crlf2, 2, 100);
-        }
-        rx_idx = 0;
-        HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
-        continue;
-      }
-
-      /* MODE 명령 처리: "mode 0" 또는 "mode 1" */
-      if (strncmp(rx_line_buf, "mode", 4) == 0)
-      {
-        unsigned long m = 0;
-        if (sscanf(rx_line_buf + 4, "%lu", &m) == 1 && (m == 0ul || m == 1ul))
-        {
-          control_mode = (uint8_t)m;
-          Led_SetAutoMode(control_mode == MODE_AUTO);
-          const char *resp = (control_mode == MODE_MANUAL)
-                             ? "MODE=0 (manual)\r\n"
-                             : "MODE=1 (auto sweep 1200~1800us)\r\n";
-          HAL_UART_Transmit(&huart2, (const uint8_t *)resp, (uint16_t)strlen(resp), 50);
-        }
-        else
-        {
-          const char *err = "Usage: mode 0 (manual) or mode 1 (auto)\r\n";
-          HAL_UART_Transmit(&huart2, (const uint8_t *)err, (uint16_t)strlen(err), 50);
-        }
-      }
-      else
-      {
-        /* 기본: 서보 제어 명령
-         * - "1500" 또는 "1500 1200"  → 두 채널 모두/각각 설정
-         * - "X:1500" 또는 "X 1500"   → PA0(TIM2_CH1)만 설정
-         * - "Y:1500" 또는 "Y 1500"   → PA8(TIM1_CH1)만 설정
-         */
-        char *p = rx_line_buf;
-        while (*p == ' ' || *p == '\t') p++;
-
-        if (*p == 'X' || *p == 'x')
-        {
-          p++; /* 'X' 지나침 */
-          if (*p == ':' || *p == ' ') p++;
-          unsigned long ux = 1500;
-          if (sscanf(p, "%lu", &ux) == 1)
-          {
-            if (ux < PWM_US_MIN) ux = PWM_US_MIN;
-            if (ux > PWM_US_MAX) ux = PWM_US_MAX;
-            /* X: PA0(TIM2_CH1)만 변경 */
-            Servo_SetCh2Us((uint32_t)ux);
-            last_uart_tick = HAL_GetTick();
-            char ack[64];
-            int len = snprintf(ack, sizeof(ack), "\nOK X=PA0=%lu us\r\n", ux);
-            if (len > 0)
-            {
-              HAL_UART_Transmit(&huart2, (uint8_t *)ack, (uint16_t)len, 50);
-            }
-          }
-          else
-          {
-            const char *err = "? Usage: X:1500\r\n";
-            HAL_UART_Transmit(&huart2, (const uint8_t *)err, (uint16_t)strlen(err), 50);
-          }
-        }
-        else if (*p == 'Y' || *p == 'y')
-        {
-          p++; /* 'Y' 지나침 */
-          if (*p == ':' || *p == ' ') p++;
-          unsigned long uy = 1500;
-          if (sscanf(p, "%lu", &uy) == 1)
-          {
-            if (uy < PWM_US_MIN) uy = PWM_US_MIN;
-            if (uy > PWM_US_MAX) uy = PWM_US_MAX;
-            /* Y: PA8(TIM1_CH1)만 변경 */
-            Servo_SetCh1Us((uint32_t)uy);
-            auto_pwm_val = (uint32_t)uy;
-            last_uart_tick = HAL_GetTick();
-            char ack[64];
-            int len = snprintf(ack, sizeof(ack), "\nOK Y=PA8=%lu us\r\n", uy);
-            if (len > 0)
-            {
-              HAL_UART_Transmit(&huart2, (uint8_t *)ack, (uint16_t)len, 50);
-            }
-          }
-          else
-          {
-            const char *err = "? Usage: Y:1500\r\n";
-            HAL_UART_Transmit(&huart2, (const uint8_t *)err, (uint16_t)strlen(err), 50);
-          }
-        }
-        else
-        {
-          /* 기본: "1500" 또는 "1500 1200" 형식으로 us 값 설정 */
-          unsigned long u1 = 1500, u2 = 1500;
-          int n = sscanf(rx_line_buf, "%lu %lu", &u1, &u2);
-          if (n >= 1)
-          {
-            if (u1 < PWM_US_MIN) u1 = PWM_US_MIN;
-            if (u1 > PWM_US_MAX) u1 = PWM_US_MAX;
-            if (n >= 2)
-            {
-              if (u2 < PWM_US_MIN) u2 = PWM_US_MIN;
-              if (u2 > PWM_US_MAX) u2 = PWM_US_MAX;
-            }
-            else
-            {
-              u2 = u1;
-            }
-            /* CH1=PA8(TIM1), CH2=PA0(TIM2) */
-            Servo_SetAllUs((uint32_t)u1, (uint32_t)u2);
-            auto_pwm_val = (uint32_t)u1;
-            last_uart_tick = HAL_GetTick();
-            char ack[52];
-            int len = snprintf(ack, sizeof(ack), "\nOK PA8=%lu PA0=%lu us\r\n", u1, u2);
-            if (len > 0)
-            {
-              HAL_UART_Transmit(&huart2, (uint8_t *)ack, (uint16_t)len, 50);
-            }
-          }
-          else
-          {
-            const char *err = "? (send: 1500 or 1500 1200, X:1500, Y:1500, or mode 0/1)\r\n";
-            HAL_UART_Transmit(&huart2, (const uint8_t *)err, (uint16_t)strlen(err), 50);
-          }
-        }
-      }
+      UART_Parser_HandleLine(line_ptr);
       rx_idx = 0;
       HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
     }
@@ -1225,6 +1245,8 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
@@ -1238,6 +1260,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PB0 */
+  GPIO_InitStruct.Pin = GPIO_PIN_0;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
   /* B1 사용자 버튼(PC13) EXTI15_10 인터럽트 활성화 */
