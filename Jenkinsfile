@@ -413,6 +413,54 @@ PY
             }
         }
 
+        stage('Ensure Test Server Before Squish') {
+            when {
+                expression { env.SFEPS_CI_BRANCH == 'develop' }
+            }
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: "${env.SFEPS_TEST_SSH_CREDENTIALS_ID}",
+                        keyFileVariable: 'SSH_KEY',
+                        usernameVariable: 'SSH_USER'
+                    )
+                ]) {
+                    sh '''
+                        set -eu
+                        if [ -z "${SFEPS_TEST_HOST}" ]; then
+                          echo "SFEPS_TEST_HOST is required before Squish tests." >&2
+                          exit 1
+                        fi
+
+                        REMOTE="${SSH_USER}@${SFEPS_TEST_HOST}"
+                        SSH_OPTS="-i ${SSH_KEY} -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
+
+                        ssh ${SSH_OPTS} "${REMOTE}" "set -eu
+                          if ! docker ps --format '{{.Names}}' | grep -Fx '${SFEPS_TEST_CONTAINER_NAME}' >/dev/null; then
+                            if docker ps -a --format '{{.Names}}' | grep -Fx '${SFEPS_TEST_CONTAINER_NAME}' >/dev/null; then
+                              docker start '${SFEPS_TEST_CONTAINER_NAME}' >/dev/null
+                              echo 'Started test container: ${SFEPS_TEST_CONTAINER_NAME}'
+                            else
+                              echo 'Missing test container: ${SFEPS_TEST_CONTAINER_NAME}' >&2
+                              exit 1
+                            fi
+                          else
+                            echo 'Test container already running: ${SFEPS_TEST_CONTAINER_NAME}'
+                          fi
+
+                          if timeout 90 bash -lc 'while ! cat </dev/null >/dev/tcp/127.0.0.1/${SFEPS_HEALTH_PORT} 2>/dev/null; do sleep 2; done'; then
+                            echo 'Pre-Squish health check OK on port ${SFEPS_HEALTH_PORT}'
+                            exit 0
+                          fi
+
+                          echo 'Pre-Squish health check FAILED' >&2
+                          docker logs --tail 120 '${SFEPS_TEST_CONTAINER_NAME}' || true
+                          exit 1"
+                    '''
+                }
+            }
+        }
+
                 stage('Run Squish UI Tests') {
                         steps {
                                 script {
