@@ -351,5 +351,6 @@ std::vector<ParsedMetadataObject> XMLParser::parseHumanObjectsForAnalytics(const
 
         search_pos = obj_end;
     }
+
     return results;
 }

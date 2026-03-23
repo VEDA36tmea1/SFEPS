@@ -7,6 +7,8 @@
 #include <QMutex>
 #include <QTimer>
 #include <QElapsedTimer>
+#include <QNetworkAccessManager>
+#include <QString>
 #include <opencv2/opencv.hpp>
 #include <QVariant>
 #include <QVariantList>
@@ -93,6 +95,7 @@ class MainWindow : public QQuickPaintedItem
     Q_OBJECT
     Q_PROPERTY(bool running READ isRunning WRITE setRunning NOTIFY runningChanged)
     Q_PROPERTY(int brightness READ brightness WRITE setBrightness NOTIFY brightnessChanged)
+    Q_PROPERTY(int contrast READ contrast WRITE setContrast NOTIFY contrastChanged)
     Q_PROPERTY(QRectF zoomRect READ zoomRect WRITE setZoomRect NOTIFY zoomRectChanged)
     Q_PROPERTY(QString streamStatus READ streamStatus NOTIFY streamStatusChanged)
     Q_PROPERTY(bool streamConnected READ streamConnected NOTIFY streamConnectedChanged)
@@ -113,6 +116,8 @@ public:
 
     int brightness() const { return m_brightness; }
     void setBrightness(int brightness);
+    int contrast() const { return m_contrast; }
+    void setContrast(int contrast);
     
     QRectF zoomRect() const { return m_zoomRect; }
     void setZoomRect(const QRectF &rect);
@@ -136,6 +141,7 @@ public:
 signals:
     void runningChanged();
     void brightnessChanged();
+    void contrastChanged();
     void zoomRectChanged();
     void streamStatusChanged();
     void streamConnectedChanged();
@@ -155,6 +161,11 @@ private:
     bool openStream();
     void ensureWorkerRunning();
     void updateStreamStatus(const QString &status, bool connected);
+    void scheduleBrightnessCgiUpdate();
+    void scheduleContrastCgiUpdate();
+    void sendBrightnessCgi();
+    void sendContrastCgi();
+    void fetchCameraImageSettings();
 
     cv::VideoCapture cap;
     VideoCaptureWorker *worker;
@@ -165,6 +176,7 @@ private:
 
     bool m_running;
     int m_brightness;
+    int m_contrast;
     QRectF m_zoomRect;
     QString m_streamStatus;
     bool m_streamConnected;
@@ -174,6 +186,16 @@ private:
     bool m_hasPendingDetections;
     QString m_selectedDetectionId;
     QString m_externalTrackedId;
+
+    bool m_useCameraCgiControl;
+    bool m_cameraCgiAllowInsecureTls;
+    QString m_cameraBrightnessCgiUrlTemplate;
+    QString m_cameraContrastCgiUrlTemplate;
+    QString m_cameraCgiUser;
+    QString m_cameraCgiPassword;
+    QNetworkAccessManager *m_cgiNetworkManager;
+    QTimer *m_brightnessCgiDebounceTimer;
+    QTimer *m_contrastCgiDebounceTimer;
     
 private slots:
     void onUpdateTimerTimeout();

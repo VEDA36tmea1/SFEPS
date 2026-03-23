@@ -128,6 +128,7 @@ Window {
         property alias cardAgeText: detailView.cardAgeText
         property alias ageGroup: detailView.ageGroup
         property alias isFraud: detailView.isFraud
+        property alias imagePath: detailView.imagePath
 
         DetailView {
             id: detailView
@@ -737,11 +738,12 @@ Window {
                         id: monitoringView
                         objectName: "monitoringView"
                         laserTrackingEnabled: rootWindow.laserTrackingEnabled
-                        onViewDetailRequest: (objectId, cardAgeText, ageGroup, isFraud) => {
+                        onViewDetailRequest: (objectId, cardAgeText, ageGroup, isFraud, imagePath) => {
                             detailPopup.objectId = objectId
                             detailPopup.cardAgeText = cardAgeText
                             detailPopup.ageGroup = ageGroup
                             detailPopup.isFraud = isFraud
+                            detailPopup.imagePath = imagePath
                             detailPopup.open()
                         }
                     }
