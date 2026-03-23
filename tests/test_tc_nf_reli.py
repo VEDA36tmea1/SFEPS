@@ -369,9 +369,9 @@ def test_tc_nf_reli_01(reliability_endpoints):
 
     log_delta = _read_log_delta(log_start_offset)
     if log_delta:
-        sub_count = _count_track_log_lines(log_delta, "[Position] SUB_POS received:", RELI_TRACK_OBJECT_ID)
+        sub_count = _count_track_log_lines(log_delta, "[Position] SUB_POS 수신:", RELI_TRACK_OBJECT_ID)
         unsub_count = _count_track_log_lines(
-            log_delta, "[Position] UNSUB_POS received:", RELI_TRACK_OBJECT_ID
+            log_delta, "[Position] UNSUB_POS 수신:", RELI_TRACK_OBJECT_ID
         )
         expected_min = RELI_TRACK_TOGGLE_COUNT
         assert sub_count >= expected_min, (
