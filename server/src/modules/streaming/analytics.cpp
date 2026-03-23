@@ -637,6 +637,7 @@ void AnalyticsProcessor::onRfidRead(const std::string& card_age_text_raw) {
     const CardAgeDecision card_age = evaluate_card_age(card_age_text_raw);
     const auto now = std::chrono::steady_clock::now();
     std::string paired_object_id;
+    std::string paired_tag_time;
 
     {
         std::lock_guard<std::mutex> lock(mtx);
@@ -660,6 +661,7 @@ void AnalyticsProcessor::onRfidRead(const std::string& card_age_text_raw) {
         pending.card_age_text = card_age.canonical_text;
         pending.is_fraud = is_fraud_by_age_mismatch(card_age, pending.age);
         paired_object_id = pending.object_id;
+        paired_tag_time = pending.enter_tag_time;
         matched_objects[pending.object_id] = std::move(pending);
     }
 
@@ -671,7 +673,7 @@ void AnalyticsProcessor::onRfidRead(const std::string& card_age_text_raw) {
                   << ", paired_count=" << paired_count << std::endl;
     }
     if (rfid_paired_callback && !paired_object_id.empty()) {
-        rfid_paired_callback(paired_object_id);
+        rfid_paired_callback(paired_object_id, paired_tag_time);
     }
 }
 

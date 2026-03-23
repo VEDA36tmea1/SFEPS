@@ -129,7 +129,9 @@ int main() {
     AnalyticsProcessor analytics(cfg.db_host.c_str(), cfg.db_user.c_str(), cfg.db_pass.c_str(),
                                  cfg.db_name_analytics.c_str());
     analytics.setRfidPairedCallback(
-        [](const std::string& object_id) { snapshot_rfid_image_for_object(object_id); });
+        [](const std::string& object_id, const std::string& tag_time) {
+            snapshot_rfid_image_for_object(object_id, tag_time);
+        });
     analytics.setOutlineDecisionCallback(
         [&sec_cfg](const AnalyticsProcessor::OutlineDecisionPayload& payload) {
             FinalizedFraudImageInfo fraud_image_info;

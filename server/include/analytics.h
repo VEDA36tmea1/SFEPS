@@ -54,7 +54,7 @@ public:
     };
 
     using TrackPosCallback = std::function<void(const TrackPosPayload&)>;
-    using RfidPairedCallback = std::function<void(const std::string&)>;
+    using RfidPairedCallback = std::function<void(const std::string&, const std::string&)>;
     using OutlineDecisionCallback = std::function<void(const OutlineDecisionPayload&)>;
 
     AnalyticsProcessor(const char* host,

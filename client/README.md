@@ -33,20 +33,20 @@
     *   RTSP Port `8554`: 영상 스트리밍 (Video)
 
 ### 네트워크 설정 (필수)
-현재 코드는 라즈베리파이 서버 IP를 `192.168.0.82`로 가정하고 있습니다. 서버 환경에 맞춰 다음 파일들을 확인하십시오.
+현재 코드는 라즈베리파이 서버 IP를 `192.168.0.101`로 가정하고 있습니다. 서버 환경에 맞춰 다음 파일들을 확인하십시오.
 *   `src/authmanager.cpp`: 인증 서버 IP/Port 설정.
-*   `src/mainwindow.cpp`: RTSP 주소 (`rtsp://192.168.0.82:8554/cam1`) 설정.
+*   `src/mainwindow.cpp`: RTSP 주소 (`rtsp://192.168.0.101:8554/cam1`) 설정.
 *   `src/voicemanager.cpp`: 오디오 서버 IP/Port 설정.
 
 환경변수로 런타임 네트워크 대상을 변경할 수도 있습니다.
-*   `AUTH_SERVER_HOST`: 로그인 인증 서버 호스트(기본값 `192.168.0.82`)
+*   `AUTH_SERVER_HOST`: 로그인 인증 서버 호스트(기본값 `192.168.0.101`)
 *   `AUTH_TLS_ENABLE`: 로그인 채널 TLS 사용 여부(기본값 `1`)
 *   `AUTH_TLS_PORT`: 로그인 TLS 포트(기본값 `6555`)
 *   `AUTH_PLAINTEXT_PORT`: 로그인 평문 포트(기본값 `5555`)
 *   `AUTH_ALLOW_PLAINTEXT_FALLBACK`: TLS 실패 시 평문 1회 재시도 허용(기본값 `0`)
 *   `AUTH_TLS_CA_FILE`: 서버 인증서 검증용 CA PEM 파일 경로(예: `.../client/certs/auth_ca.pem`)
-*   `RTSP_STREAM_URL`: 모니터링 RTSP 스트림 URL(기본값 `rtsp://192.168.0.82:8554/cam1`)
-*   `FRAUD_SERVER_HOST`: 알림 서버 호스트(기본값 `192.168.0.82`)
+*   `RTSP_STREAM_URL`: 모니터링 RTSP 스트림 URL(기본값 `rtsp://192.168.0.101:8554/cam1`)
+*   `FRAUD_SERVER_HOST`: 알림 서버 호스트(기본값 `192.168.0.101`)
 *   `FRAUD_SERVER_PORT`: 알림 서버 평문 포트(기본값 `5557`)
 *   `POS_SERVER_HOST`: Position 서버 호스트(기본값: `FRAUD_SERVER_HOST` 값)
 *   `POS_SERVER_PORT`: Position 서버 평문 포트(기본값 `5558`)
