@@ -29,6 +29,11 @@
 #include <vector>
 #include <cmath>
 
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#else
 #include <fcntl.h>
 #include <poll.h>
 #include <arpa/inet.h>
@@ -37,6 +42,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 static std::atomic<bool> g_running{true};
 static std::atomic<bool> g_detect_all{false};
@@ -238,24 +244,45 @@ static void remote_select_thread_fn(std::string host, int port)
     constexpr int kReconnectMs = 700;
     while (g_running)
     {
+#ifdef _WIN32
+        SOCKET fd = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (fd == INVALID_SOCKET)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(kReconnectMs));
+            continue;
+        }
+#else
         int fd = ::socket(AF_INET, SOCK_STREAM, 0);
         if (fd < 0)
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(kReconnectMs));
             continue;
         }
+#endif
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_port = htons(static_cast<uint16_t>(port));
         if (::inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1)
         {
             std::cerr << "[remote_select] invalid host ip: " << host << "\n";
+#ifdef _WIN32
+            ::closesocket(fd);
+#else
             ::close(fd);
+#endif
             return;
         }
+#ifdef _WIN32
+        if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR)
+#else
         if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0)
+#endif
         {
+#ifdef _WIN32
+            ::closesocket(fd);
+#else
             ::close(fd);
+#endif
             std::this_thread::sleep_for(std::chrono::milliseconds(kReconnectMs));
             continue;
         }
@@ -265,7 +292,11 @@ static void remote_select_thread_fn(std::string host, int port)
         char tmp[512];
         while (g_running)
         {
+#ifdef _WIN32
+            int n = ::recv(fd, tmp, static_cast<int>(sizeof(tmp)), 0);
+#else
             ssize_t n = ::recv(fd, tmp, sizeof(tmp), 0);
+#endif
             if (n <= 0) break;
             buf.append(tmp, tmp + n);
             while (true)
@@ -334,7 +365,11 @@ static void remote_select_thread_fn(std::string host, int port)
                 }
             }
         }
+#ifdef _WIN32
+        ::closesocket(fd);
+#else
         ::close(fd);
+#endif
         if (g_running)
             std::cerr << "[remote_select] disconnected, reconnecting...\n";
         std::this_thread::sleep_for(std::chrono::milliseconds(kReconnectMs));
@@ -345,9 +380,15 @@ static void remote_select_thread_fn(std::string host, int port)
 // DeepSORT 워커 프로세스 + 비동기 스레드
 // ──────────────────────────────────────────────────────────────────────
 struct DeepSortWorker {
+#ifdef _WIN32
+    PROCESS_INFORMATION pi{};
+    HANDLE child_stdin_write{NULL};
+    HANDLE child_stdout_read{NULL};
+#else
     pid_t pid{-1};
     int   write_fd{-1};
     int   read_fd{-1};
+#endif
     bool  active{false};
 
     // 비동기 스레드용
@@ -361,19 +402,41 @@ struct DeepSortWorker {
     // 결과 저장
     std::mutex  result_mutex;
     std::vector<ParsedMetadataObject> latest_result;
+    std::atomic<bool> dead_log_once{false};
 
     std::string get_exe_dir() const {
+#ifdef _WIN32
+        char buf[MAX_PATH];
+        DWORD n = ::GetModuleFileNameA(nullptr, buf, MAX_PATH);
+        if (n == 0 || n == MAX_PATH) return "";
+        return std::filesystem::path(buf).parent_path().string();
+#else
         char buf[4096];
         ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
         if (n <= 0) return "";
         buf[n] = '\0';
         return std::filesystem::path(buf).parent_path().string();
+#endif
     }
 
     bool start() {
         if (active) return true;
         std::string root = get_exe_dir();
         if (root.empty()) return false;
+#ifdef _WIN32
+        std::string py_exec = "python";
+        {
+            std::filesystem::path py1 = std::filesystem::path(root) / ".venv" / "Scripts" / "python.exe";
+            std::filesystem::path py2 = std::filesystem::path(root).parent_path() / ".venv" / "Scripts" / "python.exe";
+            std::filesystem::path py3 = std::filesystem::path(root).parent_path().parent_path() / ".venv" / "Scripts" / "python.exe";
+            if (std::filesystem::exists(py1))
+                py_exec = py1.string();
+            else if (std::filesystem::exists(py2))
+                py_exec = py2.string();
+            else if (std::filesystem::exists(py3))
+                py_exec = py3.string();
+        }
+#else
         // python(venv) / script 경로는 실행 위치(root)에 따라 달라질 수 있으므로
         // 여러 후보를 순서대로 시도하고, 없으면 system python3로 폴백한다.
         std::string py_exec = "python3";
@@ -388,6 +451,7 @@ struct DeepSortWorker {
             else if (std::filesystem::exists(py3))
                 py_exec = py3.string();
         }
+#endif
 
         // 스크립트 위치 후보
         std::filesystem::path script;
@@ -409,6 +473,58 @@ struct DeepSortWorker {
                       << "  script candidates: root/src/, parent/src/, parent/get_metadata/src/\n";
             return false;
         }
+#ifdef _WIN32
+        SECURITY_ATTRIBUTES sa{};
+        sa.nLength = sizeof(sa);
+        sa.bInheritHandle = TRUE;
+
+        HANDLE child_stdout_read_tmp = NULL;
+        HANDLE child_stdout_write = NULL;
+        HANDLE child_stdin_read = NULL;
+        HANDLE child_stdin_write_tmp = NULL;
+
+        if (!CreatePipe(&child_stdout_read_tmp, &child_stdout_write, &sa, 0)) return false;
+        if (!SetHandleInformation(child_stdout_read_tmp, HANDLE_FLAG_INHERIT, 0)) return false;
+        if (!CreatePipe(&child_stdin_read, &child_stdin_write_tmp, &sa, 0)) return false;
+        if (!SetHandleInformation(child_stdin_write_tmp, HANDLE_FLAG_INHERIT, 0)) return false;
+
+        STARTUPINFOA si{};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdInput = child_stdin_read;
+        si.hStdOutput = child_stdout_write;
+        si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+
+        std::string cmd = "\"" + py_exec + "\" \"" + script.string() + "\"";
+        std::vector<char> cmdline(cmd.begin(), cmd.end());
+        cmdline.push_back('\0');
+
+        BOOL ok = CreateProcessA(
+            nullptr,
+            cmdline.data(),
+            nullptr,
+            nullptr,
+            TRUE,
+            CREATE_NO_WINDOW,
+            nullptr,
+            nullptr,
+            &si,
+            &pi
+        );
+
+        CloseHandle(child_stdin_read);
+        CloseHandle(child_stdout_write);
+        if (!ok)
+        {
+            CloseHandle(child_stdout_read_tmp);
+            CloseHandle(child_stdin_write_tmp);
+            return false;
+        }
+        child_stdout_read = child_stdout_read_tmp;
+        child_stdin_write = child_stdin_write_tmp;
+        active = true;
+        std::cerr << "[deepsort] worker started pid=" << pi.dwProcessId << "\n";
+#else
         int pipe_in[2], pipe_out[2];
         if (::pipe(pipe_in) || ::pipe(pipe_out)) return false;
         pid = ::fork();
@@ -451,6 +567,9 @@ struct DeepSortWorker {
         worker_thread = std::thread([this]() { async_loop(); });
 
         return true;
+#endif
+        worker_thread = std::thread([this]() { async_loop(); });
+        return true;
     }
 
     void stop() {
@@ -462,10 +581,16 @@ struct DeepSortWorker {
         }
         input_cv.notify_all();
         if (worker_thread.joinable()) worker_thread.join();
-
+#ifdef _WIN32
+        if (child_stdin_write) { CloseHandle(child_stdin_write); child_stdin_write = NULL; }
+        if (child_stdout_read) { CloseHandle(child_stdout_read); child_stdout_read = NULL; }
+        if (pi.hProcess) { TerminateProcess(pi.hProcess, 0); CloseHandle(pi.hProcess); pi.hProcess = NULL; }
+        if (pi.hThread) { CloseHandle(pi.hThread); pi.hThread = NULL; }
+#else
         if (write_fd >= 0) { ::close(write_fd); write_fd = -1; }
         if (read_fd  >= 0) { ::close(read_fd);  read_fd  = -1; }
         if (pid > 0) { ::kill(pid, SIGTERM); ::waitpid(pid, nullptr, 0); pid = -1; }
+#endif
     }
 
     // 메인루프에서 호출 — 논블로킹, 최신 결과만 반환
@@ -484,6 +609,14 @@ struct DeepSortWorker {
     }
 
 private:
+    void mark_worker_dead(const char* why)
+    {
+        if (!active) return;
+        active = false;
+        if (!dead_log_once.exchange(true))
+            std::cerr << "[deepsort] worker disabled: " << why << "\n";
+    }
+
     // 비동기 처리 루프
     void async_loop() {
         while (true) {
@@ -540,38 +673,85 @@ private:
         uint8_t hdr[4];
         hdr[0]=jpeg_len&0xFF; hdr[1]=(jpeg_len>>8)&0xFF;
         hdr[2]=(jpeg_len>>16)&0xFF; hdr[3]=(jpeg_len>>24)&0xFF;
-        if (::write(write_fd, hdr, 4) != 4) return result;
+#ifdef _WIN32
+        DWORD wrote = 0;
+        if (!WriteFile(child_stdin_write, hdr, 4, &wrote, nullptr) || wrote != 4) { mark_worker_dead("stdin header write failed"); return result; }
+        DWORD total = 0;
+        while (total < jpeg_len) {
+            DWORD chunk = 0;
+            DWORD remain = jpeg_len - total;
+            if (!WriteFile(child_stdin_write, buf.data() + total, remain, &chunk, nullptr) || chunk == 0) { mark_worker_dead("stdin jpeg write failed"); return result; }
+            total += chunk;
+        }
+#else
+        if (::write(write_fd, hdr, 4) != 4) { mark_worker_dead("stdin header write failed"); return result; }
         ssize_t total = 0;
         while (total < (ssize_t)jpeg_len) {
             ssize_t w = ::write(write_fd, buf.data() + total, jpeg_len - total);
-            if (w <= 0) return result;
+            if (w <= 0) { mark_worker_dead("stdin jpeg write failed"); return result; }
             total += w;
         }
+#endif
         uint32_t bbox_count = (uint32_t)bboxes.size();
         uint8_t bchdr[4];
         bchdr[0]=bbox_count&0xFF; bchdr[1]=(bbox_count>>8)&0xFF;
         bchdr[2]=(bbox_count>>16)&0xFF; bchdr[3]=(bbox_count>>24)&0xFF;
-        if (::write(write_fd, bchdr, 4) != 4) return result;
+#ifdef _WIN32
+        if (!WriteFile(child_stdin_write, bchdr, 4, &wrote, nullptr) || wrote != 4) { mark_worker_dead("stdin bbox header write failed"); return result; }
+#else
+        if (::write(write_fd, bchdr, 4) != 4) { mark_worker_dead("stdin bbox header write failed"); return result; }
+#endif
         for (const auto& bb : bboxes) {
             float vals[5] = {bb.l, bb.t, bb.r, bb.b, bb.conf};
             uint8_t raw[20];
             memcpy(raw, vals, 20);
-            if (::write(write_fd, raw, 20) != 20) return result;
+#ifdef _WIN32
+            if (!WriteFile(child_stdin_write, raw, 20, &wrote, nullptr) || wrote != 20) { mark_worker_dead("stdin bbox write failed"); return result; }
+#else
+            if (::write(write_fd, raw, 20) != 20) { mark_worker_dead("stdin bbox write failed"); return result; }
+#endif
         }
 
         // 응답 읽기 (타임아웃 5초 — 별도 스레드라 블로킹 OK)
+#ifdef _WIN32
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        std::string line;
+        char c = 0;
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            DWORD avail = 0;
+            if (!PeekNamedPipe(child_stdout_read, nullptr, 0, nullptr, &avail, nullptr))
+            {
+                mark_worker_dead("stdout pipe broken");
+                return result;
+            }
+            if (avail == 0)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                continue;
+            }
+            DWORD got = 0;
+            if (!ReadFile(child_stdout_read, &c, 1, &got, nullptr) || got != 1) { mark_worker_dead("stdout read failed"); return result; }
+            if (c == '\n') break;
+            line.push_back(c);
+        }
+        if (line.empty()) { mark_worker_dead("stdout timeout"); return result; }
+        if (line[0] == '0') return result;
+#else
         pollfd pfd{read_fd, POLLIN, 0};
-        if (::poll(&pfd, 1, 5000) <= 0) return result;
+        if (::poll(&pfd, 1, 5000) <= 0) { mark_worker_dead("stdout timeout/poll fail"); return result; }
         std::string line;
         char c;
         while (true) {
             pollfd pfd2{read_fd, POLLIN, 0};
             if (::poll(&pfd2, 1, 100) <= 0) break;
-            if (::read(read_fd, &c, 1) != 1) break;
+            if (::read(read_fd, &c, 1) != 1) { mark_worker_dead("stdout read failed"); return result; }
             if (c == '\n') break;
             line.push_back(c);
         }
-        if (line.empty() || line[0] == '0') return result;
+        if (line.empty()) { mark_worker_dead("stdout empty line"); return result; }
+        if (line[0] == '0') return result;
+#endif
 
         std::istringstream iss(line);
         int count;
@@ -633,13 +813,13 @@ static void metadata_thread_fn(RTSPClient* client, XMLParser* parser)
     char* big_buffer = new char[65536];
     std::string accumulated_xml;
     unsigned int last_timestamp = 0;
-    int sock = client->getSocket();
+    auto sock = client->getSocket();
 
     while (g_running)
     {
         client->sendHeartbeat();
 
-        int read_len = recv(sock, header, 4, MSG_WAITALL);
+        int read_len = recv(sock, reinterpret_cast<char*>(header), 4, MSG_WAITALL);
         if (read_len <= 0) break;
         if (header[0] != '$') continue;
 
@@ -982,6 +1162,13 @@ struct KalmanBbox2D
 
 int main(int argc, char** argv)
 {
+#ifdef _WIN32
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        std::cerr << "WSAStartup failed" << std::endl;
+        return -1;
+    }
+#endif
     double ratio = 0.35;
     double alpha = 0.5;
     int pan_min = 500, pan_max = 2500;
@@ -1010,7 +1197,9 @@ int main(int argc, char** argv)
     }
 
     std::signal(SIGINT, signal_handler);
+#ifndef _WIN32
     std::signal(SIGPIPE, signal_handler);
+#endif
 
     // DeepSORT 워커 시작
     if (!g_deepsort.start())
@@ -1550,5 +1739,8 @@ int main(int argc, char** argv)
     if (meta_thread.joinable()) meta_thread.join();
     cap.release();
     cv::destroyAllWindows();
+#ifdef _WIN32
+    WSACleanup();
+#endif
     return 0;
 }
