@@ -676,6 +676,9 @@ PY
                           "docker login '${SFEPS_DOCKER_REGISTRY}' -u '${REGISTRY_USER}' --password-stdin"
 
                         ssh ${SSH_OPTS} "${REMOTE}" "set -eu
+                          echo 'stopping manually started host server processes if present'
+                          pkill -f 'run_server.sh' >/dev/null 2>&1 || true
+                          pkill -f 'smart_server.bin' >/dev/null 2>&1 || true
                           docker pull '${SFEPS_IMAGE_REF}'
                           docker rm -f '${SFEPS_TEST_CONTAINER_NAME}' >/dev/null 2>&1 || true
                           mkdir -p '${SFEPS_VIDEO_DIR}'
@@ -767,6 +770,9 @@ PY
                           "docker login '${SFEPS_DOCKER_REGISTRY}' -u '${REGISTRY_USER}' --password-stdin"
 
                         ssh ${SSH_OPTS} "${REMOTE}" "set -eu
+                          echo 'stopping manually started host server processes if present'
+                          pkill -f 'run_server.sh' >/dev/null 2>&1 || true
+                          pkill -f 'smart_server.bin' >/dev/null 2>&1 || true
                           docker pull '${SFEPS_IMAGE_REF}'
                           docker rm -f '${SFEPS_PROD_CONTAINER_NAME}' >/dev/null 2>&1 || true
                           mkdir -p '${SFEPS_VIDEO_DIR}'
