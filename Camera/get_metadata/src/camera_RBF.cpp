@@ -20,7 +20,9 @@
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -43,6 +45,20 @@ static std::vector<ParsedMetadataObject> g_raw_objects;
 // ── DeepSORT가 부여한 안정적 ID bbox ────────────────────────────────
 static std::mutex g_obj_mutex;
 static std::vector<ParsedMetadataObject> g_objects;
+
+// DeepSORT 결과가 비는 순간에도(확정 전/일시 누락) 화면 bbox가 튀지 않게
+// 최근 DeepSORT 결과를 짧게 유지한다.
+static std::vector<ParsedMetadataObject> g_deepsort_last_objects;
+static int g_deepsort_empty_count = 0;
+static constexpr int DEEPSORT_EMPTY_GRACE_FRAMES = 5;
+
+// ── ID별 bbox EMA 스무더 ─────────────────────────────────────────────
+// DeepSORT 비동기 파이프라인의 프레임 지연 + to_ltrb() 칼만 예측값의
+// 순간 점프를 EMA로 감쇠시켜 화면 bbox 떨림을 제거한다.
+// BBOX_SMOOTH_ALPHA: 클수록 새 값에 빠르게 반응, 작을수록 부드러움
+static constexpr double BBOX_SMOOTH_ALPHA = 0.35;
+struct SmoothedRect { double x, y, w, h; bool init{false}; };
+static std::map<std::string, SmoothedRect> g_bbox_smooth;
 
 static cv::Mat g_last_frame;
 static std::mutex g_frame_mutex;
@@ -98,13 +114,39 @@ struct DeepSortWorker {
         if (active) return true;
         std::string root = get_exe_dir();
         if (root.empty()) return false;
-        auto py = std::filesystem::path(root) / ".venv" / "bin" / "python";
-        if (!std::filesystem::exists(py))
-            py = std::filesystem::path(root).parent_path() / ".venv" / "bin" / "python";
-        auto script = std::filesystem::path(root) / "src" / "deepsort_tracker_worker.py";
-        if (!std::filesystem::exists(py) || !std::filesystem::exists(script)) {
-            std::cerr << "[deepsort] worker files missing\n"
-                      << "  py=" << py << "\n  script=" << script << "\n";
+        // python(venv) / script 경로는 실행 위치(root)에 따라 달라질 수 있으므로
+        // 여러 후보를 순서대로 시도하고, 없으면 system python3로 폴백한다.
+        std::string py_exec = "python3";
+        {
+            std::filesystem::path py1 = std::filesystem::path(root) / ".venv" / "bin" / "python";
+            std::filesystem::path py2 = std::filesystem::path(root).parent_path() / ".venv" / "bin" / "python";
+            std::filesystem::path py3 = std::filesystem::path(root).parent_path().parent_path() / ".venv" / "bin" / "python";
+            if (std::filesystem::exists(py1))
+                py_exec = py1.string();
+            else if (std::filesystem::exists(py2))
+                py_exec = py2.string();
+            else if (std::filesystem::exists(py3))
+                py_exec = py3.string();
+        }
+
+        // 스크립트 위치 후보
+        std::filesystem::path script;
+        {
+            std::filesystem::path s1 = std::filesystem::path(root) / "src" / "deepsort_tracker_worker.py";
+            std::filesystem::path s2 = std::filesystem::path(root).parent_path() / "src" / "deepsort_tracker_worker.py";
+            std::filesystem::path s3 = std::filesystem::path(root).parent_path() / "get_metadata" / "src" / "deepsort_tracker_worker.py";
+            if (std::filesystem::exists(s1))
+                script = s1;
+            else if (std::filesystem::exists(s2))
+                script = s2;
+            else if (std::filesystem::exists(s3))
+                script = s3;
+        }
+
+        if (script.empty() || !std::filesystem::exists(script)) {
+            std::cerr << "[deepsort] worker script missing\n"
+                      << "  root=" << root << "\n"
+                      << "  script candidates: root/src/, parent/src/, parent/get_metadata/src/\n";
             return false;
         }
         int pipe_in[2], pipe_out[2];
@@ -113,14 +155,17 @@ struct DeepSortWorker {
         if (pid == 0) {
             ::dup2(pipe_in[0],  STDIN_FILENO);
             ::dup2(pipe_out[1], STDOUT_FILENO);
-            int dn = ::open("/dev/null", O_WRONLY);
+            // 디버깅용: DeepSORT worker stderr를 파일로 남긴다.
+            // (기존엔 /dev/null로 덮어버려서 import 에러 등을 확인 못했음)
+            const char* errlog = "/tmp/deepsort_worker_stderr.log";
+            int dn = ::open(errlog, O_WRONLY | O_CREAT | O_TRUNC, 0666);
             if (dn >= 0) { ::dup2(dn, STDERR_FILENO); ::close(dn); }
             ::close(pipe_in[0]); ::close(pipe_in[1]);
             ::close(pipe_out[0]); ::close(pipe_out[1]);
-            const char* p = py.c_str();
+            const char* p = py_exec.c_str();
             const char* s = script.c_str();
             char* const argv[] = {const_cast<char*>(p), const_cast<char*>(s), nullptr};
-            ::execv(p, argv);
+            ::execvp(p, argv);
             _exit(127);
         }
         ::close(pipe_in[0]);
@@ -129,6 +174,18 @@ struct DeepSortWorker {
         read_fd  = pipe_out[0];
         active   = true;
         std::cerr << "[deepsort] worker started pid=" << pid << "\n";
+
+        // 워커가 즉시 종료했는지 체크(예: deep_sort_realtime import 실패)
+        {
+            int status = 0;
+            pid_t w = ::waitpid(pid, &status, WNOHANG);
+            if (w == pid) {
+                active = false;
+                std::cerr << "[deepsort] worker exited early. status=" << status
+                          << " (stderr: /tmp/deepsort_worker_stderr.log)\n";
+                return false;
+            }
+        }
 
         // 비동기 처리 스레드 시작
         worker_thread = std::thread([this]() { async_loop(); });
@@ -780,9 +837,51 @@ int main(int argc, char** argv)
         // 최신 DeepSORT 결과 가져오기 (논블로킹)
         {
             auto tracked = g_deepsort.get_latest();
+            // DeepSORT가 잠깐 비었을 때, 선택된 객체가 이전 DeepSORT 결과에도 없으면
+            // stale(오래된) bbox를 계속 그리지 않고 raw bbox를 바로 보여주도록 처리한다.
+            std::string sel_id_now;
+            bool sel_valid_now = false;
+            {
+                std::lock_guard<std::mutex> lk(g_sel_mutex);
+                sel_valid_now = g_selected_valid;
+                sel_id_now = g_selected_id;
+            }
             std::lock_guard<std::mutex> lock(g_obj_mutex);
-            // DeepSORT 결과 없으면 raw 그대로
-            g_objects = tracked.empty() ? raw_objs : tracked;
+            if (!tracked.empty())
+            {
+                g_deepsort_last_objects = tracked;
+                g_deepsort_empty_count = 0;
+                g_objects = tracked;
+            }
+            else
+            {
+                g_deepsort_empty_count++;
+                bool sel_found_in_last = false;
+                if (sel_valid_now && !g_deepsort_last_objects.empty())
+                {
+                    for (const auto& obj : g_deepsort_last_objects)
+                    {
+                        if (obj.id == sel_id_now)
+                        {
+                            sel_found_in_last = true;
+                            break;
+                        }
+                    }
+                }
+
+                if ((g_deepsort_empty_count <= DEEPSORT_EMPTY_GRACE_FRAMES) &&
+                    !g_deepsort_last_objects.empty() &&
+                    (!sel_valid_now || sel_found_in_last))
+                {
+                    // 최근 DeepSORT 결과를 짧게 유지해서 bbox 떨림/플리커 감소
+                    g_objects = g_deepsort_last_objects;
+                }
+                else
+                {
+                    // 너무 오래 비면 원시 bbox로 폴백
+                    g_objects = raw_objs;
+                }
+            }
         }
 
         // copy objs
@@ -792,14 +891,62 @@ int main(int argc, char** argv)
             objs = g_objects;
         }
 
-        // draw boxes
-        for (const auto& obj : objs)
+        // ── ID별 EMA 스무딩 적용 후 draw boxes ─────────────────────
+        // DeepSORT 비동기 지연으로 인한 프레임 점프, to_ltrb() 칼만 예측값의
+        // 순간 튐을 EMA로 감쇠시킨다. 새 ID가 처음 나타날 때는 초기화(직결),
+        // 이후 프레임부터 EMA 적용. ID가 사라지면 버퍼에서 제거.
         {
-            cv::Rect r;
-            if (!compute_rect_from_obj(obj, W, H, r)) continue;
-            cv::rectangle(frame, r, cv::Scalar(0, 255, 255), 2);
-            cv::putText(frame, obj.id.c_str(), cv::Point(r.x, std::max(0, r.y - 5)),
-                        cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1);
+            std::set<std::string> active_ids;
+            for (const auto& obj : objs)
+            {
+                cv::Rect raw_r;
+                if (!compute_rect_from_obj(obj, W, H, raw_r)) continue;
+                active_ids.insert(obj.id);
+
+                auto& sr = g_bbox_smooth[obj.id];
+                if (!sr.init)
+                {
+                    // 첫 등장: 스무더 초기화 (점프 없이 바로 세팅)
+                    sr.x = raw_r.x; sr.y = raw_r.y;
+                    sr.w = raw_r.width; sr.h = raw_r.height;
+                    sr.init = true;
+                }
+                else
+                {
+                    // EMA 갱신 — 큰 점프(outlier)는 강하게 걸러낸다
+                    double dx = raw_r.x     - sr.x;
+                    double dy = raw_r.y     - sr.y;
+                    double dist = std::sqrt(dx*dx + dy*dy);
+                    // 한 프레임에 100px 이상 점프하면 alpha를 강제로 낮춰 급변 완화
+                    double a = (dist > 100.0) ? 0.15 : BBOX_SMOOTH_ALPHA;
+                    sr.x += a * (raw_r.x     - sr.x);
+                    sr.y += a * (raw_r.y     - sr.y);
+                    sr.w += a * (raw_r.width  - sr.w);
+                    sr.h += a * (raw_r.height - sr.h);
+                }
+
+                cv::Rect r(
+                    (int)std::lround(sr.x), (int)std::lround(sr.y),
+                    (int)std::lround(std::max(1.0, sr.w)),
+                    (int)std::lround(std::max(1.0, sr.h))
+                );
+                r.x = std::max(0, std::min(r.x, W - 1));
+                r.y = std::max(0, std::min(r.y, H - 1));
+                r.width  = std::max(1, std::min(r.width,  W - r.x));
+                r.height = std::max(1, std::min(r.height, H - r.y));
+
+                cv::rectangle(frame, r, cv::Scalar(0, 255, 255), 2);
+                cv::putText(frame, obj.id.c_str(), cv::Point(r.x, std::max(0, r.y - 5)),
+                            cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1);
+            }
+            // 사라진 ID 스무더 정리 (메모리 누수 방지)
+            for (auto it = g_bbox_smooth.begin(); it != g_bbox_smooth.end(); )
+            {
+                if (active_ids.find(it->first) == active_ids.end())
+                    it = g_bbox_smooth.erase(it);
+                else
+                    ++it;
+            }
         }
 
         // selected rect
@@ -817,17 +964,33 @@ int main(int argc, char** argv)
         {
             for (const auto& obj : objs)
             {
-                if (obj.id == sel_id)
+                if (obj.id != sel_id) continue;
+                // 스무딩된 bbox를 sel_rect에 반영
+                auto it = g_bbox_smooth.find(sel_id);
+                if (it != g_bbox_smooth.end() && it->second.init)
+                {
+                    cv::Rect smoothed(
+                        (int)std::lround(it->second.x), (int)std::lround(it->second.y),
+                        (int)std::lround(std::max(1.0, it->second.w)),
+                        (int)std::lround(std::max(1.0, it->second.h))
+                    );
+                    smoothed.x = std::max(0, std::min(smoothed.x, W - 1));
+                    smoothed.y = std::max(0, std::min(smoothed.y, H - 1));
+                    smoothed.width  = std::max(1, std::min(smoothed.width,  W - smoothed.x));
+                    smoothed.height = std::max(1, std::min(smoothed.height, H - smoothed.y));
+                    sel_rect = smoothed;
+                }
+                else
                 {
                     cv::Rect updated;
                     if (compute_rect_from_obj(obj, W, H, updated))
-                    {
                         sel_rect = updated;
-                        std::lock_guard<std::mutex> lock(g_sel_mutex);
-                        g_selected_rect = updated;
-                    }
-                    break;
                 }
+                {
+                    std::lock_guard<std::mutex> lock(g_sel_mutex);
+                    g_selected_rect = sel_rect;
+                }
+                break;
             }
         }
 
