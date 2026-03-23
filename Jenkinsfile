@@ -413,104 +413,6 @@ PY
             }
         }
 
-        stage('Ensure Test Server Before Squish') {
-            when {
-                expression { env.SFEPS_CI_BRANCH == 'develop' }
-            }
-            steps {
-                withCredentials([
-                    usernamePassword(
-                        credentialsId: "${env.SFEPS_REGISTRY_CREDENTIALS_ID}",
-                        usernameVariable: 'REGISTRY_USER',
-                        passwordVariable: 'REGISTRY_PASS'
-                    ),
-                    sshUserPrivateKey(
-                        credentialsId: "${env.SFEPS_TEST_SSH_CREDENTIALS_ID}",
-                        keyFileVariable: 'SSH_KEY',
-                        usernameVariable: 'SSH_USER'
-                    )
-                ]) {
-                    sh '''
-                        set -eu
-                        if [ -z "${SFEPS_TEST_HOST}" ]; then
-                          echo "SFEPS_TEST_HOST is required before Squish tests." >&2
-                          exit 1
-                        fi
-                        if [ -z "${SFEPS_IMAGE_LATEST_REF}" ]; then
-                          echo "SFEPS_IMAGE_LATEST_REF is empty. Resolve CI Metadata stage failed." >&2
-                          exit 1
-                        fi
-
-                        REMOTE="${SSH_USER}@${SFEPS_TEST_HOST}"
-                        SSH_OPTS="-i ${SSH_KEY} -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
-
-                        printf '%s' "${REGISTRY_PASS}" | ssh ${SSH_OPTS} "${REMOTE}" \
-                          "docker login '${SFEPS_DOCKER_REGISTRY}' -u '${REGISTRY_USER}' --password-stdin"
-
-                        ssh ${SSH_OPTS} "${REMOTE}" "set -eu
-                          if ! docker ps --format '{{.Names}}' | grep -Fx '${SFEPS_TEST_CONTAINER_NAME}' >/dev/null; then
-                            if docker ps -a --format '{{.Names}}' | grep -Fx '${SFEPS_TEST_CONTAINER_NAME}' >/dev/null; then
-                              docker start '${SFEPS_TEST_CONTAINER_NAME}' >/dev/null
-                              echo 'Started existing test container: ${SFEPS_TEST_CONTAINER_NAME}'
-                            else
-                              echo 'Test container not found, creating from ${SFEPS_IMAGE_LATEST_REF}'
-                              docker pull '${SFEPS_IMAGE_LATEST_REF}'
-                              mkdir -p '${SFEPS_VIDEO_DIR}'
-
-                              if [ ! -r '${SFEPS_REMOTE_ENV_FILE}' ]; then
-                                echo 'missing env file: ${SFEPS_REMOTE_ENV_FILE}' >&2
-                                exit 1
-                              fi
-                              if grep -nE '^[[:space:]]*(<<<<<<<|=======|>>>>>>>)' '${SFEPS_REMOTE_ENV_FILE}' >/dev/null; then
-                                echo 'env file has unresolved merge conflict markers: ${SFEPS_REMOTE_ENV_FILE}' >&2
-                                grep -nE '^[[:space:]]*(<<<<<<<|=======|>>>>>>>)' '${SFEPS_REMOTE_ENV_FILE}' || true
-                                exit 1
-                              fi
-                              if [ ! -S '${SFEPS_REMOTE_MYSQL_SOCK_DIR}/mysqld.sock' ]; then
-                                echo 'missing mysql socket: ${SFEPS_REMOTE_MYSQL_SOCK_DIR}/mysqld.sock' >&2
-                                exit 1
-                              fi
-
-                              TMP_ENV_FILE='/tmp/${SFEPS_TEST_CONTAINER_NAME}.env'
-                              rm -rf "$TMP_ENV_FILE"
-                              grep -Ev '^(SFEPS_APP_BIND_IP|SFEPS_APP_TLS_ENABLE|SFEPS_APP_PLAINTEXT_ENABLE|SFEPS_APP_TLS_CERT_FILE|SFEPS_APP_TLS_KEY_FILE|SFEPS_ESP_TCP_ENABLE|SFEPS_ESP_TCP_BIND_IP|SFEPS_ESP_TCP_PORT|SFEPS_ESP_TCP_MAX_CLIENTS|SFEPS_ESP_TCP_ALLOW_IPS)=' \
-                                '${SFEPS_REMOTE_ENV_FILE}' > "$TMP_ENV_FILE"
-                              {
-                                echo 'SFEPS_APP_BIND_IP=0.0.0.0'
-                                echo 'SFEPS_APP_TLS_ENABLE=0'
-                                echo 'SFEPS_APP_PLAINTEXT_ENABLE=1'
-                                echo 'SFEPS_ESP_TCP_ENABLE=0'
-                              } >> "$TMP_ENV_FILE"
-
-                              if ! docker run -d --name '${SFEPS_TEST_CONTAINER_NAME}' --restart unless-stopped --network host \
-                                -v "$TMP_ENV_FILE:${SFEPS_CONTAINER_ENV_FILE}:ro" \
-                                -v '${SFEPS_REMOTE_PKI_DIR}:${SFEPS_REMOTE_PKI_DIR}:ro' \
-                                -v '${SFEPS_REMOTE_MYSQL_SOCK_DIR}:${SFEPS_REMOTE_MYSQL_SOCK_DIR}' \
-                                -v '${SFEPS_VIDEO_DIR}:${SFEPS_VIDEO_DIR}' \
-                                -e SFEPS_ENV_FILE='${SFEPS_CONTAINER_ENV_FILE}' \
-                                '${SFEPS_IMAGE_LATEST_REF}'; then
-                                echo 'docker run failed for pre-Squish bootstrap' >&2
-                                docker ps -a --filter name='${SFEPS_TEST_CONTAINER_NAME}' || true
-                                exit 1
-                              fi
-                            fi
-                          else
-                            echo 'Test container already running: ${SFEPS_TEST_CONTAINER_NAME}'
-                          fi
-
-                          if timeout 90 bash -lc 'while ! cat </dev/null >/dev/tcp/127.0.0.1/${SFEPS_HEALTH_PORT} 2>/dev/null; do sleep 2; done'; then
-                            echo 'Pre-Squish health check OK on port ${SFEPS_HEALTH_PORT}'
-                            exit 0
-                          fi
-
-                          echo 'Pre-Squish health check FAILED' >&2
-                          docker logs --tail 120 '${SFEPS_TEST_CONTAINER_NAME}' || true
-                          exit 1"
-                    '''
-                }
-            }
-        }
-
                 stage('Run Squish UI Tests') {
                         steps {
                                 script {
@@ -791,17 +693,17 @@ PY
                             exit 1
                           fi
                           TMP_ENV_FILE='/tmp/${SFEPS_TEST_CONTAINER_NAME}.env'
-                          rm -rf "$TMP_ENV_FILE"
+                          rm -rf "\$TMP_ENV_FILE"
                           grep -Ev '^(SFEPS_APP_BIND_IP|SFEPS_APP_TLS_ENABLE|SFEPS_APP_PLAINTEXT_ENABLE|SFEPS_APP_TLS_CERT_FILE|SFEPS_APP_TLS_KEY_FILE|SFEPS_ESP_TCP_ENABLE|SFEPS_ESP_TCP_BIND_IP|SFEPS_ESP_TCP_PORT|SFEPS_ESP_TCP_MAX_CLIENTS|SFEPS_ESP_TCP_ALLOW_IPS)=' \
-                            '${SFEPS_REMOTE_ENV_FILE}' > "$TMP_ENV_FILE"
+                            '${SFEPS_REMOTE_ENV_FILE}' > "\$TMP_ENV_FILE"
                           {
                             echo 'SFEPS_APP_BIND_IP=0.0.0.0'
                             echo 'SFEPS_APP_TLS_ENABLE=0'
                             echo 'SFEPS_APP_PLAINTEXT_ENABLE=1'
                             echo 'SFEPS_ESP_TCP_ENABLE=0'
-                          } >> "$TMP_ENV_FILE"
+                          } >> "\$TMP_ENV_FILE"
                           if ! docker run -d --name '${SFEPS_TEST_CONTAINER_NAME}' --restart unless-stopped --network host \
-                            -v "$TMP_ENV_FILE:${SFEPS_CONTAINER_ENV_FILE}:ro" \
+                            -v "\$TMP_ENV_FILE:${SFEPS_CONTAINER_ENV_FILE}:ro" \
                             -v '${SFEPS_REMOTE_PKI_DIR}:${SFEPS_REMOTE_PKI_DIR}:ro' \
                             -v '${SFEPS_REMOTE_MYSQL_SOCK_DIR}:${SFEPS_REMOTE_MYSQL_SOCK_DIR}' \
                             -v '${SFEPS_VIDEO_DIR}:${SFEPS_VIDEO_DIR}' \
@@ -883,15 +785,15 @@ PY
                             exit 1
                           fi
                           TMP_ENV_FILE='/tmp/${SFEPS_PROD_CONTAINER_NAME}.env'
-                          rm -rf "$TMP_ENV_FILE"
+                          rm -rf "\$TMP_ENV_FILE"
                           grep -Ev '^(SFEPS_APP_TLS_ENABLE|SFEPS_APP_PLAINTEXT_ENABLE|SFEPS_APP_TLS_CERT_FILE|SFEPS_APP_TLS_KEY_FILE)=' \
-                            '${SFEPS_REMOTE_ENV_FILE}' > "$TMP_ENV_FILE"
+                            '${SFEPS_REMOTE_ENV_FILE}' > "\$TMP_ENV_FILE"
                           {
                             echo 'SFEPS_APP_TLS_ENABLE=0'
                             echo 'SFEPS_APP_PLAINTEXT_ENABLE=1'
-                          } >> "$TMP_ENV_FILE"
+                          } >> "\$TMP_ENV_FILE"
                           if ! docker run -d --name '${SFEPS_PROD_CONTAINER_NAME}' --restart unless-stopped --network host \
-                            -v "$TMP_ENV_FILE:${SFEPS_CONTAINER_ENV_FILE}:ro" \
+                            -v "\$TMP_ENV_FILE:${SFEPS_CONTAINER_ENV_FILE}:ro" \
                             -v '${SFEPS_REMOTE_PKI_DIR}:${SFEPS_REMOTE_PKI_DIR}:ro' \
                             -v '${SFEPS_REMOTE_MYSQL_SOCK_DIR}:${SFEPS_REMOTE_MYSQL_SOCK_DIR}' \
                             -v '${SFEPS_VIDEO_DIR}:${SFEPS_VIDEO_DIR}' \
