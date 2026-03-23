@@ -675,10 +675,18 @@ PY
                         printf '%s' "${REGISTRY_PASS}" | ssh ${SSH_OPTS} "${REMOTE}" \
                           "docker login '${SFEPS_DOCKER_REGISTRY}' -u '${REGISTRY_USER}' --password-stdin"
 
-                        ssh ${SSH_OPTS} "${REMOTE}" "set -eu
+                        restore_manual_server() {
+                          ssh ${SSH_OPTS} "${REMOTE}" "set +e
+                            echo 'restoring manual host server as deploy fallback'
+                            docker rm -f '${SFEPS_TEST_CONTAINER_NAME}' >/dev/null 2>&1 || true
+                            nohup env SFEPS_ENV_FILE='${SFEPS_REMOTE_ENV_FILE}' /home/iam/SFEPS/server/run_server.sh >/home/iam/SFEPS/server/.ci-manual-fallback.log 2>&1 &
+                          " || true
+                        }
+
+                        if ! ssh ${SSH_OPTS} "${REMOTE}" "set -eu
                           echo 'stopping manually started host server processes if present'
-                          pkill -f 'run_server.sh' >/dev/null 2>&1 || true
-                          pkill -f 'smart_server.bin' >/dev/null 2>&1 || true
+                          pkill -f '(^| )/home/iam/SFEPS/server/run_server.sh( |$)' >/dev/null 2>&1 || true
+                          pkill -f '(^| )/home/iam/SFEPS/server/build/smart_server.bin( |$)' >/dev/null 2>&1 || true
                           docker pull '${SFEPS_IMAGE_REF}'
                           docker rm -f '${SFEPS_TEST_CONTAINER_NAME}' >/dev/null 2>&1 || true
                           mkdir -p '${SFEPS_VIDEO_DIR}'
@@ -714,16 +722,24 @@ PY
                             echo 'docker run failed for test deploy' >&2
                             docker ps -a --filter name='${SFEPS_TEST_CONTAINER_NAME}' || true
                             exit 1
-                          fi"
+                          fi"; then
+                          echo 'test deploy command failed; starting manual fallback server' >&2
+                          restore_manual_server
+                          exit 1
+                        fi
 
-                        ssh ${SSH_OPTS} "${REMOTE}" "set -eu
+                        if ! ssh ${SSH_OPTS} "${REMOTE}" "set -eu
                           if timeout 90 bash -lc 'while ! cat </dev/null >/dev/tcp/127.0.0.1/${SFEPS_HEALTH_PORT} 2>/dev/null; do sleep 2; done'; then
                             echo 'test deploy health check OK on port ${SFEPS_HEALTH_PORT}'
                             exit 0
                           fi
                           echo 'test deploy health check FAILED' >&2
                           docker logs --tail 120 '${SFEPS_TEST_CONTAINER_NAME}' || true
-                          exit 1"
+                          exit 1"; then
+                          echo 'test deploy health check failed; starting manual fallback server' >&2
+                          restore_manual_server
+                          exit 1
+                        fi
                     '''
                 }
             }
@@ -771,8 +787,8 @@ PY
 
                         ssh ${SSH_OPTS} "${REMOTE}" "set -eu
                           echo 'stopping manually started host server processes if present'
-                          pkill -f 'run_server.sh' >/dev/null 2>&1 || true
-                          pkill -f 'smart_server.bin' >/dev/null 2>&1 || true
+                          pkill -f '(^| )/home/iam/SFEPS/server/run_server.sh( |$)' >/dev/null 2>&1 || true
+                          pkill -f '(^| )/home/iam/SFEPS/server/build/smart_server.bin( |$)' >/dev/null 2>&1 || true
                           docker pull '${SFEPS_IMAGE_REF}'
                           docker rm -f '${SFEPS_PROD_CONTAINER_NAME}' >/dev/null 2>&1 || true
                           mkdir -p '${SFEPS_VIDEO_DIR}'
