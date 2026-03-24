@@ -8,11 +8,13 @@
 
 typedef void (*esp_laser_set_fn)(uint8_t on);               /* PB0 on/off */
 typedef void (*esp_tcp_send_fn)(const char *payload);    /* TCP payload 라인 전송(개행 포함 권장) */
+typedef void (*esp_dbg_tx_fn)(const char *msg);          /* PC(USART2) 디버그 출력 (NULL이면 생략) */
 
 typedef struct
 {
   esp_laser_set_fn laser_set;
   esp_tcp_send_fn tcp_send;
+  esp_dbg_tx_fn dbg_tx; /* TRACK_* 수신 시 시리얼 모니터에 한 줄 요약 */
 } esp_parser_callbacks_t;
 
 void ESP_Parser_SetCallbacks(esp_parser_callbacks_t *cb);

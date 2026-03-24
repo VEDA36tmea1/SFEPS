@@ -47,6 +47,7 @@ add_executable(smart_server
     src/services/transport_utils.cpp
     src/modules/voice/audio_service.cpp
     src/modules/alerts/alert_service.cpp
+    src/modules/ui/video_catalog_events.cpp
     src/modules/ui/video_catalog_service.cpp
     src/modules/ui/position_service.cpp
     src/modules/auth/auth_service.cpp

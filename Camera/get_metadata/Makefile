@@ -35,19 +35,16 @@ RBF_SRCS = src/camera_RBF.cpp \
            src/RTSPClient.cpp \
            src/XMLParser.cpp
 
-# 5. camera_CSRT (클릭 bbox -> CSRT 추적 -> RBF(PWM))
-CSRT_SRCS = src/camera_CSRT.cpp \
-           src/RTSPClient.cpp \
-           src/XMLParser.cpp
+
 
 # 결과물 이름
 TARGET     = app
 CAM_TARGET = camera_client
 RBF_TARGET = camera_RBF
-CSRT_TARGET = camera_CSRT
+
 
 # 빌드 규칙
-all: $(TARGET) $(CAM_TARGET) $(RBF_TARGET) $(CSRT_TARGET)
+all: $(TARGET) $(CAM_TARGET) $(RBF_TARGET) 
 
 $(TARGET): $(SRCS)
 	$(CXX) $(CXXFLAGS) $(SRCS) -o $(TARGET) $(LDLIBS)
@@ -56,10 +53,9 @@ $(CAM_TARGET): $(CAM_SRCS)
 	$(CXX) $(CXXFLAGS) $(CAM_SRCS) -o $(CAM_TARGET) $(OPENCV_FLAGS) -lpthread
 
 $(RBF_TARGET): $(RBF_SRCS)
-	$(CXX) $(CXXFLAGS) $(RBF_SRCS) -o $(RBF_TARGET) $(OPENCV_FLAGS) -lpthread
+	$(CXX) $(CXXFLAGS) $(RBF_SRCS) -o $(RBF_TARGET) $(OPENCV_FLAGS) -lpthreadd
 
-$(CSRT_TARGET): $(CSRT_SRCS)
-	$(CXX) $(CXXFLAGS) $(CSRT_SRCS) -o $(CSRT_TARGET) $(OPENCV_FLAGS)
+
 
 clean:
-	rm -f $(TARGET) $(CAM_TARGET) $(RBF_TARGET) $(CSRT_TARGET)
+	rm -f $(TARGET) $(CAM_TARGET) $(RBF_TARGET) 
