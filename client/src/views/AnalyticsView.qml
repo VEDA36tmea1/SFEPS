@@ -24,6 +24,12 @@ Page {
     property int ageCount60: 0
     property int ageCountPlus: 0
 
+    // Monitoring forwarded values from main window (optional)
+    property int monitoringTotalBoardingCount: 0
+    property int monitoringFraudBoardingCount: 0
+    property int monitoringStreamLatency: 0
+    property real monitoringEvasionRate: monitoringTotalBoardingCount > 0 ? Math.round((monitoringFraudBoardingCount / monitoringTotalBoardingCount) * 1000) / 10 : 0
+
     // Dynamic scaling helper
     property int maxAgeCount: Math.max(1, ageCount18, ageCount25, ageCount35, ageCount45, ageCount60, ageCountPlus)
 
@@ -56,46 +62,13 @@ Page {
                     background: null
                 }
                 Text {
-                    text: "Evasion Analytics"
+                    text: "Analytics"
                     color: AppTheme.textPrimary
                     font: AppTheme.fontTitle
                 }
             }
 
-            // Search Bar Area
-            RowLayout {
-                Layout.fillWidth: true
-                Layout.topMargin: 16
-                Layout.leftMargin: 24
-                Layout.rightMargin: 24
-                
-                Rectangle {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 44
-                    color: AppTheme.surface
-                    radius: 8
-                    border.color: AppTheme.inputBorder
-                    border.width: 1
-
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.margins: 12
-                        spacing: 12
-                        Image {
-                            source: "qrc:/assets/search.svg"
-                            sourceSize: Qt.size(16, 16)
-                            opacity: 0.7
-                        }
-                        TextField {
-                            Layout.fillWidth: true
-                            placeholderText: "Search analytics data..."
-                            color: "white"
-                            background: Item {}
-                            font.pixelSize: 14
-                        }
-                    }
-                }
-            }
+            // (Search box removed from top; moved above Recent Fraud Alerts below)
 
             // Charts Area (Entry Status & Demographic)
             RowLayout {
@@ -145,33 +118,57 @@ Page {
                                 anchors.centerIn: parent
                                 spacing: 32
 
-                                // Chart
-                                Rectangle {
+                                // Chart (Canvas-based donut: blue = total entries, orange arc = evasions)
+                                Item {
                                     width: 160
                                     height: 160
-                                    radius: 80
-                                    color: "transparent"
-                                    border.width: 20
-                                    border.color: AppTheme.primaryOrange // Evasions
+                                    Canvas {
+                                        id: donutCanvas
+                                        anchors.fill: parent
+                                        onPaint: {
+                                            var ctx = getContext("2d");
+                                            ctx.reset();
+                                            ctx.clearRect(0, 0, width, height);
+                                            var cx = width / 2;
+                                            var cy = height / 2;
+                                            var radius = Math.min(width, height) / 2 - 10;
+                                            var lineW = 20;
 
-                                    Rectangle {
-                                        anchors.centerIn: parent
-                                        width: 160
-                                        height: 160
-                                        radius: 80
-                                        color: "transparent"
-                                        border.width: 20
-                                        border.color: "#3b82f6" // Valid Entries (Blue)
-                                        opacity: 0.8
-                                        z: -1
-                                        // In real app, use ShapePath for partial arcs
+                                            // Draw full ring for Total Entries (blue)
+                                            ctx.beginPath();
+                                            ctx.lineWidth = lineW;
+                                            ctx.strokeStyle = (AppTheme && AppTheme.primaryBlue) ? AppTheme.primaryBlue : "#3b82f6";
+                                            // fallback if primaryBlue not defined
+                                            try { ctx.strokeStyle = AppTheme.primaryBlue ? AppTheme.primaryBlue : "#3b82f6"; } catch(e) {}
+                                            ctx.arc(cx, cy, radius, 0, 2 * Math.PI);
+                                            ctx.stroke();
+
+                                            // Compute ratio from monitoring counts (fall back to local totals if not set)
+                                            var total = monitoringTotalBoardingCount > 0 ? monitoringTotalBoardingCount : (root.totalEntries > 0 ? root.totalEntries : 0);
+                                            var ev = monitoringFraudBoardingCount > 0 ? monitoringFraudBoardingCount : (root.totalEvasions > 0 ? root.totalEvasions : 0);
+                                            var ratio = 0;
+                                            if (total > 0) ratio = Math.min(1, ev / total);
+
+                                            // Draw evasion arc (orange)
+                                            if (ratio > 0) {
+                                                var start = -Math.PI / 2; // top
+                                                var end = start + ratio * 2 * Math.PI;
+                                                ctx.beginPath();
+                                                ctx.lineWidth = lineW;
+                                                try { ctx.strokeStyle = AppTheme.primaryOrange ? AppTheme.primaryOrange : "#f97316"; } catch(e) { ctx.strokeStyle = "#f97316"; }
+                                                ctx.arc(cx, cy, radius, start, end);
+                                                ctx.stroke();
+                                            }
+                                        }
+                                        Component.onCompleted: donutCanvas.requestPaint()
                                     }
 
+                                    // Center labels
                                     ColumnLayout {
                                         anchors.centerIn: parent
                                         spacing: 4
                                         Text {
-                                            text: root.evasionRate + "%"
+                                            text: monitoringEvasionRate + "%"
                                             color: "white"
                                             font.bold: true
                                             font.pixelSize: 24
@@ -183,6 +180,13 @@ Page {
                                             font.pixelSize: 10
                                             Layout.alignment: Qt.AlignHCenter
                                         }
+                                    }
+
+                                    // Repaint when underlying values change
+                                    Connections {
+                                        target: root
+                                        onMonitoringTotalBoardingCountChanged: donutCanvas.requestPaint()
+                                        onMonitoringFraudBoardingCountChanged: donutCanvas.requestPaint()
                                     }
                                 }
 
@@ -205,7 +209,7 @@ Page {
                                                 font.pixelSize: 12
                                             }
                                             Text {
-                                                text: root.totalEvasions.toLocaleString()
+                                                text: monitoringFraudBoardingCount.toLocaleString()
                                                 color: "white"
                                                 font.bold: true
                                                 font.pixelSize: 16
@@ -228,7 +232,7 @@ Page {
                                                 font.pixelSize: 12
                                             }
                                             Text {
-                                                text: totalEntries.toLocaleString()
+                                                text: monitoringTotalBoardingCount.toLocaleString()
                                                 color: "white"
                                                 font.bold: true
                                                 font.pixelSize: 16
@@ -375,14 +379,34 @@ Page {
                         Item {
                             Layout.fillWidth: true
                         }
-                        Text {
-                            text: "View All Logs"
-                            color: AppTheme.primaryOrange
-                            font.bold: true
-                            font.pixelSize: 12
-                            MouseArea {
+                    }
+
+                    // Search box (placed directly under Recent Fraud Alerts label)
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 38
+                            color: AppTheme.surfaceCard
+                            radius: 6
+                            border.color: AppTheme.borderCard
+
+                            RowLayout {
                                 anchors.fill: parent
-                                cursorShape: Qt.PointingHandCursor
+                                anchors.leftMargin: 12
+                                spacing: 10
+                                Image {
+                                    source: "qrc:/assets/search.svg"
+                                    sourceSize: Qt.size(16, 16)
+                                    opacity: 0.7
+                                }
+                                TextField {
+                                    Layout.fillWidth: true
+                                    placeholderText: "Search analytics data..."
+                                    color: "white"
+                                    font.pixelSize: 12
+                                    background: null
+                                }
                             }
                         }
                     }
@@ -533,21 +557,21 @@ Page {
                     model: [
                         {
                             title: "Active Cameras",
-                            value: "1 / 1",
+                            value: "1",
                             badge: "Active",
                             color: "#22c55e",
                             icon: "video"
                         },
                         {
                             title: "Gate Sensors",
-                            value: "1 / 1",
+                            value: "1",
                             badge: "Online",
                             color: AppTheme.accent,
                             icon: "wifi"
                         },
                         {
-                            title: "Node Latency",
-                            value: "12ms",
+                            title: "Stream Latency",
+                            value: "0ms",
                             badge: "Optimal",
                             color: "#3b82f6",
                             icon: "activity"
@@ -589,7 +613,7 @@ Page {
                                 }
                             }
 
-                            ColumnLayout {
+                                ColumnLayout {
                                 spacing: 4
                                 Text {
                                     text: modelData.title
@@ -597,7 +621,8 @@ Page {
                                     font.pixelSize: 12
                                 }
                                 Text {
-                                    text: modelData.value
+                                    // If this card represents stream latency, show the live measured value
+                                    text: modelData.title === "Stream Latency" ? (monitoringStreamLatency + " ms") : modelData.value
                                     color: "white"
                                     font.pixelSize: 18
                                     font.bold: true

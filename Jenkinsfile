@@ -24,7 +24,7 @@ pipeline {
         // Single-job fallback branch (set to main when running main in a single Pipeline job)
         SFEPS_SINGLE_JOB_BRANCH = "${env.SFEPS_SINGLE_JOB_BRANCH ?: 'develop'}"
 
-        SFEPS_TEST_HOST = "${env.SFEPS_TEST_HOST ?: '192.168.0.82'}"
+        SFEPS_TEST_HOST = "${env.SFEPS_TEST_HOST ?: '192.168.0.101'}"
         SFEPS_TEST_SSH_CREDENTIALS_ID = "${env.SFEPS_TEST_SSH_CREDENTIALS_ID ?: 'sfeps-test-ssh'}"
         SFEPS_TEST_CONTAINER_NAME = "${env.SFEPS_TEST_CONTAINER_NAME ?: 'sfeps-server-test'}"
 
@@ -574,7 +574,10 @@ PY
                                                                     >> "!REPORT_FILE!" echo ^</testsuite^>
                                                                 )
                                                             )
-                                                            if exist "!REPORT_FILE!" echo Generated Squish report: !REPORT_FILE!
+                                                            if exist "!REPORT_FILE!" (
+                                                                powershell -NoProfile -Command "$p=$env:REPORT_FILE; $t=$env:TC_ELAPSED_SEC; [xml]$xml=Get-Content -LiteralPath $p; if ($xml.testsuite) { if (-not $xml.testsuite.time -or [double]$xml.testsuite.time -eq 0) { $xml.testsuite.time = $t }; foreach ($tc in @($xml.testsuite.testcase)) { if (-not $tc.time -or [double]$tc.time -eq 0) { $tc.time = $t } }; $xml.Save($p) }"
+                                                                echo Generated Squish report: !REPORT_FILE! ^(time=!TC_ELAPSED_SEC!s^)
+                                                            )
                                                             if not "!TC_RC!"=="0" set SQUISH_FAILED=1
                                                         )
 
@@ -672,7 +675,18 @@ PY
                         printf '%s' "${REGISTRY_PASS}" | ssh ${SSH_OPTS} "${REMOTE}" \
                           "docker login '${SFEPS_DOCKER_REGISTRY}' -u '${REGISTRY_USER}' --password-stdin"
 
-                        ssh ${SSH_OPTS} "${REMOTE}" "set -eu
+                        restore_manual_server() {
+                          ssh ${SSH_OPTS} "${REMOTE}" "set +e
+                            echo 'restoring manual host server as deploy fallback'
+                            docker rm -f '${SFEPS_TEST_CONTAINER_NAME}' >/dev/null 2>&1 || true
+                            nohup env SFEPS_ENV_FILE='${SFEPS_REMOTE_ENV_FILE}' /home/iam/SFEPS/server/run_server.sh >/home/iam/SFEPS/server/.ci-manual-fallback.log 2>&1 &
+                          " || true
+                        }
+
+                        if ! ssh ${SSH_OPTS} "${REMOTE}" "set -eu
+                          echo 'stopping manually started host server processes if present'
+                          pkill -f '(^| )/home/iam/SFEPS/server/run_server.sh( |$)' >/dev/null 2>&1 || true
+                          pkill -f '(^| )/home/iam/SFEPS/server/build/smart_server.bin( |$)' >/dev/null 2>&1 || true
                           docker pull '${SFEPS_IMAGE_REF}'
                           docker rm -f '${SFEPS_TEST_CONTAINER_NAME}' >/dev/null 2>&1 || true
                           mkdir -p '${SFEPS_VIDEO_DIR}'
@@ -689,16 +703,17 @@ PY
                             echo 'missing mysql socket: ${SFEPS_REMOTE_MYSQL_SOCK_DIR}/mysqld.sock' >&2
                             exit 1
                           fi
+                          rm -f '${SFEPS_REMOTE_ENV_FILE}.ci-test'
                           grep -Ev '^(SFEPS_APP_BIND_IP|SFEPS_APP_TLS_ENABLE|SFEPS_APP_PLAINTEXT_ENABLE|SFEPS_APP_TLS_CERT_FILE|SFEPS_APP_TLS_KEY_FILE|SFEPS_ESP_TCP_ENABLE|SFEPS_ESP_TCP_BIND_IP|SFEPS_ESP_TCP_PORT|SFEPS_ESP_TCP_MAX_CLIENTS|SFEPS_ESP_TCP_ALLOW_IPS)=' \
-                            '${SFEPS_REMOTE_ENV_FILE}' > '/tmp/sfeps-server-test.env'
+                            '${SFEPS_REMOTE_ENV_FILE}' > '${SFEPS_REMOTE_ENV_FILE}.ci-test'
                           {
                             echo 'SFEPS_APP_BIND_IP=0.0.0.0'
                             echo 'SFEPS_APP_TLS_ENABLE=0'
                             echo 'SFEPS_APP_PLAINTEXT_ENABLE=1'
                             echo 'SFEPS_ESP_TCP_ENABLE=0'
-                          } >> '/tmp/sfeps-server-test.env'
+                          } >> '${SFEPS_REMOTE_ENV_FILE}.ci-test'
                           if ! docker run -d --name '${SFEPS_TEST_CONTAINER_NAME}' --restart unless-stopped --network host \
-                            -v '/tmp/sfeps-server-test.env:${SFEPS_CONTAINER_ENV_FILE}:ro' \
+                            -v '${SFEPS_REMOTE_ENV_FILE}.ci-test:${SFEPS_CONTAINER_ENV_FILE}:ro' \
                             -v '${SFEPS_REMOTE_PKI_DIR}:${SFEPS_REMOTE_PKI_DIR}:ro' \
                             -v '${SFEPS_REMOTE_MYSQL_SOCK_DIR}:${SFEPS_REMOTE_MYSQL_SOCK_DIR}' \
                             -v '${SFEPS_VIDEO_DIR}:${SFEPS_VIDEO_DIR}' \
@@ -707,16 +722,24 @@ PY
                             echo 'docker run failed for test deploy' >&2
                             docker ps -a --filter name='${SFEPS_TEST_CONTAINER_NAME}' || true
                             exit 1
-                          fi"
+                          fi"; then
+                          echo 'test deploy command failed; starting manual fallback server' >&2
+                          restore_manual_server
+                          exit 1
+                        fi
 
-                        ssh ${SSH_OPTS} "${REMOTE}" "set -eu
+                        if ! ssh ${SSH_OPTS} "${REMOTE}" "set -eu
                           if timeout 90 bash -lc 'while ! cat </dev/null >/dev/tcp/127.0.0.1/${SFEPS_HEALTH_PORT} 2>/dev/null; do sleep 2; done'; then
                             echo 'test deploy health check OK on port ${SFEPS_HEALTH_PORT}'
                             exit 0
                           fi
                           echo 'test deploy health check FAILED' >&2
                           docker logs --tail 120 '${SFEPS_TEST_CONTAINER_NAME}' || true
-                          exit 1"
+                          exit 1"; then
+                          echo 'test deploy health check failed; starting manual fallback server' >&2
+                          restore_manual_server
+                          exit 1
+                        fi
                     '''
                 }
             }
@@ -763,6 +786,9 @@ PY
                           "docker login '${SFEPS_DOCKER_REGISTRY}' -u '${REGISTRY_USER}' --password-stdin"
 
                         ssh ${SSH_OPTS} "${REMOTE}" "set -eu
+                          echo 'stopping manually started host server processes if present'
+                          pkill -f '(^| )/home/iam/SFEPS/server/run_server.sh( |$)' >/dev/null 2>&1 || true
+                          pkill -f '(^| )/home/iam/SFEPS/server/build/smart_server.bin( |$)' >/dev/null 2>&1 || true
                           docker pull '${SFEPS_IMAGE_REF}'
                           docker rm -f '${SFEPS_PROD_CONTAINER_NAME}' >/dev/null 2>&1 || true
                           mkdir -p '${SFEPS_VIDEO_DIR}'
@@ -779,14 +805,15 @@ PY
                             echo 'missing mysql socket: ${SFEPS_REMOTE_MYSQL_SOCK_DIR}/mysqld.sock' >&2
                             exit 1
                           fi
+                          rm -f '${SFEPS_REMOTE_ENV_FILE}.ci-prod'
                           grep -Ev '^(SFEPS_APP_TLS_ENABLE|SFEPS_APP_PLAINTEXT_ENABLE|SFEPS_APP_TLS_CERT_FILE|SFEPS_APP_TLS_KEY_FILE)=' \
-                            '${SFEPS_REMOTE_ENV_FILE}' > '/tmp/sfeps-server-prod.env'
+                            '${SFEPS_REMOTE_ENV_FILE}' > '${SFEPS_REMOTE_ENV_FILE}.ci-prod'
                           {
                             echo 'SFEPS_APP_TLS_ENABLE=0'
                             echo 'SFEPS_APP_PLAINTEXT_ENABLE=1'
-                          } >> '/tmp/sfeps-server-prod.env'
+                          } >> '${SFEPS_REMOTE_ENV_FILE}.ci-prod'
                           if ! docker run -d --name '${SFEPS_PROD_CONTAINER_NAME}' --restart unless-stopped --network host \
-                            -v '/tmp/sfeps-server-prod.env:${SFEPS_CONTAINER_ENV_FILE}:ro' \
+                            -v '${SFEPS_REMOTE_ENV_FILE}.ci-prod:${SFEPS_CONTAINER_ENV_FILE}:ro' \
                             -v '${SFEPS_REMOTE_PKI_DIR}:${SFEPS_REMOTE_PKI_DIR}:ro' \
                             -v '${SFEPS_REMOTE_MYSQL_SOCK_DIR}:${SFEPS_REMOTE_MYSQL_SOCK_DIR}' \
                             -v '${SFEPS_VIDEO_DIR}:${SFEPS_VIDEO_DIR}' \

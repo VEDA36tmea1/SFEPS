@@ -1,7 +1,13 @@
 #include "XMLParser.h"
 #include "Config.h"
+#include "string"
 #include <iostream>
 #include <time.h>
+
+//const std::string findObject = "Head";
+const std::string findObject = "Human";
+constexpr bool k_enable_object_log = true;
+constexpr bool k_enable_meta_log = false;
 
 namespace {
     std::size_t find_in_range(const std::string& raw,
@@ -144,8 +150,8 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
 
             std::string real_id = obj_id;
 
+            if (x != -1 && y != -1 && obj_type == findObject) {
 
-            if (x != -1 && y != -1 && obj_type == "Head") {
                 if (tracking_map.find(obj_id) == tracking_map.end()) {
                     std::string matched_old_id = "";
                     float max_iou = 0.05f;
@@ -210,7 +216,7 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
 
                 results.push_back({real_id, obj_type, x, y, likelihood, w, h});
 
-                constexpr bool k_enable_object_log = true;
+            
                 bool is_new_id = (log_timer_map.find(real_id) == log_timer_map.end());
                 if (k_enable_object_log && (is_new_id || (last_timestamp - log_timer_map[real_id] > LOG_THROTTLE))) {
                     std::string prefix = is_new_id ? "✨ [NEW]" : "🎯 [OBJ]";
@@ -351,13 +357,10 @@ std::vector<ParsedMetadataObject> XMLParser::parseHumanObjectsForAnalytics(const
         const bool has_top    = parse_float_attr(xml, top_pos,    5, object.top);
         const bool has_bottom = parse_float_attr(xml, bottom_pos, 8, object.bottom);
 
-        const bool type_ok = detect_all || (object.type == "Head");
+        const bool type_ok = detect_all || (object.type == findObject);
         if (!object.id.empty() && type_ok && has_x && has_y &&
             has_left && has_right && has_top && has_bottom) {
             results.push_back(object);
-
-            constexpr bool k_enable_meta_log = true;
-            #if(0)
             if (k_enable_meta_log) {
                 std::cout << "[META] id=" << object.id
                           << " type=" << object.type
@@ -369,10 +372,10 @@ std::vector<ParsedMetadataObject> XMLParser::parseHumanObjectsForAnalytics(const
                           << " bottom=" << object.bottom
                           << std::endl;
             }
-            #endif
         }
 
         search_pos = obj_end;
     }
+
     return results;
 }

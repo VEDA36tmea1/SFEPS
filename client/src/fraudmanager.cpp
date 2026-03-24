@@ -8,6 +8,13 @@
 #include <QSslError>
 #include <QCoreApplication>
 #include <QProcessEnvironment>
+#include <QNetworkAccessManager>
+#include <QNetworkRequest>
+#include <QNetworkReply>
+#include <QUrl>
+#include <QStandardPaths>
+#include <QDir>
+#include <QDateTime>
 
 static bool parseEnvBool(const QProcessEnvironment &env, const QString &key, bool defaultValue)
 {
@@ -38,7 +45,8 @@ bool parseFraudMessage(const QString &msg,
                        QString &objectId,
                        QString &cardAgeText,
                        QString &age,
-                       bool &isFraud)
+                       bool &isFraud,
+                       QString &tag)
 {
     if (!msg.startsWith("FRAUD|")) {
         return false;
@@ -72,6 +80,52 @@ bool parseFraudMessage(const QString &msg,
     if (!age.isEmpty()) {
         age[0] = age[0].toUpper();
     }
+
+    // Extract TAG from the message (TAG=<iso8601>)
+    tag.clear();
+    for (int i = 5; i < parts.size(); ++i) {
+        if (parts[i].startsWith("TAG=")) {
+            tag = parts[i].mid(4).trimmed();
+            break;
+        }
+    }
+
+    return true;
+}
+
+bool parseImgRefMessage(const QString &msg, ImgRefData &imgRef)
+{
+    if (!msg.startsWith("IMG_REF|")) {
+        return false;
+    }
+
+    // Parse key=value pattern
+    // Format: IMG_REF|OBJECT_ID=123|URL=http://...|TAG=2026-03-19T10:11:12.123Z|NAME=...
+    const QStringList parts = msg.split('|', Qt::KeepEmptyParts);
+    
+    imgRef.objectId.clear();
+    imgRef.url.clear();
+    imgRef.tag.clear();
+    imgRef.name.clear();
+
+    for (int i = 1; i < parts.size(); ++i) {
+        const QString part = parts[i].trimmed();
+        if (part.startsWith("OBJECT_ID=")) {
+            imgRef.objectId = part.mid(10).trimmed();
+        } else if (part.startsWith("URL=")) {
+            imgRef.url = part.mid(4).trimmed();
+        } else if (part.startsWith("TAG=")) {
+            imgRef.tag = part.mid(4).trimmed();
+        } else if (part.startsWith("NAME=")) {
+            imgRef.name = part.mid(5).trimmed();
+        }
+    }
+
+    if (imgRef.objectId.isEmpty() || imgRef.url.isEmpty() || imgRef.tag.isEmpty()) {
+        qWarning() << "[FraudManager] Malformed IMG_REF message (missing required field):" << msg;
+        return false;
+    }
+
     return true;
 }
 }
@@ -83,6 +137,10 @@ FraudManager::FraudManager(QObject *parent) : QObject(parent)
     retryTimer = new QTimer(this);
     retryTimer->setInterval(1000); // 1초 간격 재시도
     retryTimer->setSingleShot(true);
+
+    // Network manager for image downloads
+    networkManager = new QNetworkAccessManager(this);
+    connect(networkManager, &QNetworkAccessManager::finished, this, &FraudManager::onImageDownloadFinished);
 
     attachSocketSignals();
     connect(retryTimer, &QTimer::timeout, this, &FraudManager::retryConnection);
@@ -266,13 +324,31 @@ void FraudManager::onReadyRead()
             continue;
         }
 
+        // Handle IMG_REF message
+        if (msg.startsWith("IMG_REF|")) {
+            ImgRefData imgRef;
+            if (parseImgRefMessage(msg, imgRef)) {
+                qDebug() << "[FraudManager] Parsed IMG_REF: objectId=" << imgRef.objectId << " url=" << imgRef.url;
+                downloadImage(imgRef);
+            }
+            continue;
+        }
+
+        // Handle FRAUD message
         QString objectId;
         QString cardAgeText;
         QString age;
+        QString tag;
         bool isFraud = false;
-            if (parseFraudMessage(msg, objectId, cardAgeText, age, isFraud)) {
-                emit fraudDetected(objectId, cardAgeText, age, isFraud);
+        if (parseFraudMessage(msg, objectId, cardAgeText, age, isFraud, tag)) {
+            // Check if we already have image for this event
+            QString eventKey = objectId + "|" + tag;
+            QString imagePath;
+            if (downloadedImages.contains(eventKey)) {
+                imagePath = downloadedImages.value(eventKey);
             }
+            emit fraudDetected(objectId, cardAgeText, age, isFraud, tag, imagePath);
+        }
     }
 
     // 폴백: 개행이 없더라도 버퍼 내용이 완전한 메시지 형식이면 처리
@@ -281,6 +357,7 @@ void FraudManager::onReadyRead()
         QString objectId;
         QString cardAgeText;
         QString age;
+        QString tag;
         bool isFraud = false;
         if (!s.isEmpty()) {
             qDebug() << "[FraudManager] Received (no-nl fallback):" << s;
@@ -293,8 +370,22 @@ void FraudManager::onReadyRead()
                 recvBuffer.clear();
                 return;
             }
-            if (parseFraudMessage(s, objectId, cardAgeText, age, isFraud)) {
-                emit fraudDetected(objectId, cardAgeText, age, isFraud);
+            if (s.startsWith("IMG_REF|")) {
+                ImgRefData imgRef;
+                if (parseImgRefMessage(s, imgRef)) {
+                    qDebug() << "[FraudManager] Parsed IMG_REF (fallback): objectId=" << imgRef.objectId;
+                    downloadImage(imgRef);
+                }
+                recvBuffer.clear();
+                return;
+            }
+            if (parseFraudMessage(s, objectId, cardAgeText, age, isFraud, tag)) {
+                QString eventKey = objectId + "|" + tag;
+                QString imagePath;
+                if (downloadedImages.contains(eventKey)) {
+                    imagePath = downloadedImages.value(eventKey);
+                }
+                emit fraudDetected(objectId, cardAgeText, age, isFraud, tag, imagePath);
                 recvBuffer.clear();
             }
         }
@@ -302,4 +393,125 @@ void FraudManager::onReadyRead()
         // 안전장치: 버퍼가 너무 커지면 초기화하여 메모리/무한루프 방지
         if (recvBuffer.size() > 16 * 1024) recvBuffer.clear();
     }
+}
+
+QString FraudManager::getImageStoragePath() const
+{
+    QString appDataPath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QString fraudImageDir = appDataPath + "/fraud_images";
+    
+    // Create directory if it doesn't exist
+    QDir dir(fraudImageDir);
+    if (!dir.exists()) {
+        dir.mkpath(fraudImageDir);
+    }
+    
+    return fraudImageDir;
+}
+
+void FraudManager::downloadImage(const ImgRefData &imgRef)
+{
+    QString eventKey = imgRef.objectId + "|" + imgRef.tag;
+    
+    // Check if already downloaded
+    if (downloadedImages.contains(eventKey)) {
+        qDebug() << "[FraudManager] Image already downloaded for event:" << eventKey;
+        emit imageReceived(imgRef.objectId, imgRef.tag, downloadedImages.value(eventKey));
+        return;
+    }
+    
+    // Store pending image for matching with FRAUD message
+    pendingImages[eventKey] = imgRef;
+    
+    // Start download
+    QUrl url(imgRef.url);
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setHeader(QNetworkRequest::UserAgentHeader, "SFEPS-Client/1.0");
+    
+    QNetworkReply *reply = networkManager->get(request);
+    // Store metadata in reply object for later use
+    reply->setProperty("eventKey", eventKey);
+    reply->setProperty("objectId", imgRef.objectId);
+    reply->setProperty("tag", imgRef.tag);
+    reply->setProperty("name", imgRef.name);
+    
+    qDebug() << "[FraudManager] Starting image download from URL:" << imgRef.url;
+}
+
+void FraudManager::onImageDownloadFinished(QNetworkReply *reply)
+{
+    if (!reply) return;
+
+    QString eventKey = reply->property("eventKey").toString();
+    QString objectId = reply->property("objectId").toString();
+    QString tag = reply->property("tag").toString();
+    QString fileName = reply->property("name").toString();
+
+    qDebug() << "[FraudManager] Image download finished for event:" << eventKey;
+
+    // Check response status
+    int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (statusCode != 200) {
+        qWarning() << "[FraudManager] Image download failed with status code:" << statusCode << "for URL:" << reply->url();
+        reply->deleteLater();
+        return;
+    }
+
+    // Get response data
+    QByteArray imageData = reply->readAll();
+    if (imageData.isEmpty()) {
+        qWarning() << "[FraudManager] Image download returned empty data for event:" << eventKey;
+        reply->deleteLater();
+        return;
+    }
+
+    // Validate JPG file
+    if (!imageData.startsWith(QByteArray("\xFF\xD8"))) {
+        qWarning() << "[FraudManager] Downloaded file is not a valid JPG (missing JPEG magic bytes) for event:" << eventKey;
+        reply->deleteLater();
+        return;
+    }
+
+    // Determine save filename
+    QString saveFileName = fileName;
+    if (saveFileName.isEmpty()) {
+        // Fallback: fraud_<objectId>_<epoch_ms>.jpg
+        qint64 epochMs = QDateTime::currentMSecsSinceEpoch();
+        saveFileName = QString("fraud_%1_%2.jpg").arg(objectId).arg(epochMs);
+    }
+
+    // Save to local storage
+    QString storagePath = getImageStoragePath();
+    QString localFilePath = storagePath + "/" + saveFileName;
+
+    QFile file(localFilePath);
+    if (!file.open(QIODevice::WriteOnly)) {
+        qWarning() << "[FraudManager] Failed to open file for writing:" << localFilePath << file.errorString();
+        reply->deleteLater();
+        return;
+    }
+
+    if (file.write(imageData) < 0) {
+        qWarning() << "[FraudManager] Failed to write image data to file:" << localFilePath;
+        file.close();
+        file.remove();
+        reply->deleteLater();
+        return;
+    }
+
+    file.close();
+
+    // Convert to file:// URL format
+    QString fileUrl = "file:///" + localFilePath.replace("\\", "/");
+
+    // Cache the downloaded image path
+    downloadedImages[eventKey] = fileUrl;
+
+    qDebug() << "[FraudManager] Image successfully saved to:" << localFilePath << "URL:" << fileUrl;
+
+    // Emit signal
+    emit imageReceived(objectId, tag, fileUrl);
+
+    reply->deleteLater();
 }

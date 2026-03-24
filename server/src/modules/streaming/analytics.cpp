@@ -273,6 +273,8 @@ void AnalyticsProcessor::stop() {
         matched_objects.clear();
         latest_objects.clear();
         object_fraud_flags.clear();
+        bbox_aliases_by_event_id.clear();
+        active_fraud_tracks.clear();
         while (!q.empty()) q.pop();
     }
 
@@ -423,6 +425,102 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
         pruneExpiredPendingLocked(now);
         pruneExpiredStateLocked(now);
 
+        const auto state_ttl = std::chrono::seconds(static_cast<long long>(pending_ttl_seconds));
+        for (auto it = bbox_aliases_by_event_id.begin(); it != bbox_aliases_by_event_id.end();) {
+            if ((now - it->second.updated_at) > state_ttl) {
+                it = bbox_aliases_by_event_id.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        for (auto it = active_fraud_tracks.begin(); it != active_fraud_tracks.end();) {
+            if ((now - it->second.activated_at) > state_ttl) {
+                it = active_fraud_tracks.erase(it);
+            } else {
+                ++it;
+            }
+        }
+
+        const auto has_valid_bbox = [](const LatestObjectInfo& info) {
+            return info.left >= 0.0f && info.top >= 0.0f &&
+                   info.right >= info.left && info.bottom >= info.top;
+        };
+        const auto is_source_in_use = [&](const std::string& source_object_id,
+                                          const std::string& ignore_event_id) {
+            if (source_object_id.empty()) return false;
+            for (const auto& entry : active_fraud_tracks) {
+                if (entry.first == ignore_event_id) continue;
+                if (entry.second.source_object_id == source_object_id) return true;
+            }
+            return false;
+        };
+        const auto resolve_source_object_id = [&](const std::string& event_object_id,
+                                                  std::string& out_source_object_id) -> bool {
+            out_source_object_id.clear();
+            if (event_object_id.empty()) return false;
+
+            const auto exact_it = latest_objects.find(event_object_id);
+            if (exact_it != latest_objects.end() && has_valid_bbox(exact_it->second)) {
+                out_source_object_id = event_object_id;
+                bbox_aliases_by_event_id[event_object_id] = EventBBoxAlias {out_source_object_id, now};
+                return true;
+            }
+
+            const auto alias_it = bbox_aliases_by_event_id.find(event_object_id);
+            if (alias_it != bbox_aliases_by_event_id.end()) {
+                const auto latest_alias_it = latest_objects.find(alias_it->second.source_object_id);
+                if (latest_alias_it != latest_objects.end() && has_valid_bbox(latest_alias_it->second)) {
+                    alias_it->second.updated_at = now;
+                    out_source_object_id = alias_it->second.source_object_id;
+                    return true;
+                }
+            }
+
+            std::vector<std::string> candidates;
+            candidates.reserve(parsed_objects.size());
+            for (const auto& parsed_object : parsed_objects) {
+                if (parsed_object.id.empty()) continue;
+                const auto latest_it = latest_objects.find(parsed_object.id);
+                if (latest_it == latest_objects.end()) continue;
+                if (!has_valid_bbox(latest_it->second)) continue;
+                candidates.push_back(parsed_object.id);
+            }
+            if (candidates.empty()) return false;
+
+            std::string selected_source_object_id;
+            for (const auto& candidate_id : candidates) {
+                if (!is_source_in_use(candidate_id, event_object_id)) {
+                    selected_source_object_id = candidate_id;
+                    break;
+                }
+            }
+            if (selected_source_object_id.empty()) {
+                selected_source_object_id = candidates.front();
+            }
+
+            out_source_object_id = selected_source_object_id;
+            bbox_aliases_by_event_id[event_object_id] = EventBBoxAlias {out_source_object_id, now};
+            std::cout << "[analytics.cpp] [BBoxAlias] event_id=" << event_object_id
+                      << " -> source_id=" << out_source_object_id << std::endl;
+            return true;
+        };
+        const auto fill_bbox_from_source = [&](const std::string& source_object_id,
+                                               PendingObject& target) -> bool {
+            if (source_object_id.empty()) return false;
+            const auto latest_it = latest_objects.find(source_object_id);
+            if (latest_it == latest_objects.end()) return false;
+            if (!has_valid_bbox(latest_it->second)) return false;
+
+            target.source_object_id = source_object_id;
+            target.center_x = latest_it->second.x;
+            target.center_y = latest_it->second.y;
+            target.bbox_left = latest_it->second.left;
+            target.bbox_top = latest_it->second.top;
+            target.bbox_right = latest_it->second.right;
+            target.bbox_bottom = latest_it->second.bottom;
+            return true;
+        };
+
         // Consume object values that already came from Camera/get_metadata parser.
         for (const auto& human_object : parsed_objects) {
             std::string object_id = trim_copy(human_object.id);
@@ -486,14 +584,9 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
                 pending.is_fraud = true;
                 pending.created_at = now;
 
-                const auto latest_it = latest_objects.find(object_id);
-                if (latest_it != latest_objects.end()) {
-                    pending.center_x = latest_it->second.x;
-                    pending.center_y = latest_it->second.y;
-                    pending.bbox_left = latest_it->second.left;
-                    pending.bbox_top = latest_it->second.top;
-                    pending.bbox_right = latest_it->second.right;
-                    pending.bbox_bottom = latest_it->second.bottom;
+                std::string source_object_id;
+                if (resolve_source_object_id(object_id, source_object_id)) {
+                    fill_bbox_from_source(source_object_id, pending);
                 }
 
                 pending_queue.push_back(std::move(pending));
@@ -533,14 +626,12 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
             }
 
             final_out.outline_tag_time = event.tag_time;
-            const auto latest_it = latest_objects.find(object_id);
-            if (latest_it != latest_objects.end()) {
-                final_out.center_x = latest_it->second.x;
-                final_out.center_y = latest_it->second.y;
-                final_out.bbox_left = latest_it->second.left;
-                final_out.bbox_top = latest_it->second.top;
-                final_out.bbox_right = latest_it->second.right;
-                final_out.bbox_bottom = latest_it->second.bottom;
+            std::string source_object_id = final_out.source_object_id;
+            if (source_object_id.empty()) {
+                resolve_source_object_id(object_id, source_object_id);
+            }
+            if (!source_object_id.empty()) {
+                fill_bbox_from_source(source_object_id, final_out);
             }
 
             if (final_out.card_age_text.empty()) {
@@ -549,6 +640,10 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
             const CardAgeDecision card_age = evaluate_card_age(final_out.card_age_text);
             final_out.is_fraud = is_fraud_by_age_mismatch(card_age, final_out.age);
             object_fraud_flags[final_out.object_id] = final_out.is_fraud;
+            if (!final_out.source_object_id.empty()) {
+                bbox_aliases_by_event_id[final_out.object_id] =
+                    EventBBoxAlias {final_out.source_object_id, now};
+            }
 
             FraudRecord record;
             record.object_id = final_out.object_id;
@@ -588,20 +683,36 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
             outline_payload.tag_time = final_out.outline_tag_time;
             outbound_outline_decisions.push_back(std::move(outline_payload));
 
-            if (final_out.is_fraud &&
-                final_out.bbox_left >= 0.0f && final_out.bbox_top >= 0.0f &&
-                final_out.bbox_right >= final_out.bbox_left &&
-                final_out.bbox_bottom >= final_out.bbox_top) {
-                TrackPosPayload track_pos_payload;
-                track_pos_payload.object_id = final_out.object_id;
-                track_pos_payload.left = final_out.bbox_left;
-                track_pos_payload.top = final_out.bbox_top;
-                track_pos_payload.right = final_out.bbox_right;
-                track_pos_payload.bottom = final_out.bbox_bottom;
-                track_pos_payload.x = final_out.center_x;
-                track_pos_payload.y = final_out.center_y;
-                outbound_track_pos.push_back(std::move(track_pos_payload));
+            if (final_out.is_fraud) {
+                ActiveFraudTrack& active_track = active_fraud_tracks[final_out.object_id];
+                active_track.source_object_id = final_out.source_object_id;
+                active_track.activated_at = now;
+            } else {
+                active_fraud_tracks.erase(final_out.object_id);
             }
+        }
+
+        for (auto& entry : active_fraud_tracks) {
+            const std::string& fraud_object_id = entry.first;
+            ActiveFraudTrack& active_track = entry.second;
+            if (active_track.source_object_id.empty()) {
+                resolve_source_object_id(fraud_object_id, active_track.source_object_id);
+            }
+            if (active_track.source_object_id.empty()) continue;
+
+            const auto latest_it = latest_objects.find(active_track.source_object_id);
+            if (latest_it == latest_objects.end()) continue;
+            if (!has_valid_bbox(latest_it->second)) continue;
+
+            TrackPosPayload track_pos_payload;
+            track_pos_payload.object_id = fraud_object_id;
+            track_pos_payload.left = latest_it->second.left;
+            track_pos_payload.top = latest_it->second.top;
+            track_pos_payload.right = latest_it->second.right;
+            track_pos_payload.bottom = latest_it->second.bottom;
+            track_pos_payload.x = latest_it->second.x;
+            track_pos_payload.y = latest_it->second.y;
+            outbound_track_pos.push_back(std::move(track_pos_payload));
         }
     }
 
@@ -637,6 +748,7 @@ void AnalyticsProcessor::onRfidRead(const std::string& card_age_text_raw) {
     const CardAgeDecision card_age = evaluate_card_age(card_age_text_raw);
     const auto now = std::chrono::steady_clock::now();
     std::string paired_object_id;
+    std::string paired_tag_time;
 
     {
         std::lock_guard<std::mutex> lock(mtx);
@@ -660,6 +772,7 @@ void AnalyticsProcessor::onRfidRead(const std::string& card_age_text_raw) {
         pending.card_age_text = card_age.canonical_text;
         pending.is_fraud = is_fraud_by_age_mismatch(card_age, pending.age);
         paired_object_id = pending.object_id;
+        paired_tag_time = pending.enter_tag_time;
         matched_objects[pending.object_id] = std::move(pending);
     }
 
@@ -671,7 +784,7 @@ void AnalyticsProcessor::onRfidRead(const std::string& card_age_text_raw) {
                   << ", paired_count=" << paired_count << std::endl;
     }
     if (rfid_paired_callback && !paired_object_id.empty()) {
-        rfid_paired_callback(paired_object_id);
+        rfid_paired_callback(paired_object_id, paired_tag_time);
     }
 }
 
