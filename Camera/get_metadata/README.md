@@ -1,5 +1,40 @@
 ## Camera/get_metadata 개발 정리 (2026-03-12)
 
+### 빌드 가이드 (Ubuntu + Windows 동시 지원)
+
+이 폴더는 현재 두 가지 빌드 경로를 모두 지원한다.
+
+- **Ubuntu/Linux:** 기존 `Makefile` 사용 (`g++`, `pkg-config opencv4`)
+- **Windows/MSVC:** `CMakeLists.txt` 사용 (`Visual Studio 2022`, OpenCV vc16)
+
+중요:
+- `x64/mingw/lib` 는 **MinGW g++** 와 맞는 OpenCV 라이브러리 경로다.
+- `x64/vc16/lib` 는 **MSVC cl** 과 맞는 OpenCV 라이브러리 경로다.
+- 컴파일러 ABI가 다르므로 교차 링크(예: g++ + vc16)는 불가하다.
+
+#### Ubuntu/Linux 빌드
+
+```bash
+cd ~/Desktop/SFEPS/Camera/get_metadata
+make camera_RBF
+./camera_RBF
+```
+
+#### Windows/MSVC 빌드
+
+```powershell
+cd C:\Users\2-16\Desktop\SFEPS\Camera\get_metadata
+cmake -S . -B build-msvc -G "Visual Studio 17 2022" -A x64 -DOpenCV_DIR="C:/Users/2-16/Downloads/opencv/build"
+cmake --build build-msvc --config Release --target camera_RBF
+.\build-msvc\Release\camera_RBF.exe
+```
+
+실행 시 DLL 경로 필요:
+
+```powershell
+$env:Path = "C:\Users\2-16\Downloads\opencv\build\x64\vc16\bin;$env:Path"
+```
+
 ### 1. 개요
 
 이 폴더는 ONVIF 카메라에서 **RTSP + 메타데이터(XML)** 를 받아서:
