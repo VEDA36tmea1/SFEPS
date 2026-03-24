@@ -87,6 +87,7 @@ export SFEPS_APP_TLS_HANDSHAKE_TIMEOUT_MS=3000
 # Video Catalog
 export SFEPS_VIDEO_HTTP_BASE_URL=http://127.0.0.1:8080/videos
 export SFEPS_FRAUD_IMAGE_HTTP_BASE_URL=http://127.0.0.1:8080/fraud-images
+export SFEPS_PENDING_IMAGE_RETENTION_SEC=30
 export SFEPS_FRAUD_IMAGE_RETENTION_SEC=86400
 
 # ESP(선택)
@@ -95,6 +96,10 @@ export SFEPS_ESP_TCP_BIND_IP=192.168.4.1
 export SFEPS_ESP_TCP_PORT=5565
 export SFEPS_ESP_TCP_MAX_CLIENTS=4
 # export SFEPS_ESP_TCP_ALLOW_IPS="192.168.4.2"
+# 개발용 TRACK_POS 테스트(5초 주기, 값 1 고정)
+export SFEPS_ESP_TEST_TRACK_POS_ENABLE=0
+export SFEPS_ESP_TEST_TRACK_POS_INTERVAL_SEC=5
+export SFEPS_ESP_TEST_TRACK_POS_OBJECT_ID=ESP-TEST-01
 ```
 
 ## 핵심 포트
@@ -251,4 +256,5 @@ sudo systemctl enable --now sfeps-server.service
 - `IMG_REF` URL은 `SFEPS_FRAUD_IMAGE_HTTP_BASE_URL` 기반으로 생성됩니다.
 - 운영에서 `http://<host>:8080/fraud-images/<filename>`가
   `/home/iam/SFEPS/event_images/fraud/<filename>`로 매핑되도록 정적 파일 서빙 구성이 필요합니다.
+- pending 이미지는 `SFEPS_PENDING_IMAGE_RETENTION_SEC`(기본 30초) 지난 파일부터 자동 삭제됩니다.
 - fraud 이미지는 `SFEPS_FRAUD_IMAGE_RETENTION_SEC`(기본 86400초, 1일) 지난 파일부터 자동 삭제됩니다.

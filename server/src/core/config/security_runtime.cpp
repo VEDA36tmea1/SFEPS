@@ -75,6 +75,8 @@ SecurityRuntimeOptions load_security_runtime_options() {
     if (!fraud_image_http_base_url.empty()) {
         cfg.fraud_image_http_base_url = trim_copy(fraud_image_http_base_url);
     }
+    cfg.pending_image_retention_sec =
+        load_env_size_t("SFEPS_PENDING_IMAGE_RETENTION_SEC", 30, 1, kConfigLogPrefix);
     cfg.fraud_image_retention_sec =
         load_env_size_t("SFEPS_FRAUD_IMAGE_RETENTION_SEC", 86400, 1, kConfigLogPrefix);
 
@@ -87,6 +89,15 @@ SecurityRuntimeOptions load_security_runtime_options() {
     const std::string esp_bind_ip = load_env_string("SFEPS_ESP_TCP_BIND_IP");
     if (!esp_bind_ip.empty()) {
         cfg.esp_tcp_bind_ip = trim_copy(esp_bind_ip);
+    }
+    cfg.esp_test_track_pos_enable =
+        load_env_bool("SFEPS_ESP_TEST_TRACK_POS_ENABLE", false, kConfigLogPrefix);
+    cfg.esp_test_track_pos_interval_sec = load_env_int(
+        "SFEPS_ESP_TEST_TRACK_POS_INTERVAL_SEC", 5, 1, kConfigLogPrefix);
+    const std::string esp_test_track_pos_object_id =
+        load_env_string("SFEPS_ESP_TEST_TRACK_POS_OBJECT_ID", "ESP-TEST-01");
+    if (!esp_test_track_pos_object_id.empty()) {
+        cfg.esp_test_track_pos_object_id = trim_copy(esp_test_track_pos_object_id);
     }
 
     return cfg;
