@@ -56,10 +56,12 @@
         <file>src/AppTheme.qml</file>
         <file>src/Main.qml</file>
         <file>src/views/AnalyticsView.qml</file>
+        <file>src/views/ArchiveView.qml</file>
         <file>src/views/DetailView.qml</file>
         <file>src/views/LoginView.qml</file>
         <file>src/views/MonitoringView.qml</file>
         <file>src/views/SettingsView.qml</file>
+        <file>src/views/qmldir</file>
         <file>certs/auth_ca.pem</file>
     </qresource>
 </RCC>

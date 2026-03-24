@@ -13,6 +13,7 @@ QtObject {
     // 기존 코드 호환(이전 Designer 토큰명 사용처)
     readonly property color primaryOrange: accent
     readonly property color primaryOrangeHover: accentHover
+    readonly property color primaryBlue: "#3b82f6"
 
     readonly property color textPrimary: "#ffffff"
     readonly property color textSecondary: "#a3a3a3"
@@ -21,6 +22,7 @@ QtObject {
 
     readonly property color borderSub: "#333333"
     readonly property color borderCard: "#333333"
+    readonly property color surfaceBackground: surface
     readonly property color inputBg: "#2a2a2a"
     readonly property color inputBorder: "#404040"
 
