@@ -105,6 +105,13 @@ Nucleo STM32F401RE 펌웨어는 다음을 동시에 수행합니다.
 
 > 서버가 요구하는 ACK 포맷이 다르면, `ESP_Parser.c`의 `snprintf(resp, ...)` 부분만 맞추면 됩니다.
 
+### 4.3 PC 시리얼 모니터(USART2)에서 TRACK 확인
+- **이전 동작**: `ESP_Parser`는 ACK만 TCP로 보내고, **START/END 전용 USART2 한 줄 로그는 없었음**. WiFi(USART1) 원문은 `main.c`에서 TCP 연결 후(`wifi_link_ok`)에만 PC로 에코됨.
+- **현재**: `esp_parser_callbacks_t.dbg_tx`에 `UART_TxPc`를 연결해, `TRACK_START` / `TRACK_END` 처리 시 다음 형태의 줄이 **항상** USART2로 나감:
+  - `[TRACK] START id=... (PB0 ON if not manual)\r\n`
+  - `[TRACK] END id=... REASON=... (PB0 OFF if not manual)\r\n` (또는 reason 없을 때 REASON 없이)
+- `TRACK_POS`는 초당 수십 번 호출될 수 있어 **디버그 한 줄은 출력하지 않음** (원문은 위 `wifi_link_ok` 에코로 확인).
+
 ---
 
 ## 5) 레이저 조작 (PB0)

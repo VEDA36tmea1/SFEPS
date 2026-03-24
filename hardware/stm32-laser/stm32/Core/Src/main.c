@@ -542,6 +542,7 @@ int main(void)
     esp_parser_callbacks_t esp_cb = {0};
     esp_cb.laser_set = PB0_SetLaser;
     esp_cb.tcp_send = Wifi_QueueTcpPayload;
+    esp_cb.dbg_tx = UART_TxPc; /* TRACK_START/END 수신 시 PC 시리얼에 [TRACK] ... 출력 */
     ESP_Parser_SetCallbacks(&esp_cb);
   }
 
