@@ -11,6 +11,7 @@
 
 #include <mysql/mysql.h>
 
+#include "recorder.h"
 #include "service_shared.h"
 #include "transport_utils.h"
 #include "video_catalog_events.h"
@@ -38,6 +39,13 @@ struct PollTarget {
     Kind kind = Kind::Listener;
     std::size_t index = 0;
     TransportKind listener_kind = TransportKind::Plain;
+};
+
+struct VideoStorageStats {
+    std::uintmax_t used_bytes = 0;
+    std::uintmax_t total_bytes = 0;
+    std::uintmax_t available_bytes = 0;
+    std::size_t file_count = 0;
 };
 
 bool load_initial_catalog_records(const RuntimeConfig& cfg,
@@ -141,25 +149,94 @@ std::string format_error_line(const char* prefix,
            app_services_shared::sanitize_error_field(message) + "\n";
 }
 
+VideoStorageStats collect_storage_stats_from_records(
+    const std::vector<VideoCatalogRecordInfo>& records) {
+    namespace fs = std::filesystem;
+
+    VideoStorageStats stats;
+    for (const auto& record : records) {
+        if (record.filename.empty()) continue;
+
+        std::error_code ec;
+        if (!fs::exists(record.filename, ec) || !fs::is_regular_file(record.filename, ec)) {
+            continue;
+        }
+
+        const auto file_size = fs::file_size(record.filename, ec);
+        if (ec) continue;
+
+        stats.used_bytes += file_size;
+        ++stats.file_count;
+    }
+
+    std::error_code ec;
+    const fs::space_info space_info = fs::space(VIDEO_SAVE_DIR, ec);
+    if (!ec) {
+        stats.total_bytes = space_info.capacity;
+        stats.available_bytes = space_info.available;
+    }
+    return stats;
+}
+
+VideoStorageStats collect_storage_stats_from_registry() {
+    std::vector<VideoCatalogRecordInfo> records;
+    (void)snapshot_video_catalog_registry(records);
+    return collect_storage_stats_from_records(records);
+}
+
+std::string format_storage_line(const VideoStorageStats& stats) {
+    return "REC_STORAGE|USED_BYTES=" +
+           std::to_string(static_cast<unsigned long long>(stats.used_bytes)) +
+           "|TOTAL_BYTES=" + std::to_string(static_cast<unsigned long long>(stats.total_bytes)) +
+           "|AVAILABLE_BYTES=" +
+           std::to_string(static_cast<unsigned long long>(stats.available_bytes)) +
+           "|FILE_COUNT=" + std::to_string(stats.file_count) + "\n";
+}
+
 bool send_snapshot_to_client(ClientState& client) {
     std::vector<VideoCatalogRecordInfo> records;
     const std::uint64_t snapshot_seq = snapshot_video_catalog_registry(records);
+    const VideoStorageStats storage_stats = collect_storage_stats_from_records(records);
+
+    std::cout << "[main.cpp] [VideoCatalog] snapshot 전송 시작: ip=" << client.conn.ip
+              << ", fd=" << client.conn.fd << ", total=" << records.size()
+              << ", used_bytes=" << storage_stats.used_bytes
+              << ", file_count=" << storage_stats.file_count << std::endl;
 
     if (!app_services_transport::client_send_line(
             client.conn, format_snapshot_begin_line(records.size()))) {
+        std::cerr << "[main.cpp] [VideoCatalog] snapshot begin 전송 실패: ip=" << client.conn.ip
+                  << ", fd=" << client.conn.fd << std::endl;
         return false;
     }
     for (const auto& record : records) {
         if (!app_services_transport::client_send_line(client.conn, format_rec_line(record))) {
+            std::cerr << "[main.cpp] [VideoCatalog] snapshot record 전송 실패: ip="
+                      << client.conn.ip << ", fd=" << client.conn.fd
+                      << ", id=" << record.id << std::endl;
             return false;
         }
     }
     if (!app_services_transport::client_send_line(
             client.conn, format_snapshot_end_line(records.size()))) {
+        std::cerr << "[main.cpp] [VideoCatalog] snapshot end 전송 실패: ip=" << client.conn.ip
+                  << ", fd=" << client.conn.fd << std::endl;
+        return false;
+    }
+    if (!app_services_transport::client_send_line(client.conn, format_storage_line(storage_stats))) {
+        std::cerr << "[main.cpp] [VideoCatalog] snapshot storage 전송 실패: ip="
+                  << client.conn.ip << ", fd=" << client.conn.fd << std::endl;
         return false;
     }
 
     client.last_seen_seq = snapshot_seq;
+    std::cout << "[main.cpp] [VideoCatalog] snapshot 전송 완료: ip=" << client.conn.ip
+              << ", fd=" << client.conn.fd << ", total=" << records.size()
+              << ", snapshot_seq=" << client.last_seen_seq
+              << ", used_bytes=" << storage_stats.used_bytes
+              << ", total_bytes=" << storage_stats.total_bytes
+              << ", available_bytes=" << storage_stats.available_bytes
+              << ", file_count=" << storage_stats.file_count << std::endl;
     return true;
 }
 
@@ -199,8 +276,14 @@ bool handle_play_request(ClientState& client,
                          long long record_id) {
     namespace fs = std::filesystem;
 
+    std::cout << "[main.cpp] [VideoCatalog] PLAY_REC 수신: ip=" << client.conn.ip
+              << ", fd=" << client.conn.fd << ", id=" << record_id << std::endl;
+
     VideoCatalogRecordInfo record;
     if (!find_video_catalog_record_by_id(record_id, record)) {
+        std::cerr << "[main.cpp] [VideoCatalog] PLAY_REC NOT_FOUND: ip=" << client.conn.ip
+                  << ", fd=" << client.conn.fd << ", id=" << record_id
+                  << ", reason=id_not_found" << std::endl;
         return app_services_transport::client_send_line(
             client.conn, format_error_line("PLAY_ERR", "NOT_FOUND", "recording id not found"));
     }
@@ -208,10 +291,17 @@ bool handle_play_request(ClientState& client,
     std::error_code ec;
     if (!fs::exists(record.filename, ec) || !fs::is_regular_file(record.filename, ec)) {
         publish_video_catalog_record_deleted_by_id(record.id);
+        std::cerr << "[main.cpp] [VideoCatalog] PLAY_REC NOT_FOUND: ip=" << client.conn.ip
+                  << ", fd=" << client.conn.fd << ", id=" << record.id
+                  << ", reason=file_missing, filename=" << record.filename << std::endl;
         return app_services_transport::client_send_line(
             client.conn, format_error_line("PLAY_ERR", "NOT_FOUND", "recording file missing"));
     }
 
+    std::cout << "[main.cpp] [VideoCatalog] PLAY_URL 응답 성공: ip=" << client.conn.ip
+              << ", fd=" << client.conn.fd << ", id=" << record.id
+              << ", created_at=" << record.created_at << ", filename=" << record.filename
+              << std::endl;
     return app_services_transport::client_send_line(
         client.conn, format_play_url_line(record, sec_cfg));
 }
@@ -251,6 +341,9 @@ bool handle_client_input(ClientState& client,
         long long record_id = 0;
         std::string error;
         if (!parse_play_request_id(line, record_id, error)) {
+            std::cerr << "[main.cpp] [VideoCatalog] PLAY_REC 잘못된 요청: ip="
+                      << client.conn.ip << ", fd=" << client.conn.fd
+                      << ", raw='" << line << "', error=" << error << std::endl;
             if (!app_services_transport::client_send_line(
                     client.conn, format_error_line("PLAY_ERR", "INVALID_REQUEST", error))) {
                 return false;
@@ -269,6 +362,7 @@ bool handle_client_input(ClientState& client,
 bool sync_client_events(ClientState& client) {
     std::vector<VideoCatalogEvent> events;
     collect_video_catalog_events_since(client.last_seen_seq, events);
+    bool sent_any_event = false;
 
     for (const auto& event : events) {
         std::string line;
@@ -279,9 +373,35 @@ bool sync_client_events(ClientState& client) {
         }
 
         if (!app_services_transport::client_send_line(client.conn, line)) {
+            std::cerr << "[main.cpp] [VideoCatalog] 실시간 이벤트 전송 실패: ip="
+                      << client.conn.ip << ", fd=" << client.conn.fd
+                      << ", seq=" << event.seq << ", kind="
+                      << (event.kind == VideoCatalogEvent::Kind::Added ? "ADD" : "DEL")
+                      << ", id=" << event.record.id << std::endl;
             return false;
         }
+        std::cout << "[main.cpp] [VideoCatalog] 실시간 이벤트 전송: ip=" << client.conn.ip
+                  << ", fd=" << client.conn.fd << ", seq=" << event.seq << ", kind="
+                  << (event.kind == VideoCatalogEvent::Kind::Added ? "ADD" : "DEL")
+                  << ", id=" << event.record.id << std::endl;
         client.last_seen_seq = event.seq;
+        sent_any_event = true;
+    }
+
+    if (sent_any_event) {
+        const VideoStorageStats storage_stats = collect_storage_stats_from_registry();
+        if (!app_services_transport::client_send_line(client.conn,
+                                                      format_storage_line(storage_stats))) {
+            std::cerr << "[main.cpp] [VideoCatalog] REC_STORAGE 전송 실패: ip="
+                      << client.conn.ip << ", fd=" << client.conn.fd << std::endl;
+            return false;
+        }
+        std::cout << "[main.cpp] [VideoCatalog] REC_STORAGE 전송: ip=" << client.conn.ip
+                  << ", fd=" << client.conn.fd
+                  << ", used_bytes=" << storage_stats.used_bytes
+                  << ", total_bytes=" << storage_stats.total_bytes
+                  << ", available_bytes=" << storage_stats.available_bytes
+                  << ", file_count=" << storage_stats.file_count << std::endl;
     }
 
     return true;

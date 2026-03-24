@@ -24,6 +24,7 @@ REC|<id>|<created_at>
 REC|<id>|<created_at>
 ...
 REC_SNAPSHOT_END|TOTAL=<n>
+REC_STORAGE|USED_BYTES=<n>|TOTAL_BYTES=<n>|AVAILABLE_BYTES=<n>|FILE_COUNT=<n>
 ```
 
 필드:
@@ -38,6 +39,7 @@ REC|3624|2026-03-24T16:27:24
 REC|3623|2026-03-24T16:26:24
 REC|3622|2026-03-24T16:25:24
 REC_SNAPSHOT_END|TOTAL=3
+REC_STORAGE|USED_BYTES=2147483648|TOTAL_BYTES=128034708480|AVAILABLE_BYTES=85731590144|FILE_COUNT=3
 ```
 
 ### 2-2. 연결 유지 중 실시간 목록 갱신
@@ -46,20 +48,30 @@ REC_SNAPSHOT_END|TOTAL=3
 
 ```text
 REC_ADD|<id>|<created_at>
+REC_STORAGE|USED_BYTES=<n>|TOTAL_BYTES=<n>|AVAILABLE_BYTES=<n>|FILE_COUNT=<n>
 ```
 
 - 오래된 녹화가 cleanup으로 삭제되면:
 
 ```text
 REC_DEL|<id>
+REC_STORAGE|USED_BYTES=<n>|TOTAL_BYTES=<n>|AVAILABLE_BYTES=<n>|FILE_COUNT=<n>
 ```
 
 예시:
 
 ```text
 REC_ADD|3625|2026-03-24T16:28:24
+REC_STORAGE|USED_BYTES=2214592512|TOTAL_BYTES=128034708480|AVAILABLE_BYTES=85664473088|FILE_COUNT=4
 REC_DEL|3511
+REC_STORAGE|USED_BYTES=2147483648|TOTAL_BYTES=128034708480|AVAILABLE_BYTES=85731590144|FILE_COUNT=3
 ```
+
+스토리지 필드 설명:
+- `USED_BYTES`: 현재 `videos` 폴더에 존재하는 녹화 파일 총합 바이트
+- `TOTAL_BYTES`: 서버 파일시스템 전체 용량 바이트
+- `AVAILABLE_BYTES`: 서버 파일시스템 가용 용량 바이트
+- `FILE_COUNT`: 현재 `videos` 폴더에서 Video Catalog에 잡히는 파일 개수
 
 ### 2-3. 클라이언트 재생 요청
 
@@ -144,6 +156,7 @@ PLAY_ERR|NOT_FOUND|recording file missing
 - 목록 모델 role은 최소 `id`, `createdAt`만 있으면 됩니다.
 - `REC_ADD` 수신 시 새 항목을 목록에 추가합니다.
 - `REC_DEL` 수신 시 해당 `id` 항목을 목록에서 제거합니다.
+- `REC_STORAGE` 수신 시 저장공간 UI를 갱신합니다.
 - 사용자가 항목을 선택하면 `PLAY_REC|<id>\n` 전송 후 `PLAY_URL`을 기다립니다.
 - `PLAY_URL` 수신 시 마지막 필드의 URL을 `QMediaPlayer` 또는 QML `MediaPlayer.source`에 넣어 재생합니다.
 
@@ -152,9 +165,10 @@ PLAY_ERR|NOT_FOUND|recording file missing
 2. `REC_SNAPSHOT_BEGIN` 수신 시 목록 초기화 시작
 3. `REC` 수신 시 항목 누적
 4. `REC_SNAPSHOT_END` 수신 시 초기 로딩 종료
-5. 사용자가 목록 선택
-6. `PLAY_REC|id` 전송
-7. `PLAY_URL` 수신 후 재생
+5. `REC_STORAGE` 수신 시 저장공간 표시 갱신
+6. 사용자가 목록 선택
+7. `PLAY_REC|id` 전송
+8. `PLAY_URL` 수신 후 재생
 
 ## 5) 검증 시나리오
 
@@ -166,6 +180,7 @@ PLAY_ERR|NOT_FOUND|recording file missing
 
 3. 삭제 반영
 - cleanup로 오래된 파일 삭제 후 `REC_DEL|id` 수신
+- 직후 `REC_STORAGE|...`로 용량 정보 갱신
 
 4. 정상 재생
 - `PLAY_REC|<valid_id>` -> `PLAY_URL|id|created_at|url`
