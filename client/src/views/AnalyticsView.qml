@@ -33,6 +33,23 @@ Page {
     // Dynamic scaling helper
     property int maxAgeCount: Math.max(1, ageCount18, ageCount25, ageCount35, ageCount45, ageCount60, ageCountPlus)
 
+    // Keep analytics counters updated from fraud events even though the alert list card is removed.
+    Connections {
+        target: fraudManager
+        function onFraudDetected(objectId, cardAgeText, ageGroup, isFraud) {
+            sessionEvasions++
+            totalEntries++
+
+            const grp = ageGroup.toLowerCase()
+            if (grp.indexOf("10") !== -1) ageCount18++
+            else if (grp.indexOf("20") !== -1) ageCount25++
+            else if (grp.indexOf("30") !== -1) ageCount35++
+            else if (grp.indexOf("40") !== -1) ageCount45++
+            else if (grp.indexOf("50") !== -1 || grp.indexOf("60") !== -1) ageCount60++
+            else ageCountPlus++
+        }
+    }
+
     ScrollView {
         id: scrollView
         anchors.fill: parent
@@ -328,10 +345,10 @@ Page {
                 }
             }
 
-            // Recent Alerts Table
+            // Video Storage
             Rectangle {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 300
+                Layout.preferredHeight: 240
                 Layout.leftMargin: 24
                 Layout.rightMargin: 24
                 color: AppTheme.surfaceCard
@@ -344,203 +361,17 @@ Page {
                     anchors.margins: 20
                     spacing: 16
 
-                    Connections {
-                        target: fraudManager
-                        function onFraudDetected(objectId, cardAgeText, ageGroup, isFraud) {
-                            alertsModel.insert(0, {
-                                ts: Qt.formatDateTime(new Date(), "HH:mm:ss"),
-                                location: "Object " + objectId,
-                                type: cardAgeText.toUpperCase() + " CARD",
-                                confidence: ageGroup.toUpperCase(),
-                                action: "Footage"
-                            })
-                            sessionEvasions++
-                            totalEntries++
-
-                            // Increment age demographics based on age_group text
-                            const grp = ageGroup.toLowerCase()
-                            if (grp.indexOf("10") !== -1) ageCount18++
-                            else if (grp.indexOf("20") !== -1) ageCount25++
-                            else if (grp.indexOf("30") !== -1) ageCount35++
-                            else if (grp.indexOf("40") !== -1) ageCount45++
-                            else if (grp.indexOf("50") !== -1 || grp.indexOf("60") !== -1) ageCount60++
-                            else ageCountPlus++
-                        }
+                    Text {
+                        text: "Video Storage"
+                        color: "white"
+                        font.bold: true
+                        font.pixelSize: 16
                     }
 
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Text {
-                            text: "Recent Fraud Alerts"
-                            color: "white"
-                            font.bold: true
-                            font.pixelSize: 16
-                        }
-                        Item {
-                            Layout.fillWidth: true
-                        }
-                    }
-
-                    // Search box (placed directly under Recent Fraud Alerts label)
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Rectangle {
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 38
-                            color: AppTheme.surfaceCard
-                            radius: 6
-                            border.color: AppTheme.borderCard
-
-                            RowLayout {
-                                anchors.fill: parent
-                                anchors.leftMargin: 12
-                                spacing: 10
-                                Image {
-                                    source: "qrc:/assets/search.svg"
-                                    sourceSize: Qt.size(16, 16)
-                                    opacity: 0.7
-                                }
-                                TextField {
-                                    Layout.fillWidth: true
-                                    placeholderText: "Search analytics data..."
-                                    color: "white"
-                                    font.pixelSize: 12
-                                    background: null
-                                }
-                            }
-                        }
-                    }
-
-                    // Table Header
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 20
-                        Text {
-                            text: "TIMESTAMP"
-                            color: AppTheme.textSecondary
-                            font.pixelSize: 11
-                            font.bold: true
-                            Layout.preferredWidth: 80
-                        }
-                        Text {
-                            text: "LOCATION"
-                            color: AppTheme.textSecondary
-                            font.pixelSize: 11
-                            font.bold: true
-                            Layout.preferredWidth: 150
-                        }
-                        Text {
-                            text: "CARD TYPE"
-                            color: AppTheme.textSecondary
-                            font.pixelSize: 11
-                            font.bold: true
-                            Layout.preferredWidth: 120
-                        }
-                        Text {
-                            text: "CARD ID"
-                            color: AppTheme.textSecondary
-                            font.pixelSize: 11
-                            font.bold: true
-                            Layout.preferredWidth: 100
-                        }
-                        Text {
-                            text: "ACTION"
-                            color: AppTheme.textSecondary
-                            font.pixelSize: 11
-                            font.bold: true
-                            Layout.fillWidth: true
-                        }
-                    }
-
-                    Rectangle {
-                        Layout.fillWidth: true
-                        height: 1
-                        color: AppTheme.borderCard
-                    }
-
-                    ListView {
+                    Loader {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        clip: true
-                        model: ListModel {
-                            id: alertsModel
-                        }
-                        delegate: ColumnLayout {
-                            width: ListView.view ? ListView.view.width : 0
-                            spacing: 0
-
-                            RowLayout {
-                                Layout.topMargin: 12
-                                Layout.bottomMargin: 12
-                                spacing: 20
-
-                                Text {
-                                    text: ts
-                                    color: "white"
-                                    Layout.preferredWidth: 80
-                                    font.pixelSize: 13
-                                }
-                                Text {
-                                    text: location
-                                    color: "white"
-                                    Layout.preferredWidth: 150
-                                    font.pixelSize: 13
-                                }
-                                Rectangle {
-                                    radius: 4
-                                    color: "#9a3412"
-                                    Layout.preferredWidth: 120
-                                    Layout.preferredHeight: 24
-                                    RowLayout {
-                                        anchors.centerIn: parent
-                                        Text {
-                                            text: type
-                                            color: "#fbbf24"
-                                            font.pixelSize: 10
-                                            font.bold: true
-                                        }
-                                    }
-                                }
-                                Text {
-                                    text: confidence
-                                    color: "white"
-                                    Layout.preferredWidth: 100
-                                    font.pixelSize: 13
-                                }
-                                Button {
-                                    Layout.preferredHeight: 28
-                                    flat: true
-                                    background: Rectangle {
-                                        color: "transparent"
-                                        border.color: "#4b5563"
-                                        border.width: 1
-                                        radius: 4
-                                    }
-                                    contentItem: RowLayout {
-                                        anchors.centerIn: parent
-                                        spacing: 4
-                                        Text {
-                                            text: "▶"
-                                            color: "white"
-                                            font.pixelSize: 10
-                                        }
-                                        Text {
-                                            text: action
-                                            color: "white"
-                                            font.pixelSize: 12
-                                            font.bold: true
-                                        }
-                                    }
-                                }
-                            }
-
-                            Rectangle {
-                                Layout.fillWidth: true
-                                height: 1
-                                color: AppTheme.surfaceBackground
-                                opacity: 0.5
-                            }
-                        }
+                        source: "ArchiveView.qml"
                     }
                 }
             }
@@ -563,10 +394,10 @@ Page {
                             icon: "video"
                         },
                         {
-                            title: "Gate Sensors",
-                            value: "1",
-                            badge: "Online",
-                            color: AppTheme.accent,
+                            title: "Archived Videos",
+                            value: "0",
+                            badge: "Archived",
+                            color: "#d4e635",
                             icon: "wifi"
                         },
                         {
@@ -613,7 +444,8 @@ Page {
                                 }
                             }
 
-                                ColumnLayout {
+                            ColumnLayout {
+                                Layout.alignment: Qt.AlignVCenter
                                 spacing: 4
                                 Text {
                                     text: modelData.title
@@ -621,8 +453,11 @@ Page {
                                     font.pixelSize: 12
                                 }
                                 Text {
-                                    // If this card represents stream latency, show the live measured value
-                                    text: modelData.title === "Stream Latency" ? (monitoringStreamLatency + " ms") : modelData.value
+                                    text: modelData.title === "Stream Latency"
+                                          ? (monitoringStreamLatency + " ms")
+                                        : modelData.title === "Archived Videos"
+                                            ? String(recordingListModel.count)
+                                            : modelData.value
                                     color: "white"
                                     font.pixelSize: 18
                                     font.bold: true

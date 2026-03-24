@@ -17,6 +17,7 @@
         <file>src/views/AnalyticsView.qml</file>
         <file>src/views/DetailView.qml</file>
         <file>src/views/SettingsView.qml</file>
+        <file>src/views/ArchiveView.qml</file>
         <file>src/views/qmldir</file>
 
         <!-- Auth TLS fallback CA (replace with your real CA if not using AUTH_TLS_CA_FILE) -->
