@@ -41,6 +41,12 @@ pipeline {
         SFEPS_SLACK_NOTIFY = "${env.SFEPS_SLACK_NOTIFY ?: '1'}"
         SFEPS_SLACK_WEBHOOK_CREDENTIALS_ID = "${env.SFEPS_SLACK_WEBHOOK_CREDENTIALS_ID ?: 'sfeps-slack-webhook'}"
         SFEPS_SLACK_CHANNEL = "${env.SFEPS_SLACK_CHANNEL ?: ''}"
+        SFEPS_SQUISH_RUNNER = "${env.SFEPS_SQUISH_RUNNER ?: ''}"
+        SFEPS_SQUISH_SERVER = "${env.SFEPS_SQUISH_SERVER ?: ''}"
+        SFEPS_SQUISH_SUITE_PATH = "${env.SFEPS_SQUISH_SUITE_PATH ?: 'tests/squish/suite_sfeps/suite_sfeps'}"
+        SFEPS_SQUISH_AUT_PATH = "${env.SFEPS_SQUISH_AUT_PATH ?: ''}"
+        SFEPS_SQUISH_REQUIRED = "${env.SFEPS_SQUISH_REQUIRED ?: '1'}"
+        SFEPS_WINDOWS_GUI_AGENT_LABEL = "${env.SFEPS_WINDOWS_GUI_AGENT_LABEL ?: 'windows-gui'}"
 
     }
 
@@ -214,6 +220,7 @@ SQL
                 sh '''
                     set -eu
                     export MYSQL_UNIX_PORT="$WORKSPACE/.ci-mariadb/mysqld.sock"
+                    rm -rf reports
                     mkdir -p reports
                     python3 -m pytest -q tests/test_tc_func_login.py -r a --junitxml=reports/login-tests.xml
 
@@ -242,38 +249,7 @@ PY
             }
         }
 
-        stage('Run Track Tests') {
-            steps {
-                sh '''
-                    set -eu
-                    export MYSQL_UNIX_PORT="$WORKSPACE/.ci-mariadb/mysqld.sock"
-                    mkdir -p reports
-                    python3 -m pytest -q tests/test_tc_func_track.py -r a --junitxml=reports/track-tests.xml
 
-                    python3 - <<'PY'
-import sys
-import xml.etree.ElementTree as ET
-
-path = "reports/track-tests.xml"
-root = ET.parse(path).getroot()
-
-if root.tag == "testsuite":
-    tests = int(root.attrib.get("tests", "0"))
-    skipped = int(root.attrib.get("skipped", "0"))
-else:
-    tests = 0
-    skipped = 0
-    for suite in root.findall("testsuite"):
-        tests += int(suite.attrib.get("tests", "0"))
-        skipped += int(suite.attrib.get("skipped", "0"))
-
-if tests == 0 or skipped == tests:
-    print(f"All tests skipped ({skipped}/{tests}). Marking build as failed.")
-    sys.exit(2)
-PY
-                '''
-            }
-        }
 
         stage('Start Local MediaMTX') {
             steps {
@@ -437,6 +413,197 @@ PY
             }
         }
 
+                stage('Run Squish UI Tests') {
+                        steps {
+                                script {
+                            def squishStepFailed = false
+                                        node(env.SFEPS_WINDOWS_GUI_AGENT_LABEL) {
+                                                deleteDir()
+                                                checkout scm
+
+                                try {
+                                    bat '''
+                                                        @echo off
+                                                        setlocal EnableExtensions EnableDelayedExpansion
+                                                        set "REPORT_DIR=%CD%\\reports"
+                                                        if not exist "%REPORT_DIR%" mkdir "%REPORT_DIR%"
+
+                                                        set "SQUISH_REQUIRED=1"
+
+                                                        set "SQUISH_RUNNER=%SFEPS_SQUISH_RUNNER%"
+                                                        if "%SQUISH_RUNNER%"=="" (
+                                                            for /f "delims=" %%R in ('where squishrunner.exe 2^>nul') do (
+                                                                set "SQUISH_RUNNER=%%R"
+                                                                goto :runner_found
+                                                            )
+                                                            if exist "C:\\Squish\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\Squish\\bin\\squishrunner.exe"
+                                                            if "%SQUISH_RUNNER%"=="" if exist "C:\\froglogic\\Squish\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\froglogic\\Squish\\bin\\squishrunner.exe"
+                                                            if "%SQUISH_RUNNER%"=="" if exist "C:\\Program Files\\Squish\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\Program Files\\Squish\\bin\\squishrunner.exe"
+                                                            if "%SQUISH_RUNNER%"=="" if exist "C:\\Program Files\\froglogic\\Squish\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\Program Files\\froglogic\\Squish\\bin\\squishrunner.exe"
+                                                            if "%SQUISH_RUNNER%"=="" if exist "C:\\Program Files ^(x86^)\\Squish\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\Program Files ^(x86^)\\Squish\\bin\\squishrunner.exe"
+                                                            if "%SQUISH_RUNNER%"=="" if exist "C:\\Program Files ^(x86^)\\froglogic\\Squish\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\Program Files ^(x86^)\\froglogic\\Squish\\bin\\squishrunner.exe"
+                                                            if "%SQUISH_RUNNER%"=="" if exist "C:\\Users\\2-08\\Squish for Qt 9.2.0\\bin\\squishrunner.exe" set "SQUISH_RUNNER=C:\\Users\\2-08\\Squish for Qt 9.2.0\\bin\\squishrunner.exe"
+                                                        )
+                                                        :runner_found
+
+                                                        set "SQUISH_SERVER=%SFEPS_SQUISH_SERVER%"
+                                                        if "%SQUISH_SERVER%"=="" (
+                                                            for %%I in ("%SQUISH_RUNNER%") do set "SQUISH_SERVER=%%~dpIsquishserver.exe"
+                                                        )
+
+                                                        set "SUITE_PATH=%SFEPS_SQUISH_SUITE_PATH%"
+                                                        if "%SUITE_PATH%"=="" set "SUITE_PATH=tests\\squish\\suite_sfeps\\suite_sfeps"
+
+                                                        set "AUT_PATH=%SFEPS_SQUISH_AUT_PATH%"
+                                                        if "%AUT_PATH%"=="" (
+                                                            if exist "client\\build-mingw\\appHanwhaVisionSFEPS.exe" (
+                                                                set "AUT_PATH=client\\build-mingw\\appHanwhaVisionSFEPS.exe"
+                                                            ) else if exist "client\\build\\appHanwhaVisionSFEPS.exe" (
+                                                                set "AUT_PATH=client\\build\\appHanwhaVisionSFEPS.exe"
+                                                            ) else if exist "C:\\Jenkins\\workspace\\SFEPS\\client\\build-mingw\\appHanwhaVisionSFEPS.exe" (
+                                                                set "AUT_PATH=C:\\Jenkins\\workspace\\SFEPS\\client\\build-mingw\\appHanwhaVisionSFEPS.exe"
+                                                            ) else if exist "C:\\Users\\2-08\\Desktop\\SFEPS\\client\\build-mingw\\appHanwhaVisionSFEPS.exe" (
+                                                                set "AUT_PATH=C:\\Users\\2-08\\Desktop\\SFEPS\\client\\build-mingw\\appHanwhaVisionSFEPS.exe"
+                                                            ) else if exist "C:\\Users\\2-08\\Desktop\\SFEPS\\client\\build\\appHanwhaVisionSFEPS.exe" (
+                                                                set "AUT_PATH=C:\\Users\\2-08\\Desktop\\SFEPS\\client\\build\\appHanwhaVisionSFEPS.exe"
+                                                            )
+                                                        )
+
+                                                        if "%SQUISH_RUNNER%"=="" (
+                                                            echo squishrunner not found on Windows GUI agent.
+                                                            echo Hint: set SFEPS_SQUISH_RUNNER to full path, e.g. C:\\Squish\\bin\\squishrunner.exe
+                                                            exit /b 1
+                                                        )
+
+                                                        where "%SQUISH_RUNNER%" >nul 2>nul
+                                                        if errorlevel 1 (
+                                                            if not exist "%SQUISH_RUNNER%" (
+                                                                echo squishrunner path does not exist: %SQUISH_RUNNER%
+                                                                exit /b 1
+                                                            )
+                                                        )
+
+                                                        echo Using squishrunner: %SQUISH_RUNNER%
+
+                                                        set "STARTED_SQUISH_SERVER=0"
+                                                        echo Killing any pre-existing squishserver instances...
+                                                        taskkill /F /IM squishserver.exe >nul 2>nul
+                                                        timeout /t 1 >nul
+                                                        
+                                                        if not exist "%SQUISH_SERVER%" (
+                                                            echo squishserver not found on Windows GUI agent: %SQUISH_SERVER%
+                                                            exit /b 1
+                                                        )
+                                                        
+                                                        echo Starting squishserver: %SQUISH_SERVER%
+                                                        start "squishserver" /B "%SQUISH_SERVER%" > "%TEMP%\\squishserver.log" 2>&1
+                                                        echo Waiting for squishserver to initialize...
+                                                        
+                                                        timeout /t 1 >nul
+                                                        tasklist | find /I "squishserver.exe"
+                                                        if errorlevel 1 (
+                                                            echo ERROR: squishserver process did not start!
+                                                            if exist "%TEMP%\\squishserver.log" type "%TEMP%\\squishserver.log"
+                                                            exit /b 1
+                                                        )
+                                                        echo squishserver process is running
+                                                        
+                                                        timeout /t 3 >nul
+                                                        
+                                                        echo Checking if squishserver port 4322 is open...
+                                                        netstat -ano | find ":4322" > "%TEMP%\\netstat_result.txt"
+                                                        if errorlevel 1 (
+                                                            echo ERROR: squishserver port 4322 is NOT listening!
+                                                            netstat -ano
+                                                            exit /b 1
+                                                        )
+                                                        echo Squish server port 4322 is LISTENING (confirmed by netstat)
+                                                        type "%TEMP%\\netstat_result.txt"
+                                                        set "STARTED_SQUISH_SERVER=1"
+
+                                                        if "%AUT_PATH%"=="" (
+                                                            echo AUT binary not found on Windows GUI agent.
+                                                            echo Set SFEPS_SQUISH_AUT_PATH or build the client on that node.
+                                                            echo Checked:
+                                                            echo  - client\\build-mingw\\appHanwhaVisionSFEPS.exe
+                                                            echo  - client\\build\\appHanwhaVisionSFEPS.exe
+                                                            echo  - C:\\Jenkins\\workspace\\SFEPS\\client\\build-mingw\\appHanwhaVisionSFEPS.exe
+                                                            echo  - C:\\Users\\2-08\\Desktop\\SFEPS\\client\\build-mingw\\appHanwhaVisionSFEPS.exe
+                                                            echo  - C:\\Users\\2-08\\Desktop\\SFEPS\\client\\build\\appHanwhaVisionSFEPS.exe
+                                                            exit /b 1
+                                                        )
+
+                                                        if not exist "%AUT_PATH%" (
+                                                            echo AUT binary path does not exist on Windows GUI agent: %AUT_PATH%
+                                                            exit /b 1
+                                                        )
+
+                                                        set SQUISH_FAILED=0
+                                                        for %%T in (
+                                                            tst_tc_func_ui_01
+                                                            tst_tc_func_stream_02
+                                                            tst_tc_func_ui_02
+                                                            tst_tc_func_ui_03
+                                                            tst_tc_func_track_01
+                                                            tst_tc_func_track_02
+                                                        ) do (
+                                                            set "REPORT_FILE=!REPORT_DIR!\\squish-%%T.xml"
+                                                            if exist "!REPORT_FILE!" del /f /q "!REPORT_FILE!"
+                                                            for /f %%I in ('powershell -NoProfile -Command "[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()"') do set "TC_START_MS=%%I"
+                                                            call "%SQUISH_RUNNER%" --testsuite "%SUITE_PATH%" --testcase %%T --aut "%AUT_PATH%" --reportgen "junit,!REPORT_FILE!" --exitCodeOnFail 1
+                                                            set "TC_RC=!ERRORLEVEL!"
+                                                            for /f %%I in ('powershell -NoProfile -Command "[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()"') do set "TC_END_MS=%%I"
+                                                            set /a TC_ELAPSED_MS=!TC_END_MS!-!TC_START_MS!
+                                                            if !TC_ELAPSED_MS! lss 0 set "TC_ELAPSED_MS=0"
+                                                            for /f %%I in ('powershell -NoProfile -Command "$ms=[double]$env:TC_ELAPSED_MS; [string]::Format([System.Globalization.CultureInfo]::InvariantCulture,'{0:0.000}',$ms/1000.0)"') do set "TC_ELAPSED_SEC=%%I"
+                                                            if not exist "!REPORT_FILE!" (
+                                                                echo Squish did not generate JUnit XML for %%T, writing fallback report.
+                                                                > "!REPORT_FILE!" echo ^<testsuite name="%%T" tests="1" failures="0" errors="0" skipped="0" time="!TC_ELAPSED_SEC!"^>
+                                                                if "!TC_RC!"=="0" (
+                                                                    >> "!REPORT_FILE!" echo   ^<testcase classname="squish.%%T" name="%%T" time="!TC_ELAPSED_SEC!" /^>
+                                                                ) else (
+                                                                    >> "!REPORT_FILE!" echo   ^<testcase classname="squish.%%T" name="%%T" time="!TC_ELAPSED_SEC!"^>^<failure message="squishrunner exited with code !TC_RC!" /^>^</testcase^>
+                                                                    > "!REPORT_FILE!.tmp" (
+                                                                        echo ^<testsuite name="%%T" tests="1" failures="1" errors="0" skipped="0" time="!TC_ELAPSED_SEC!"^>
+                                                                        echo   ^<testcase classname="squish.%%T" name="%%T" time="!TC_ELAPSED_SEC!"^>^<failure message="squishrunner exited with code !TC_RC!" /^>^</testcase^>
+                                                                        echo ^</testsuite^>
+                                                                    )
+                                                                    move /Y "!REPORT_FILE!.tmp" "!REPORT_FILE!" >nul
+                                                                )
+                                                                if "!TC_RC!"=="0" (
+                                                                    >> "!REPORT_FILE!" echo ^</testsuite^>
+                                                                )
+                                                            )
+                                                            if exist "!REPORT_FILE!" echo Generated Squish report: !REPORT_FILE!
+                                                            if not "!TC_RC!"=="0" set SQUISH_FAILED=1
+                                                        )
+
+                                                        if "%STARTED_SQUISH_SERVER%"=="1" (
+                                                            taskkill /F /IM squishserver.exe >nul 2>nul
+                                                        )
+
+                                                        if "%SQUISH_FAILED%"=="1" exit /b 1
+                                                '''
+                                                    } catch (err) {
+                                                        squishStepFailed = true
+                                                        echo "Squish execution failed on Windows node, but stashing reports before failing stage."
+                                                    }
+                                                stash name: 'squish-reports', includes: 'reports/**', allowEmpty: true
+                                        }
+
+                                        try {
+                                                unstash 'squish-reports'
+                                        } catch (err) {
+                                                echo "No Squish reports were stashed: ${err}"
+                                        }
+
+                                        if (squishStepFailed) {
+                                            error('Run Squish UI Tests failed.')
+                                        }
+                                }
+                        }
+                }
+
         stage('Build & Push ARM Image') {
             when {
                 expression { env.SFEPS_CI_BRANCH == 'develop' || env.SFEPS_CI_BRANCH == 'main' }
@@ -511,6 +678,11 @@ PY
                           mkdir -p '${SFEPS_VIDEO_DIR}'
                           if [ ! -r '${SFEPS_REMOTE_ENV_FILE}' ]; then
                             echo 'missing env file: ${SFEPS_REMOTE_ENV_FILE}' >&2
+                            exit 1
+                          fi
+                          if grep -nE '^[[:space:]]*(<<<<<<<|=======|>>>>>>>)' '${SFEPS_REMOTE_ENV_FILE}' >/dev/null; then
+                            echo 'env file has unresolved merge conflict markers: ${SFEPS_REMOTE_ENV_FILE}' >&2
+                            grep -nE '^[[:space:]]*(<<<<<<<|=======|>>>>>>>)' '${SFEPS_REMOTE_ENV_FILE}' || true
                             exit 1
                           fi
                           if [ ! -S '${SFEPS_REMOTE_MYSQL_SOCK_DIR}/mysqld.sock' ]; then
@@ -596,6 +768,11 @@ PY
                           mkdir -p '${SFEPS_VIDEO_DIR}'
                           if [ ! -r '${SFEPS_REMOTE_ENV_FILE}' ]; then
                             echo 'missing env file: ${SFEPS_REMOTE_ENV_FILE}' >&2
+                            exit 1
+                          fi
+                          if grep -nE '^[[:space:]]*(<<<<<<<|=======|>>>>>>>)' '${SFEPS_REMOTE_ENV_FILE}' >/dev/null; then
+                            echo 'env file has unresolved merge conflict markers: ${SFEPS_REMOTE_ENV_FILE}' >&2
+                            grep -nE '^[[:space:]]*(<<<<<<<|=======|>>>>>>>)' '${SFEPS_REMOTE_ENV_FILE}' || true
                             exit 1
                           fi
                           if [ ! -S '${SFEPS_REMOTE_MYSQL_SOCK_DIR}/mysqld.sock' ]; then

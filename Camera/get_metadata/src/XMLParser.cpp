@@ -37,7 +37,6 @@ namespace {
         float yA = std::max(t1, t2);
         float xB = std::min(r1, r2);
         float yB = std::min(b1, b2);
-
         float interArea = std::max(0.0f, xB - xA) * std::max(0.0f, yB - yA);
         if (interArea == 0.0f) return 0.0f;
 
@@ -143,7 +142,8 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
                 h = bottom - top;
             }
 
-            std::string real_id = obj_id; 
+            std::string real_id = obj_id;
+
 
             if (x != -1 && y != -1 && obj_type == "Head") {
                 if (tracking_map.find(obj_id) == tracking_map.end()) {
@@ -155,11 +155,9 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
                         auto& track = pair.second;
 
                         unsigned int dt = last_timestamp - track.last_rtp;
-
                         if (dt > 0 && dt < 225000) {
                             float expected_x = track.last_x + (track.vx * dt);
                             float expected_y = track.last_y + (track.vy * dt);
-
                             expected_x = std::max(0.0f, std::min(expected_x, SENSOR_WIDTH));
                             expected_y = std::max(0.0f, std::min(expected_y, SENSOR_HEIGHT));
 
@@ -179,12 +177,14 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
                     }
 
                     if (matched_old_id != "") {
+
                         tracking_map[obj_id] = tracking_map[matched_old_id]; 
                         tracking_map.erase(matched_old_id); 
                         real_id = tracking_map[obj_id].original_id; 
                         tracking_map[obj_id].last_w = w;
                         tracking_map[obj_id].last_h = h;
                         std::cout << "🔗 [ID 복구] 카메라 ID: " << obj_id << " -> 오리지널 ID: " << real_id 
+
                                   << " (IoU 매칭률: " << (int)(max_iou * 100) << "%)" << std::endl;
                     } else {
                         tracking_map[obj_id] = {obj_id, x, y, w, h, 0.0f, 0.0f, last_timestamp};
@@ -204,7 +204,8 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
                     track.last_w = w;
                     track.last_h = h;
                     track.last_rtp = last_timestamp;
-                    real_id = track.original_id; 
+
+                    real_id = track.original_id;
                 }
 
                 results.push_back({real_id, obj_type, x, y, likelihood, w, h});
@@ -213,10 +214,10 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
                 bool is_new_id = (log_timer_map.find(real_id) == log_timer_map.end());
                 if (k_enable_object_log && (is_new_id || (last_timestamp - log_timer_map[real_id] > LOG_THROTTLE))) {
                     std::string prefix = is_new_id ? "✨ [NEW]" : "🎯 [OBJ]";
-                    std::cout << prefix << " ID: " << real_id 
+                    std::cout << prefix << " ID: " << real_id
                               << " | Type: " << obj_type
-                              << " | Pos: (" << x << ", " << y << ")" 
-                              << " | Size: (" << w << "x" << h << ")" 
+                              << " | Pos: (" << x << ", " << y << ")"
+                              << " | Size: (" << w << "x" << h << ")"
                               << " | Lkhd: " << likelihood
                               << " | TagTime: " << tag_time << std::endl;
                     log_timer_map[real_id] = last_timestamp;
@@ -288,6 +289,7 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
                 } else {
                     std::cout << "✅ [EVENT] " << rule_name 
                               << " Active | ID: " << triggered_id 
+
                               << " | TagTime: " << tag_time << std::endl;
                 }
                 gate_last_pass_time[rule_name] = last_timestamp;
@@ -298,6 +300,7 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
     } catch (...) {}
 
     return results; 
+
 }
 
 std::vector<ParsedMetadataObject> XMLParser::parseHumanObjectsForAnalytics(const std::string& xml,
@@ -352,6 +355,21 @@ std::vector<ParsedMetadataObject> XMLParser::parseHumanObjectsForAnalytics(const
         if (!object.id.empty() && type_ok && has_x && has_y &&
             has_left && has_right && has_top && has_bottom) {
             results.push_back(object);
+
+            constexpr bool k_enable_meta_log = true;
+            #if(0)
+            if (k_enable_meta_log) {
+                std::cout << "[META] id=" << object.id
+                          << " type=" << object.type
+                          << " x=" << object.x
+                          << " y=" << object.y
+                          << " left=" << object.left
+                          << " right=" << object.right
+                          << " top=" << object.top
+                          << " bottom=" << object.bottom
+                          << std::endl;
+            }
+            #endif
         }
 
         search_pos = obj_end;
