@@ -13,6 +13,7 @@ Item {
     property string cardAgeText: "Adult"
     property string ageGroup: "Senior"
     property bool isFraud: true
+    property string imagePath: ""
     property string cardAgeDisplay: cardAgeText && cardAgeText.trim() !== "" ? cardAgeText.toUpperCase() : "-"
     property string estimatedAgeDisplay: ageGroup && ageGroup.trim() !== "" ? ageGroup.toUpperCase() : "-"
     property string fraudDisplay: isFraud ? "FARE EVASION (Y)" : "NORMAL BOARDING (N)"
@@ -62,15 +63,32 @@ Item {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     
+                    // Actual fraud image
+                    Image {
+                        id: fraudImage
+                        anchors.fill: parent
+                        anchors.margins: 20
+                        source: imagePath || ""
+                        fillMode: Image.PreserveAspectFit
+                        visible: imagePath !== "" && status === Image.Ready
+                        onStatusChanged: {
+                            if (status === Image.Error) {
+                                console.warn("[DetailView] Failed to load fraud image:", source)
+                            }
+                        }
+                    }
+                    
+                    // Fallback logo when no image available
                     Image {
                         anchors.fill: parent
                         anchors.margins: 20
                         source: "../../assets/video_Stream_logo.svg"
                         fillMode: Image.PreserveAspectFit
                         opacity: 0.15
+                        visible: !fraudImage.visible
                     }
                     
-                    // Face Detection Box Mock
+                    // Face Detection Box - only show when image is loaded
                     Rectangle {
                         x: parent.width * 0.4
                         y: parent.height * 0.3
@@ -78,6 +96,7 @@ Item {
                         color: "transparent"
                         border.color: AppTheme.accent
                         border.width: 2
+                        visible: fraudImage.visible
                         
                         Rectangle {
                             anchors.left: parent.left; anchors.top: parent.top
@@ -89,6 +108,12 @@ Item {
                                 font.bold: true; font.pixelSize: 10
                             }
                         }
+                    }
+                    
+                    // Loading indicator when image is being loaded
+                    BusyIndicator {
+                        anchors.centerIn: parent
+                        visible: fraudImage.visible && fraudImage.status === Image.Loading
                     }
                 }
             }

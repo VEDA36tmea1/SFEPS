@@ -212,6 +212,13 @@ cd /home/iam/SFEPS
 "/path/to/squishrunner" --testsuite tests/squish/suite_sfeps/suite_sfeps --testcase tst_tc_func_track_01 --aut /path/to/appHanwhaVisionSFEPS
 ```
 
+Jenkins 에이전트(Windows 노드) 실행 예시:
+
+```bat
+cd C:\Jenkins
+java -jar agent.jar -url http://192.168.56.101:8080/ -secret @C:\Jenkins\secret-file -name "win-squish" -webSocket -workDir "C:\Jenkins"
+```
+
 ## 10) 로그 확인
 
 실서버 로그:
@@ -235,3 +242,92 @@ EVENT 테스트는 pytest 출력 또는 driver stderr를 확인합니다.
 - 스트림 테스트는 실제 장애 유도를 위해 `mediamtx`를 중단/재기동할 수 있습니다.
 - Squish UI 테스트는 Windows GUI 세션과 Squish 실행 환경이 필요합니다.
 - 운영 장비에서 실행 시 서비스 영향이 있을 수 있으므로 테스트 환경에서 실행하세요.
+
+## 12) 통합 테스트 실행기 (신규)
+
+`tests/run_tests.py`로 `pytest + squish`를 프로필 기반으로 한 번에 실행할 수 있습니다.
+비기능 테스트(REC/RELI/PERF)도 `nonfunctional`/`all` 프로필에서 자동 포함됩니다.
+
+```bash
+cd /home/iam/SFEPS
+source .venv/bin/activate
+python tests/run_tests.py --profile functional --engine both
+```
+
+### 주요 실행 예시
+
+스모크(빠른 점검):
+
+```bash
+python tests/run_tests.py --profile smoke --engine both
+```
+
+기능 테스트만(pytest+squish):
+
+```bash
+python tests/run_tests.py --profile functional --engine both
+```
+
+비기능 테스트만(pytest):
+
+```bash
+python tests/run_tests.py --profile nonfunctional --engine pytest
+```
+
+전체 테스트:
+
+```bash
+python tests/run_tests.py --profile all --engine both
+```
+
+Squish가 없는 Linux 환경에서 pytest만:
+
+```bash
+python tests/run_tests.py --profile all --engine pytest
+```
+
+### 리포트/아티팩트
+
+실행 결과는 기본적으로 아래 경로에 생성됩니다.
+
+- `tests/reports/run-YYYYMMDD-HHMMSS/junit/*.xml`
+- `tests/reports/run-YYYYMMDD-HHMMSS/logs/*.log`
+- `tests/reports/run-YYYYMMDD-HHMMSS/test-report.html`
+- `tests/reports/run-YYYYMMDD-HHMMSS/test-report.xlsx`
+- `tests/reports/run-YYYYMMDD-HHMMSS/test-report.pdf`
+
+보관 정책:
+
+- 기본값으로 최근 `5`개 실행 결과만 `tests/reports`에 보관합니다.
+- 오래된 결과를 더 보관하려면 `--retain-runs N`을 사용하세요.
+- `--retain-runs 0` 또는 음수는 자동 삭제를 비활성화합니다.
+
+### Squish 관련 옵션
+
+- `--squish-runner`: `squishrunner` 실행 파일 경로
+- `--squish-suite`: testsuite 경로(기본: `tests/squish/suite_sfeps/suite_sfeps`)
+- `--squish-aut`: AUT 실행 파일 경로
+- `--strict-squish`: Squish 실행 불가 시 skip 대신 실패 처리
+
+예시:
+
+```bash
+python tests/run_tests.py \
+  --profile functional \
+  --engine both \
+  --squish-runner "C:/Squish/bin/squishrunner.exe" \
+  --squish-aut "C:/path/to/appHanwhaVisionSFEPS.exe"
+```
+
+## 13) Web UI 테스트 툴 (tests/tools)
+
+`tests/tools/test_ui_server.py`로 Jenkins 연동 Web UI를 실행할 수 있습니다.
+
+```bash
+cd /home/iam/SFEPS
+python3 tests/tools/test_ui_server.py
+```
+
+상세 설정/환경변수/파라미터 매핑은 아래 문서를 참고하세요.
+
+- `tests/tools/README.md`

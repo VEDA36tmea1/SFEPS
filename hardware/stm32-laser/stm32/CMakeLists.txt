@@ -61,6 +61,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/main.c
     Core/Src/servo_driver.c
     Core/Src/led_driver.c
+    Core/Src/ESP_Parser.c
+    Core/Src/UART_Parser.c
 )
 
 # Linker script
