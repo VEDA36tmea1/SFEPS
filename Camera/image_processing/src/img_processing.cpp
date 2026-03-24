@@ -1,5 +1,6 @@
 #include "../inc/img_processing.h"
 #include <cmath>
+#include <iomanip>
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -311,6 +312,187 @@ static double calculateEntropy(const cv::Mat& frame) {
     return entropy;
 }
 
+// 8. 픽셀 분포 분석 — 보정 전/후 밝기 분포 변화를 정량적으로 로깅
+struct PixelDistStats {
+    double mean;           // 평균 밝기
+    double stddev;         // 표준 편차
+    double pct_below_50;   // 밝기 0~49 구간 비율 (%)
+    double pct_50_100;     // 밝기 50~99 구간 비율 (%)
+    double pct_100_150;    // 밝기 100~149 구간 비율 (%)
+    double pct_150_200;    // 밝기 150~199 구간 비율 (%)
+    double pct_above_200;  // 밝기 200~255 구간 비율 (%)
+};
+
+static PixelDistStats analyzePixelDistribution(const cv::Mat& bgr_frame) {
+    PixelDistStats st{};
+    if (bgr_frame.empty()) return st;
+
+    cv::Mat gray;
+    cv::cvtColor(bgr_frame, gray, cv::COLOR_BGR2GRAY);
+
+    cv::Scalar mu, sigma;
+    cv::meanStdDev(gray, mu, sigma);
+    st.mean   = mu[0];
+    st.stddev = sigma[0];
+
+    int total = gray.rows * gray.cols;
+    int bins[5] = {0};  // [0-49] [50-99] [100-149] [150-199] [200-255]
+
+    for (int r = 0; r < gray.rows; r++) {
+        const uchar* p = gray.ptr<uchar>(r);
+        for (int c = 0; c < gray.cols; c++) {
+            int v = p[c];
+            if      (v <  50) bins[0]++;
+            else if (v < 100) bins[1]++;
+            else if (v < 150) bins[2]++;
+            else if (v < 200) bins[3]++;
+            else              bins[4]++;
+        }
+    }
+
+    st.pct_below_50  = 100.0 * bins[0] / total;
+    st.pct_50_100    = 100.0 * bins[1] / total;
+    st.pct_100_150   = 100.0 * bins[2] / total;
+    st.pct_150_200   = 100.0 * bins[3] / total;
+    st.pct_above_200 = 100.0 * bins[4] / total;
+    return st;
+}
+
+static void logDistComparison(const std::string& label_before,
+                              const PixelDistStats& before,
+                              const std::string& label_after,
+                              const PixelDistStats& after) {
+    std::cout << "──────────── 픽셀 분포 분석 ────────────" << std::endl;
+    std::cout << "[" << label_before << "] "
+              << "mean=" << std::fixed << std::setprecision(1) << before.mean
+              << "  stddev=" << before.stddev << std::endl;
+    std::cout << "   0~ 49: " << std::setprecision(1) << before.pct_below_50  << "% | "
+              << " 50~ 99: " << before.pct_50_100    << "% | "
+              << "100~149: " << before.pct_100_150   << "% | "
+              << "150~199: " << before.pct_150_200   << "% | "
+              << "200~255: " << before.pct_above_200 << "%" << std::endl;
+    std::cout << "[" << label_after << "] "
+              << "mean=" << after.mean
+              << "  stddev=" << after.stddev << std::endl;
+    std::cout << "   0~ 49: " << after.pct_below_50  << "% | "
+              << " 50~ 99: " << after.pct_50_100    << "% | "
+              << "100~149: " << after.pct_100_150   << "% | "
+              << "150~199: " << after.pct_150_200   << "% | "
+              << "200~255: " << after.pct_above_200 << "%" << std::endl;
+    std::cout << "─────────────────────────────────────────" << std::endl;
+}
+
+// 9. 히스토그램 이미지 저장 — 보정 전/후 밝기 분포를 시각적으로 비교
+static cv::Mat computeGrayHist(const cv::Mat& bgr_frame) {
+    cv::Mat gray;
+    cv::cvtColor(bgr_frame, gray, cv::COLOR_BGR2GRAY);
+    int histSize = 256;
+    float range[] = {0, 256};
+    const float* hr = {range};
+    cv::Mat hist;
+    cv::calcHist(&gray, 1, 0, cv::Mat(), hist, 1, &histSize, &hr, true, false);
+    cv::normalize(hist, hist, 0, 1, cv::NORM_MINMAX);
+    return hist;
+}
+
+static void saveHistogramComparison(const cv::Mat& before,
+                                    const cv::Mat& after,
+                                    const PixelDistStats& st_before,
+                                    const PixelDistStats& st_after,
+                                    int best_idx,
+                                    const std::string& save_path) {
+    // 캔버스 설정
+    const int W = 1200, H = 500;
+    const int margin_l = 60, margin_r = 30, margin_t = 70, margin_b = 70;
+    const int plot_w = W - margin_l - margin_r;
+    const int plot_h = H - margin_t - margin_b;
+
+    cv::Mat canvas(H, W, CV_8UC3, cv::Scalar(255, 255, 255));
+
+    // 히스토그램 데이터
+    cv::Mat hist_before = computeGrayHist(before);
+    cv::Mat hist_after  = computeGrayHist(after);
+
+    // 색상 정의
+    const cv::Scalar col_before(200, 180, 180);   // 연한 파란 계열 (BGR)
+    const cv::Scalar col_after (180, 210, 130);    // 연한 초록 계열
+    const cv::Scalar line_before(180, 80, 80);     // 진한 파란 (라인)
+    const cv::Scalar line_after (60, 160, 60);     // 진한 초록 (라인)
+
+    // 막대 그리기 (반투명 효과를 위해 두 히스토그램을 겹침)
+    float bar_w = (float)plot_w / 256.0f;
+    for (int i = 0; i < 256; i++) {
+        float vb = hist_before.at<float>(i);
+        float va = hist_after.at<float>(i);
+
+        int x1 = margin_l + (int)(i * bar_w);
+        int x2 = margin_l + (int)((i + 1) * bar_w);
+
+        int yb = margin_t + plot_h - (int)(vb * plot_h);
+        int ya = margin_t + plot_h - (int)(va * plot_h);
+        int y_base = margin_t + plot_h;
+
+        // 보정 전 (배경)
+        cv::rectangle(canvas, {x1, yb}, {x2, y_base}, col_before, cv::FILLED);
+        // 보정 후 (전경, 반투명 느낌)
+        cv::rectangle(canvas, {x1, ya}, {x2, y_base}, col_after, cv::FILLED);
+    }
+
+    // 꺾은선 오버레이 (가독성 향상)
+    for (int i = 1; i < 256; i++) {
+        int x_prev = margin_l + (int)((i - 0.5f) * bar_w);
+        int x_curr = margin_l + (int)((i + 0.5f) * bar_w);
+
+        float vb0 = hist_before.at<float>(i - 1), vb1 = hist_before.at<float>(i);
+        float va0 = hist_after.at<float>(i - 1),  va1 = hist_after.at<float>(i);
+
+        cv::line(canvas,
+                 {x_prev, margin_t + plot_h - (int)(vb0 * plot_h)},
+                 {x_curr, margin_t + plot_h - (int)(vb1 * plot_h)},
+                 line_before, 2, cv::LINE_AA);
+        cv::line(canvas,
+                 {x_prev, margin_t + plot_h - (int)(va0 * plot_h)},
+                 {x_curr, margin_t + plot_h - (int)(va1 * plot_h)},
+                 line_after, 2, cv::LINE_AA);
+    }
+
+    // 축, 그리드
+    cv::line(canvas, {margin_l, margin_t}, {margin_l, margin_t + plot_h}, {0,0,0}, 1);
+    cv::line(canvas, {margin_l, margin_t + plot_h}, {margin_l + plot_w, margin_t + plot_h}, {0,0,0}, 1);
+
+    for (int v = 0; v <= 255; v += 50) {
+        int x = margin_l + (int)(v * bar_w);
+        cv::line(canvas, {x, margin_t + plot_h}, {x, margin_t + plot_h + 5}, {0,0,0}, 1);
+        cv::putText(canvas, std::to_string(v),
+                    {x - 10, margin_t + plot_h + 22},
+                    cv::FONT_HERSHEY_SIMPLEX, 0.45, {0,0,0}, 1, cv::LINE_AA);
+    }
+    cv::putText(canvas, "Pixel Intensity",
+                {margin_l + plot_w / 2 - 55, H - 10},
+                cv::FONT_HERSHEY_SIMPLEX, 0.55, {0,0,0}, 1, cv::LINE_AA);
+
+    // 제목
+    cv::putText(canvas, "Pixel Distribution : Before vs After Correction",
+                {margin_l, 30},
+                cv::FONT_HERSHEY_SIMPLEX, 0.75, {0,0,0}, 2, cv::LINE_AA);
+
+    // 범례
+    int lx = margin_l + plot_w - 340, ly = margin_t + 15;
+    cv::rectangle(canvas, {lx, ly}, {lx + 14, ly + 14}, line_before, cv::FILLED);
+    cv::putText(canvas,
+                cv::format("Before  (mean=%.1f, std=%.1f)", st_before.mean, st_before.stddev),
+                {lx + 20, ly + 12}, cv::FONT_HERSHEY_SIMPLEX, 0.45, {0,0,0}, 1, cv::LINE_AA);
+
+    ly += 22;
+    cv::rectangle(canvas, {lx, ly}, {lx + 14, ly + 14}, line_after, cv::FILLED);
+    cv::putText(canvas,
+                cv::format("After #%d (mean=%.1f, std=%.1f)", best_idx, st_after.mean, st_after.stddev),
+                {lx + 20, ly + 12}, cv::FONT_HERSHEY_SIMPLEX, 0.45, {0,0,0}, 1, cv::LINE_AA);
+
+    cv::imwrite(save_path, canvas);
+    std::cout << "[camera] histogram saved: " << save_path << std::endl;
+}
+
 // =====================================================================
 // processISPAndGetBest — 공개 인터페이스
 // 입력: CV_8UC3 BGR (runPureISP 결과 or libcamera BGR 직접 입력)
@@ -344,6 +526,15 @@ cv::Mat processISPAndGetBest(const cv::Mat& raw_frame_in, cv::Mat& tuning_view_o
         entropies[i] = calculateEntropy(candidates[i]);
         if (entropies[i] > max_entropy) { max_entropy = entropies[i]; best_idx = i; }
     }
+
+    // 픽셀 분포 분석: 보정 전(원본) vs 보정 후(최적 후보) 비교 로깅
+    PixelDistStats dist_before = analyzePixelDistribution(candidates[0]);
+    PixelDistStats dist_after  = analyzePixelDistribution(candidates[best_idx]);
+    logDistComparison("보정 전 (ISP Out)", dist_before,
+                      "보정 후 (Best #" + std::to_string(best_idx) + ")", dist_after);
+    saveHistogramComparison(candidates[0], candidates[best_idx],
+                            dist_before, dist_after, best_idx,
+                            "pixel_distribution_comparison.jpg");
 
     // Tuning View (4x2 그리드)
     double scale = 1920.0 / raw_frame_in.cols;

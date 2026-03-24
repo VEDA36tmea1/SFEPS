@@ -30,7 +30,7 @@
 
 #include "../inc/img_processing.h"
 
-#define LIVE_CAMERA_MODE 1
+#define LIVE_CAMERA_MODE 0
 
 namespace {
 
@@ -342,6 +342,32 @@ void triggerListenerThread() {
     ::unlink(kTriggerSocketPath);
 }
 
+// ── 셔터 속도 설정 ──────────────────────────────────────────
+// 역광 환경에서 픽셀 포화를 억제하기 위해 노출 시간을 제한합니다.
+// kExposureTimeUs: 마이크로초 단위 (기본 8000 µs = 8 ms)
+//   ↓ 값을 낮출수록 셔터가 빨라져 밝은 영역의 포화를 방지
+//   ↑ 값을 높이면 어두운 환경에서 밝기 확보
+// kAnalogueGain: 센서 아날로그 게인 (기본 1.0, 셔터를 줄인 만큼 보상)
+constexpr int    kExposureTimeUs  = 8000;   // 8 ms — 역광 포화 억제용
+constexpr float  kAnalogueGain    = 1.0f;   // 센서 아날로그 게인
+
+// 파이프라인이 열린 뒤 OpenCV cap.set()으로 노출 제어
+static void applyExposureSettings(cv::VideoCapture& cap) {
+    // 자동 노출 OFF (0.25 = manual mode for GStreamer/V4L2 backend)
+    bool ok_ae  = cap.set(cv::CAP_PROP_AUTO_EXPOSURE, 0.25);
+    // 셔터 속도 설정
+    bool ok_exp = cap.set(cv::CAP_PROP_EXPOSURE, (double)kExposureTimeUs);
+    // 게인 설정
+    bool ok_gain = cap.set(cv::CAP_PROP_GAIN, (double)kAnalogueGain);
+
+    std::cout << "[camera] exposure control: "
+              << "auto_exposure=" << (ok_ae  ? "OK" : "SKIP")
+              << ", exposure="    << (ok_exp ? "OK" : "SKIP")
+              << ", gain="        << (ok_gain? "OK" : "SKIP")
+              << " (exposure_time=" << kExposureTimeUs << " µs"
+              << ", analogue_gain=" << kAnalogueGain << ")" << std::endl;
+}
+
 static const std::string PIPE_RAW =
     "libcamerasrc ! "
     "video/x-raw,format=SRGGB10,width=1920,height=1080,framerate=30/1 ! "
@@ -374,6 +400,9 @@ int main() {
         g_raw_mode = false;
         std::cout << "[camera] BGR fallback enabled" << std::endl;
     }
+
+    // 파이프라인 열린 뒤 셔터 속도 제한 적용 (역광 포화 억제)
+    applyExposureSettings(cap);
 
     std::thread capture_thread(captureThreadFunc, std::ref(cap));
     std::thread listener_thread(triggerListenerThread);
