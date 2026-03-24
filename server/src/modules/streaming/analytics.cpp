@@ -727,14 +727,14 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
     for (const auto& msg : outbound_alerts) {
         send_alert_to_clients(msg);
     }
-    if (track_pos_callback) {
-        for (const auto& payload : outbound_track_pos) {
-            track_pos_callback(payload);
-        }
-    }
     if (outline_decision_callback) {
         for (const auto& payload : outbound_outline_decisions) {
             outline_decision_callback(payload);
+        }
+    }
+    if (track_pos_callback) {
+        for (const auto& payload : outbound_track_pos) {
+            track_pos_callback(payload);
         }
     }
     if (should_notify_worker) {
