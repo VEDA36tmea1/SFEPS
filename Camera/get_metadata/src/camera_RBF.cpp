@@ -20,7 +20,9 @@
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -29,6 +31,9 @@
 
 #include <fcntl.h>
 #include <poll.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -43,6 +48,20 @@ static std::vector<ParsedMetadataObject> g_raw_objects;
 // ── DeepSORT가 부여한 안정적 ID bbox ────────────────────────────────
 static std::mutex g_obj_mutex;
 static std::vector<ParsedMetadataObject> g_objects;
+
+// DeepSORT 결과가 비는 순간에도(확정 전/일시 누락) 화면 bbox가 튀지 않게
+// 최근 DeepSORT 결과를 짧게 유지한다.
+static std::vector<ParsedMetadataObject> g_deepsort_last_objects;
+static int g_deepsort_empty_count = 0;
+static constexpr int DEEPSORT_EMPTY_GRACE_FRAMES = 5;
+
+// ── ID별 bbox EMA 스무더 ─────────────────────────────────────────────
+// DeepSORT 비동기 파이프라인의 프레임 지연 + to_ltrb() 칼만 예측값의
+// 순간 점프를 EMA로 감쇠시켜 화면 bbox 떨림을 제거한다.
+// BBOX_SMOOTH_ALPHA: 클수록 새 값에 빠르게 반응, 작을수록 부드러움
+static constexpr double BBOX_SMOOTH_ALPHA = 0.35;
+struct SmoothedRect { double x, y, w, h; bool init{false}; };
+static std::map<std::string, SmoothedRect> g_bbox_smooth;
 
 static cv::Mat g_last_frame;
 static std::mutex g_frame_mutex;
@@ -62,8 +81,265 @@ static bool g_last_pwm_valid = false;
 static std::mutex g_click_mutex;
 static bool g_click_pending = false;
 static std::string g_click_pending_id;
+static std::mutex g_remote_msg_mutex;
+static std::string g_remote_last_msg;
+static std::string g_remote_last_id;
+static std::string g_remote_src_host = "192.168.0.101";
+static bool g_remote_tracking = false;
+static std::chrono::steady_clock::time_point g_remote_last_rx_tp = std::chrono::steady_clock::now();
+static bool g_remote_bbox_valid = false;
+static double g_remote_l = 0.0, g_remote_t = 0.0, g_remote_r = 0.0, g_remote_b = 0.0; // normalized [0,1]
 
 static void signal_handler(int) { g_running = false; }
+
+enum class RemoteTrackEvent
+{
+    None,
+    Start,
+    Pos,
+    End
+};
+
+static bool parse_track_event_and_id(const std::string& line, RemoteTrackEvent& out_evt, std::string& out_id)
+{
+    std::string s = line;
+    while (!s.empty() && (s.back() == '\r' || s.back() == '\n' || s.back() == ' ' || s.back() == '\t'))
+        s.pop_back();
+    std::size_t p0 = 0;
+    while (p0 < s.size() && (s[p0] == ' ' || s[p0] == '\t')) p0++;
+    if (p0 > 0) s = s.substr(p0);
+    if (s.empty()) return false;
+
+    auto extract_id_after = [&](const std::string& token) -> std::string {
+        std::size_t p = s.find(token);
+        if (p == std::string::npos) return "";
+        p += token.size();
+        std::size_t e = p;
+        while (e < s.size() && s[e] != '|' && s[e] != ',' && s[e] != ' ' && s[e] != '\t' && s[e] != '\r' && s[e] != '\n') e++;
+        return s.substr(p, e - p);
+    };
+
+    out_evt = RemoteTrackEvent::None;
+    out_id.clear();
+
+    // +IPD prefix나 기타 문자열이 앞에 붙어도 find()로 처리한다.
+    if (s.find("TRACK_POS|") != std::string::npos)
+    {
+        out_evt = RemoteTrackEvent::Pos;
+        out_id = extract_id_after("TRACK_POS|");
+        return !out_id.empty();
+    }
+    if (s.find("TRACK_START|") != std::string::npos)
+    {
+        out_evt = RemoteTrackEvent::Start;
+        out_id = extract_id_after("TRACK_START|");
+        return !out_id.empty();
+    }
+    if (s.find("TRACK_END|") != std::string::npos)
+    {
+        out_evt = RemoteTrackEvent::End;
+        out_id = extract_id_after("TRACK_END|");
+        return !out_id.empty();
+    }
+
+    // 보조 포맷(직접 id만 보내는 경우)
+    if (s.rfind("SELECT_ID|", 0) == 0)
+    {
+        out_evt = RemoteTrackEvent::Pos;
+        out_id = extract_id_after("SELECT_ID|");
+        return !out_id.empty();
+    }
+    if (s.rfind("ID=", 0) == 0 || s.rfind("id=", 0) == 0)
+    {
+        out_evt = RemoteTrackEvent::Pos;
+        out_id = (s.rfind("ID=", 0) == 0) ? s.substr(3) : s.substr(3);
+        return !out_id.empty();
+    }
+    // plain line: "123" 형태도 허용
+    out_evt = RemoteTrackEvent::Pos;
+    out_id = s;
+    return !out_id.empty();
+}
+
+static bool parse_track_bbox_norm(const std::string& line, double& l, double& t, double& r, double& b)
+{
+    // TRACK_POS|id|L=...|T=...|R=...|B=...
+    auto pick = [&](const char* key, double& out) -> bool {
+        std::size_t p = line.find(key);
+        if (p == std::string::npos) return false;
+        p += std::strlen(key);
+        std::size_t e = p;
+        while (e < line.size() && line[e] != '|' && line[e] != ',' && line[e] != ' ' && line[e] != '\t' &&
+               line[e] != '\r' && line[e] != '\n') e++;
+        try {
+            out = std::stod(line.substr(p, e - p));
+            return true;
+        } catch (...) {
+            return false;
+        }
+    };
+
+    double ll = 0, tt = 0, rr = 0, bb = 0;
+    if (!(pick("L=", ll) && pick("T=", tt) && pick("R=", rr) && pick("B=", bb)))
+        return false;
+
+    // 값 스케일 자동 보정: 0~1이면 그대로, 그 외는 센서 좌표로 간주
+    if (std::max({std::fabs(ll), std::fabs(tt), std::fabs(rr), std::fabs(bb)}) > 2.0)
+    {
+        ll /= SENSOR_WIDTH;  rr /= SENSOR_WIDTH;
+        tt /= SENSOR_HEIGHT; bb /= SENSOR_HEIGHT;
+    }
+    ll = std::max(0.0, std::min(1.0, ll));
+    rr = std::max(0.0, std::min(1.0, rr));
+    tt = std::max(0.0, std::min(1.0, tt));
+    bb = std::max(0.0, std::min(1.0, bb));
+    if (rr <= ll || bb <= tt) return false;
+    l = ll; t = tt; r = rr; b = bb;
+    return true;
+}
+
+static bool obj_bbox_norm(const ParsedMetadataObject& obj, double& l, double& t, double& r, double& b)
+{
+    double ll = obj.left, rr = obj.right, tt = obj.top, bb = obj.bottom;
+    if (std::max({std::fabs(ll), std::fabs(rr), std::fabs(tt), std::fabs(bb)}) > 2.0)
+    {
+        ll /= SENSOR_WIDTH;  rr /= SENSOR_WIDTH;
+        tt /= SENSOR_HEIGHT; bb /= SENSOR_HEIGHT;
+    }
+    ll = std::max(0.0, std::min(1.0, ll));
+    rr = std::max(0.0, std::min(1.0, rr));
+    tt = std::max(0.0, std::min(1.0, tt));
+    bb = std::max(0.0, std::min(1.0, bb));
+    if (rr <= ll || bb <= tt) return false;
+    l = ll; t = tt; r = rr; b = bb;
+    return true;
+}
+
+static double iou_norm(double l1, double t1, double r1, double b1,
+                       double l2, double t2, double r2, double b2)
+{
+    const double ix1 = std::max(l1, l2);
+    const double iy1 = std::max(t1, t2);
+    const double ix2 = std::min(r1, r2);
+    const double iy2 = std::min(b1, b2);
+    const double iw = std::max(0.0, ix2 - ix1);
+    const double ih = std::max(0.0, iy2 - iy1);
+    const double inter = iw * ih;
+    if (inter <= 0.0) return 0.0;
+    const double a1 = std::max(0.0, r1 - l1) * std::max(0.0, b1 - t1);
+    const double a2 = std::max(0.0, r2 - l2) * std::max(0.0, b2 - t2);
+    const double uni = a1 + a2 - inter;
+    if (uni <= 1e-9) return 0.0;
+    return inter / uni;
+}
+
+static void remote_select_thread_fn(std::string host, int port)
+{
+    constexpr int kReconnectMs = 700;
+    while (g_running)
+    {
+        int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(kReconnectMs));
+            continue;
+        }
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(static_cast<uint16_t>(port));
+        if (::inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1)
+        {
+            std::cerr << "[remote_select] invalid host ip: " << host << "\n";
+            ::close(fd);
+            return;
+        }
+        if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0)
+        {
+            ::close(fd);
+            std::this_thread::sleep_for(std::chrono::milliseconds(kReconnectMs));
+            continue;
+        }
+        std::cerr << "[remote_select] connected " << host << ":" << port << "\n";
+
+        std::string buf;
+        char tmp[512];
+        while (g_running)
+        {
+            ssize_t n = ::recv(fd, tmp, sizeof(tmp), 0);
+            if (n <= 0) break;
+            buf.append(tmp, tmp + n);
+            while (true)
+            {
+                std::size_t eol = buf.find_first_of("\r\n");
+                if (eol == std::string::npos) break;
+                std::string line = buf.substr(0, eol);
+                std::size_t cut = eol;
+                while (cut < buf.size() && (buf[cut] == '\r' || buf[cut] == '\n')) cut++;
+                buf.erase(0, cut);
+
+                RemoteTrackEvent evt = RemoteTrackEvent::None;
+                std::string rid;
+                if (!parse_track_event_and_id(line, evt, rid)) continue;
+
+                if (evt == RemoteTrackEvent::Pos || evt == RemoteTrackEvent::Start)
+                {
+                    double rl = 0, rt = 0, rr = 0, rb = 0;
+                    const bool has_bbox = parse_track_bbox_norm(line, rl, rt, rr, rb);
+                    // 클릭 선택과 동일한 경로: selected_id를 해당 id로 갱신
+                    {
+                        std::lock_guard<std::mutex> lk(g_sel_mutex);
+                        g_selected_id = rid;
+                        g_selected_valid = true;
+                        g_selected_rect = cv::Rect();
+                    }
+                    {
+                        std::lock_guard<std::mutex> lk(g_click_mutex);
+                        g_click_pending = true;
+                        g_click_pending_id = rid;
+                    }
+                    {
+                        std::lock_guard<std::mutex> lk(g_remote_msg_mutex);
+                        g_remote_last_msg = line;
+                        g_remote_last_id = rid;
+                        g_remote_tracking = true;
+                        g_remote_bbox_valid = has_bbox;
+                        if (has_bbox)
+                        {
+                            g_remote_l = rl; g_remote_t = rt; g_remote_r = rr; g_remote_b = rb;
+                        }
+                        g_remote_last_rx_tp = std::chrono::steady_clock::now();
+                    }
+                    std::cerr << "[remote_select] TRACK id=" << rid << "\n";
+                }
+                else if (evt == RemoteTrackEvent::End)
+                {
+                    {
+                        std::lock_guard<std::mutex> lk(g_remote_msg_mutex);
+                        g_remote_last_msg = line;
+                        g_remote_last_id = rid;
+                        g_remote_tracking = false;
+                        g_remote_bbox_valid = false;
+                        g_remote_last_rx_tp = std::chrono::steady_clock::now();
+                    }
+                    {
+                        std::lock_guard<std::mutex> lk(g_sel_mutex);
+                        if (g_selected_valid && g_selected_id == rid)
+                        {
+                            g_selected_valid = false;
+                            g_selected_id.clear();
+                            g_selected_rect = cv::Rect();
+                        }
+                    }
+                    std::cerr << "[remote_select] TRACK_END id=" << rid << "\n";
+                }
+            }
+        }
+        ::close(fd);
+        if (g_running)
+            std::cerr << "[remote_select] disconnected, reconnecting...\n";
+        std::this_thread::sleep_for(std::chrono::milliseconds(kReconnectMs));
+    }
+}
 
 // ──────────────────────────────────────────────────────────────────────
 // DeepSORT 워커 프로세스 + 비동기 스레드
@@ -98,13 +374,39 @@ struct DeepSortWorker {
         if (active) return true;
         std::string root = get_exe_dir();
         if (root.empty()) return false;
-        auto py = std::filesystem::path(root) / ".venv" / "bin" / "python";
-        if (!std::filesystem::exists(py))
-            py = std::filesystem::path(root).parent_path() / ".venv" / "bin" / "python";
-        auto script = std::filesystem::path(root) / "src" / "deepsort_tracker_worker.py";
-        if (!std::filesystem::exists(py) || !std::filesystem::exists(script)) {
-            std::cerr << "[deepsort] worker files missing\n"
-                      << "  py=" << py << "\n  script=" << script << "\n";
+        // python(venv) / script 경로는 실행 위치(root)에 따라 달라질 수 있으므로
+        // 여러 후보를 순서대로 시도하고, 없으면 system python3로 폴백한다.
+        std::string py_exec = "python3";
+        {
+            std::filesystem::path py1 = std::filesystem::path(root) / ".venv" / "bin" / "python";
+            std::filesystem::path py2 = std::filesystem::path(root).parent_path() / ".venv" / "bin" / "python";
+            std::filesystem::path py3 = std::filesystem::path(root).parent_path().parent_path() / ".venv" / "bin" / "python";
+            if (std::filesystem::exists(py1))
+                py_exec = py1.string();
+            else if (std::filesystem::exists(py2))
+                py_exec = py2.string();
+            else if (std::filesystem::exists(py3))
+                py_exec = py3.string();
+        }
+
+        // 스크립트 위치 후보
+        std::filesystem::path script;
+        {
+            std::filesystem::path s1 = std::filesystem::path(root) / "src" / "deepsort_tracker_worker.py";
+            std::filesystem::path s2 = std::filesystem::path(root).parent_path() / "src" / "deepsort_tracker_worker.py";
+            std::filesystem::path s3 = std::filesystem::path(root).parent_path() / "get_metadata" / "src" / "deepsort_tracker_worker.py";
+            if (std::filesystem::exists(s1))
+                script = s1;
+            else if (std::filesystem::exists(s2))
+                script = s2;
+            else if (std::filesystem::exists(s3))
+                script = s3;
+        }
+
+        if (script.empty() || !std::filesystem::exists(script)) {
+            std::cerr << "[deepsort] worker script missing\n"
+                      << "  root=" << root << "\n"
+                      << "  script candidates: root/src/, parent/src/, parent/get_metadata/src/\n";
             return false;
         }
         int pipe_in[2], pipe_out[2];
@@ -113,14 +415,17 @@ struct DeepSortWorker {
         if (pid == 0) {
             ::dup2(pipe_in[0],  STDIN_FILENO);
             ::dup2(pipe_out[1], STDOUT_FILENO);
-            int dn = ::open("/dev/null", O_WRONLY);
+            // 디버깅용: DeepSORT worker stderr를 파일로 남긴다.
+            // (기존엔 /dev/null로 덮어버려서 import 에러 등을 확인 못했음)
+            const char* errlog = "/tmp/deepsort_worker_stderr.log";
+            int dn = ::open(errlog, O_WRONLY | O_CREAT | O_TRUNC, 0666);
             if (dn >= 0) { ::dup2(dn, STDERR_FILENO); ::close(dn); }
             ::close(pipe_in[0]); ::close(pipe_in[1]);
             ::close(pipe_out[0]); ::close(pipe_out[1]);
-            const char* p = py.c_str();
+            const char* p = py_exec.c_str();
             const char* s = script.c_str();
             char* const argv[] = {const_cast<char*>(p), const_cast<char*>(s), nullptr};
-            ::execv(p, argv);
+            ::execvp(p, argv);
             _exit(127);
         }
         ::close(pipe_in[0]);
@@ -129,6 +434,18 @@ struct DeepSortWorker {
         read_fd  = pipe_out[0];
         active   = true;
         std::cerr << "[deepsort] worker started pid=" << pid << "\n";
+
+        // 워커가 즉시 종료했는지 체크(예: deep_sort_realtime import 실패)
+        {
+            int status = 0;
+            pid_t w = ::waitpid(pid, &status, WNOHANG);
+            if (w == pid) {
+                active = false;
+                std::cerr << "[deepsort] worker exited early. status=" << status
+                          << " (stderr: /tmp/deepsort_worker_stderr.log)\n";
+                return false;
+            }
+        }
 
         // 비동기 처리 스레드 시작
         worker_thread = std::thread([this]() { async_loop(); });
@@ -603,6 +920,10 @@ struct KalmanBbox2D
     double alpha_pos{0.6};
     double beta_vel{0.15};
     double alpha_size{0.3};
+    // bbox 측정값이 한 프레임에 크게 튀는 outlier(예: ID/박스 튐)일 때
+    // 속도 업데이트를 망가뜨리지 않도록 게이팅을 둔다.
+    double max_jump_px{120.0};      // predicted->measured까지 최대 허용 이동(px)
+    double max_vel_px_s{2000.0};   // 속도 상한(px/s)
     bool initialized{false};
 
     void update(double meas_cx, double meas_cy, double meas_w, double meas_h, double dt)
@@ -615,14 +936,37 @@ struct KalmanBbox2D
             initialized = true;
             return;
         }
+
+        // dt가 너무 작으면 (beta_vel*rx)/dt 항이 폭주할 수 있으므로 하한을 건다.
+        dt = std::max(dt, 1e-4);
+
         double px = cx + vx * dt;
         double py = cy + vy * dt;
         double rx = meas_cx - px;
         double ry = meas_cy - py;
+
+        // outlier 게이팅: 측정이 예측에서 너무 멀면 "속도는 신뢰하지 않고" 위치만 갱신.
+        const double dist2 = rx * rx + ry * ry;
+        if (dist2 > max_jump_px * max_jump_px)
+        {
+            cx = meas_cx;
+            cy = meas_cy;
+            w = meas_w;
+            h = meas_h;
+            vx = 0;
+            vy = 0;
+            return;
+        }
+
         cx = px + alpha_pos * rx;
         cy = py + alpha_pos * ry;
         vx += (beta_vel * rx) / dt;
         vy += (beta_vel * ry) / dt;
+
+        // velocity 상한으로 pred 흔들림(증폭) 방지
+        vx = std::max(-max_vel_px_s, std::min(max_vel_px_s, vx));
+        vy = std::max(-max_vel_px_s, std::min(max_vel_px_s, vy));
+
         w += alpha_size * (meas_w - w);
         h += alpha_size * (meas_h - h);
     }
@@ -638,13 +982,17 @@ struct KalmanBbox2D
 
 int main(int argc, char** argv)
 {
-    double ratio = 0.3;
+    double ratio = 0.35;
     double alpha = 0.5;
     int pan_min = 500, pan_max = 2500;
     int tilt_min = 500, tilt_max = 2500;
     int send_every_n = 1;
     bool draw_grid = true;
     double predict_ms = 300.0;
+    int pwm_log_interval_ms = 2000; // 사용자 요청: 터미널 로그만 2초마다
+    std::string remote_id_host = "192.168.0.101";
+    int remote_id_port = 5565;
+    bool remote_id_enable = true;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -655,6 +1003,10 @@ int main(int argc, char** argv)
         else if (arg == "--send-every" && i + 1 < argc) send_every_n = std::max(1, std::atoi(argv[++i]));
         else if (arg == "--no-grid") draw_grid = false;
         else if (arg == "--predict-ms" && i + 1 < argc) predict_ms = std::atof(argv[++i]);
+        else if (arg == "--send-interval-ms" && i + 1 < argc) pwm_log_interval_ms = std::max(100, std::atoi(argv[++i]));
+        else if (arg == "--remote-id-host" && i + 1 < argc) remote_id_host = argv[++i];
+        else if (arg == "--remote-id-port" && i + 1 < argc) remote_id_port = std::atoi(argv[++i]);
+        else if (arg == "--no-remote-id") remote_id_enable = false;
     }
 
     std::signal(SIGINT, signal_handler);
@@ -707,6 +1059,15 @@ int main(int argc, char** argv)
         return -1;
     client.sendHandshake();
     std::thread meta_thread(metadata_thread_fn, &client, &parser);
+    std::thread remote_sel_thread;
+    if (remote_id_enable)
+    {
+        {
+            std::lock_guard<std::mutex> lk(g_remote_msg_mutex);
+            g_remote_src_host = remote_id_host;
+        }
+        remote_sel_thread = std::thread(remote_select_thread_fn, remote_id_host, remote_id_port);
+    }
 
     cv::VideoCapture cap(RTSP_URL);
     if (!cap.isOpened())
@@ -724,6 +1085,7 @@ int main(int argc, char** argv)
     int frame_id = 0;
     auto t_fps0 = std::chrono::steady_clock::now();
     auto t_last_frame = std::chrono::steady_clock::now();
+    auto t_last_pwm_log = std::chrono::steady_clock::now() - std::chrono::milliseconds(pwm_log_interval_ms);
 
     KalmanBbox2D kf;
     std::string prev_sel_id;
@@ -753,9 +1115,51 @@ int main(int argc, char** argv)
         // 최신 DeepSORT 결과 가져오기 (논블로킹)
         {
             auto tracked = g_deepsort.get_latest();
+            // DeepSORT가 잠깐 비었을 때, 선택된 객체가 이전 DeepSORT 결과에도 없으면
+            // stale(오래된) bbox를 계속 그리지 않고 raw bbox를 바로 보여주도록 처리한다.
+            std::string sel_id_now;
+            bool sel_valid_now = false;
+            {
+                std::lock_guard<std::mutex> lk(g_sel_mutex);
+                sel_valid_now = g_selected_valid;
+                sel_id_now = g_selected_id;
+            }
             std::lock_guard<std::mutex> lock(g_obj_mutex);
-            // DeepSORT 결과 없으면 raw 그대로
-            g_objects = tracked.empty() ? raw_objs : tracked;
+            if (!tracked.empty())
+            {
+                g_deepsort_last_objects = tracked;
+                g_deepsort_empty_count = 0;
+                g_objects = tracked;
+            }
+            else
+            {
+                g_deepsort_empty_count++;
+                bool sel_found_in_last = false;
+                if (sel_valid_now && !g_deepsort_last_objects.empty())
+                {
+                    for (const auto& obj : g_deepsort_last_objects)
+                    {
+                        if (obj.id == sel_id_now)
+                        {
+                            sel_found_in_last = true;
+                            break;
+                        }
+                    }
+                }
+
+                if ((g_deepsort_empty_count <= DEEPSORT_EMPTY_GRACE_FRAMES) &&
+                    !g_deepsort_last_objects.empty() &&
+                    (!sel_valid_now || sel_found_in_last))
+                {
+                    // 최근 DeepSORT 결과를 짧게 유지해서 bbox 떨림/플리커 감소
+                    g_objects = g_deepsort_last_objects;
+                }
+                else
+                {
+                    // 너무 오래 비면 원시 bbox로 폴백
+                    g_objects = raw_objs;
+                }
+            }
         }
 
         // copy objs
@@ -765,14 +1169,62 @@ int main(int argc, char** argv)
             objs = g_objects;
         }
 
-        // draw boxes
-        for (const auto& obj : objs)
+        // ── ID별 EMA 스무딩 적용 후 draw boxes ─────────────────────
+        // DeepSORT 비동기 지연으로 인한 프레임 점프, to_ltrb() 칼만 예측값의
+        // 순간 튐을 EMA로 감쇠시킨다. 새 ID가 처음 나타날 때는 초기화(직결),
+        // 이후 프레임부터 EMA 적용. ID가 사라지면 버퍼에서 제거.
         {
-            cv::Rect r;
-            if (!compute_rect_from_obj(obj, W, H, r)) continue;
-            cv::rectangle(frame, r, cv::Scalar(0, 255, 255), 2);
-            cv::putText(frame, obj.id.c_str(), cv::Point(r.x, std::max(0, r.y - 5)),
-                        cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1);
+            std::set<std::string> active_ids;
+            for (const auto& obj : objs)
+            {
+                cv::Rect raw_r;
+                if (!compute_rect_from_obj(obj, W, H, raw_r)) continue;
+                active_ids.insert(obj.id);
+
+                auto& sr = g_bbox_smooth[obj.id];
+                if (!sr.init)
+                {
+                    // 첫 등장: 스무더 초기화 (점프 없이 바로 세팅)
+                    sr.x = raw_r.x; sr.y = raw_r.y;
+                    sr.w = raw_r.width; sr.h = raw_r.height;
+                    sr.init = true;
+                }
+                else
+                {
+                    // EMA 갱신 — 큰 점프(outlier)는 강하게 걸러낸다
+                    double dx = raw_r.x     - sr.x;
+                    double dy = raw_r.y     - sr.y;
+                    double dist = std::sqrt(dx*dx + dy*dy);
+                    // 한 프레임에 100px 이상 점프하면 alpha를 강제로 낮춰 급변 완화
+                    double a = (dist > 100.0) ? 0.15 : BBOX_SMOOTH_ALPHA;
+                    sr.x += a * (raw_r.x     - sr.x);
+                    sr.y += a * (raw_r.y     - sr.y);
+                    sr.w += a * (raw_r.width  - sr.w);
+                    sr.h += a * (raw_r.height - sr.h);
+                }
+
+                cv::Rect r(
+                    (int)std::lround(sr.x), (int)std::lround(sr.y),
+                    (int)std::lround(std::max(1.0, sr.w)),
+                    (int)std::lround(std::max(1.0, sr.h))
+                );
+                r.x = std::max(0, std::min(r.x, W - 1));
+                r.y = std::max(0, std::min(r.y, H - 1));
+                r.width  = std::max(1, std::min(r.width,  W - r.x));
+                r.height = std::max(1, std::min(r.height, H - r.y));
+
+                cv::rectangle(frame, r, cv::Scalar(0, 255, 255), 2);
+                cv::putText(frame, obj.id.c_str(), cv::Point(r.x, std::max(0, r.y - 5)),
+                            cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1);
+            }
+            // 사라진 ID 스무더 정리 (메모리 누수 방지)
+            for (auto it = g_bbox_smooth.begin(); it != g_bbox_smooth.end(); )
+            {
+                if (active_ids.find(it->first) == active_ids.end())
+                    it = g_bbox_smooth.erase(it);
+                else
+                    ++it;
+            }
         }
 
         // selected rect
@@ -788,18 +1240,120 @@ int main(int argc, char** argv)
 
         if (sel_ok)
         {
+            bool found_selected = false;
             for (const auto& obj : objs)
             {
-                if (obj.id == sel_id)
+                if (obj.id != sel_id) continue;
+                // 스무딩된 bbox를 sel_rect에 반영
+                auto it = g_bbox_smooth.find(sel_id);
+                if (it != g_bbox_smooth.end() && it->second.init)
                 {
+                    cv::Rect smoothed(
+                        (int)std::lround(it->second.x), (int)std::lround(it->second.y),
+                        (int)std::lround(std::max(1.0, it->second.w)),
+                        (int)std::lround(std::max(1.0, it->second.h))
+                    );
+                    smoothed.x = std::max(0, std::min(smoothed.x, W - 1));
+                    smoothed.y = std::max(0, std::min(smoothed.y, H - 1));
+                    smoothed.width  = std::max(1, std::min(smoothed.width,  W - smoothed.x));
+                    smoothed.height = std::max(1, std::min(smoothed.height, H - smoothed.y));
+                    sel_rect = smoothed;
+                }
+                else
+                {
+                    cv::Rect updated;
+                    if (compute_rect_from_obj(obj, W, H, updated))
+                        sel_rect = updated;
+                }
+                {
+                    std::lock_guard<std::mutex> lock(g_sel_mutex);
+                    g_selected_rect = sel_rect;
+                }
+                found_selected = true;
+                break;
+            }
+
+            // 원격 ID가 XML(raw) 기준인데 DeepSORT ID와 다를 수 있으므로 raw에서도 한번 더 찾는다.
+            if (!found_selected)
+            {
+                for (const auto& obj : raw_objs)
+                {
+                    if (obj.id != sel_id) continue;
                     cv::Rect updated;
                     if (compute_rect_from_obj(obj, W, H, updated))
                     {
                         sel_rect = updated;
-                        std::lock_guard<std::mutex> lock(g_sel_mutex);
-                        g_selected_rect = updated;
+                        {
+                            std::lock_guard<std::mutex> lock(g_sel_mutex);
+                            g_selected_rect = sel_rect;
+                        }
+                        found_selected = true;
                     }
                     break;
+                }
+            }
+
+            // ID가 다르면 TRACK_POS 박스와 IoU가 가장 큰 객체를 자동 매칭
+            if (!found_selected)
+            {
+                bool has_remote_bbox = false;
+                double rl = 0, rt = 0, rr = 0, rb = 0;
+                {
+                    std::lock_guard<std::mutex> lk(g_remote_msg_mutex);
+                    has_remote_bbox = g_remote_bbox_valid;
+                    rl = g_remote_l; rt = g_remote_t; rr = g_remote_r; rb = g_remote_b;
+                }
+                if (has_remote_bbox)
+                {
+                    const ParsedMetadataObject* best_obj = nullptr;
+                    double best_iou = 0.0;
+                    auto eval_best = [&](const std::vector<ParsedMetadataObject>& cand) {
+                        for (const auto& obj : cand)
+                        {
+                            double l, t, r, b;
+                            if (!obj_bbox_norm(obj, l, t, r, b)) continue;
+                            const double iou = iou_norm(rl, rt, rr, rb, l, t, r, b);
+                            if (iou > best_iou)
+                            {
+                                best_iou = iou;
+                                best_obj = &obj;
+                            }
+                        }
+                    };
+                    eval_best(objs);
+                    if (!best_obj) eval_best(raw_objs);
+
+                    if (best_obj && best_iou >= 0.10)
+                    {
+                        cv::Rect updated;
+                        if (compute_rect_from_obj(*best_obj, W, H, updated))
+                        {
+                            sel_rect = updated;
+                            sel_id = best_obj->id;
+                            sel_ok = true;
+                            found_selected = true;
+                            {
+                                std::lock_guard<std::mutex> lock(g_sel_mutex);
+                                g_selected_id = sel_id;
+                                g_selected_valid = true;
+                                g_selected_rect = sel_rect;
+                            }
+                            std::cerr << "[remote_select] REMAP by IoU old_id=" << prev_sel_id
+                                      << " -> xml_id=" << sel_id
+                                      << " iou=" << std::fixed << std::setprecision(3) << best_iou << "\n";
+                        }
+                    }
+                }
+            }
+
+            // 선택된 ID를 이번 프레임에 못 찾으면 클릭 동작과 동일하게 선택 해제
+            if (!found_selected)
+            {
+                sel_ok = false;
+                {
+                    std::lock_guard<std::mutex> lock(g_sel_mutex);
+                    g_selected_valid = false;
+                    g_selected_rect = cv::Rect();
                 }
             }
         }
@@ -808,6 +1362,8 @@ int main(int argc, char** argv)
         double dt_sec = std::chrono::duration<double>(t_now - t_last_frame).count();
         t_last_frame = t_now;
         if (dt_sec <= 0 || dt_sec > 1.0) dt_sec = 1.0 / 30.0;
+        // dt가 튀면 속도 추정이 흔들릴 수 있어 범위를 제한한다.
+        dt_sec = std::max(1.0 / 120.0, std::min(1.0 / 15.0, dt_sec));
 
         if (sel_ok && sel_id != prev_sel_id)
         {
@@ -880,8 +1436,20 @@ int main(int argc, char** argv)
             g_last_pwm_valid = true;
         }
 
+        const auto t_now_send = std::chrono::steady_clock::now();
         if (sel_ok && frame_id % send_every_n == 0)
+        {
             std::cout << "SET_PWM,PAN=" << pan << ",TILT=" << tilt << std::endl;
+            const bool can_log_by_time =
+                (std::chrono::duration_cast<std::chrono::milliseconds>(t_now_send - t_last_pwm_log).count() >= pwm_log_interval_ms);
+            if (can_log_by_time)
+            {
+                std::cerr << "[PWM] id=" << sel_id
+                          << " target=(" << pred_target_u << "," << pred_target_v << ")"
+                          << " PAN=" << pan << " TILT=" << tilt << "\n";
+                t_last_pwm_log = t_now_send;
+            }
+        }
         else if (frame_id % 30 == 0)
             std::cout << std::endl;
         if (!std::cout)
@@ -928,6 +1496,35 @@ int main(int argc, char** argv)
         cv::putText(frame, info, cv::Point(10, 30),
                     cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 255), 2);
 
+        {
+            std::string rx_msg;
+            std::string rx_id;
+            std::string rx_host;
+            bool tracking_on = false;
+            double age_sec = 999.0;
+            {
+                std::lock_guard<std::mutex> lk(g_remote_msg_mutex);
+                rx_msg = g_remote_last_msg;
+                rx_id = g_remote_last_id;
+                rx_host = g_remote_src_host;
+                tracking_on = g_remote_tracking;
+                age_sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - g_remote_last_rx_tp).count();
+            }
+            if (!rx_msg.empty() && age_sec < 8.0)
+            {
+                char rx_line[512];
+                std::snprintf(rx_line, sizeof(rx_line), "REMOTE(%s) 수신 메세지: %s",
+                              rx_host.c_str(), rx_msg.c_str());
+                cv::putText(frame, rx_line, cv::Point(10, 58),
+                            cv::FONT_HERSHEY_SIMPLEX, 0.52, cv::Scalar(255, 255, 255), 2);
+                char trk_line[256];
+                std::snprintf(trk_line, sizeof(trk_line), "TRACKING: %s (id=%s)",
+                              tracking_on ? "ON" : "OFF", rx_id.empty() ? "none" : rx_id.c_str());
+                cv::putText(frame, trk_line, cv::Point(10, 82),
+                            cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 0), 2);
+            }
+        }
+
         frame_id++;
         if (frame_id % 30 == 0)
         {
@@ -949,6 +1546,7 @@ int main(int argc, char** argv)
 
     g_running = false;
     g_deepsort.stop();
+    if (remote_sel_thread.joinable()) remote_sel_thread.join();
     if (meta_thread.joinable()) meta_thread.join();
     cap.release();
     cv::destroyAllWindows();

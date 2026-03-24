@@ -17,6 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 TESTS_DIR = Path(__file__).resolve().parent
 DEFAULT_REPORTS_DIR = TESTS_DIR / "reports"
 DEFAULT_SQUISH_SUITE = TESTS_DIR / "squish" / "suite_sfeps" / "suite_sfeps"
+DEFAULT_RETAIN_RUNS = 5
 
 PYTEST_PROFILES = {
     "smoke": [
@@ -251,6 +252,26 @@ def run_squish_step(
     write_junit(result, "squish", message=f"Squish testcase failed: {testcase}")
     return result
 
+
+def prune_report_runs(reports_dir: Path, keep: int, current_run_dir: Path | None = None) -> list[Path]:
+    if keep <= 0 or not reports_dir.exists():
+        return []
+
+    run_dirs = [p for p in reports_dir.iterdir() if p.is_dir() and p.name.startswith("run-")]
+    run_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+    removed: list[Path] = []
+    current_resolved = current_run_dir.resolve() if current_run_dir else None
+
+    for old_dir in run_dirs[keep:]:
+        if current_resolved and old_dir.resolve() == current_resolved:
+            continue
+        shutil.rmtree(old_dir, ignore_errors=False)
+        removed.append(old_dir)
+
+    return removed
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="SFEPS 통합 테스트 실행기 (pytest + squish)")
     parser.add_argument(
@@ -274,6 +295,12 @@ def parse_args() -> argparse.Namespace:
         "--run-name",
         default=f"run-{now_stamp()}",
         help="실행 결과 디렉터리 이름",
+    )
+    parser.add_argument(
+        "--retain-runs",
+        type=int,
+        default=DEFAULT_RETAIN_RUNS,
+        help=f"reports 디렉터리에 최근 N개 실행 결과만 보관 (기본 {DEFAULT_RETAIN_RUNS}, 0 이하는 무제한)",
     )
     parser.add_argument(
         "--fail-fast",
@@ -351,7 +378,8 @@ def print_summary(results: list[StepResult], run_dir: Path) -> None:
 def main() -> int:
     args = parse_args()
     base_env = os.environ.copy()
-    run_dir = ensure_dir(Path(args.reports_dir) / args.run_name)
+    reports_root = ensure_dir(Path(args.reports_dir))
+    run_dir = ensure_dir(reports_root / args.run_name)
     junit_dir = ensure_dir(run_dir / "junit")
     logs_dir = ensure_dir(run_dir / "logs")
     pytest_extra = [part for part in args.pytest_extra.split(" ") if part.strip()]
@@ -422,6 +450,14 @@ def main() -> int:
         report_rc = run_report_generator(base_env, junit_dir, run_dir, dry_run=args.dry_run)
         if report_rc != 0:
             print("[WARN] report generation failed; see logs/report-generator.log")
+
+    if not args.dry_run:
+        try:
+            removed = prune_report_runs(reports_root, args.retain_runs, current_run_dir=run_dir)
+            if removed:
+                print(f"[INFO] pruned old runs: {', '.join(p.name for p in removed)}")
+        except Exception as exc:
+            print(f"[WARN] failed to prune old reports: {exc}")
 
     print_summary(results, run_dir)
 
