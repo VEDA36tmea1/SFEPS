@@ -81,6 +81,7 @@ public:
 private:
     struct PendingObject {
         std::string object_id;
+        std::string source_object_id;
         std::string card_age_text;
         std::string age;
         std::string enter_tag_time;
@@ -113,6 +114,16 @@ private:
         std::chrono::steady_clock::time_point updated_at;
     };
 
+    struct EventBBoxAlias {
+        std::string source_object_id;
+        std::chrono::steady_clock::time_point updated_at;
+    };
+
+    struct ActiveFraudTrack {
+        std::string source_object_id;
+        std::chrono::steady_clock::time_point activated_at;
+    };
+
     void workerLoop();
     bool prepareStatements();
     void closeStatements();
@@ -134,6 +145,8 @@ private:
     std::unordered_map<std::string, PendingObject> matched_objects;
     std::unordered_map<std::string, LatestObjectInfo> latest_objects;
     std::unordered_map<std::string, bool> object_fraud_flags;
+    std::unordered_map<std::string, EventBBoxAlias> bbox_aliases_by_event_id;
+    std::unordered_map<std::string, ActiveFraudTrack> active_fraud_tracks;
     std::queue<FraudRecord> q;
 
     mutable std::mutex mtx;

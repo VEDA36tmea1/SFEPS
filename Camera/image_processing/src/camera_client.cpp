@@ -2,7 +2,7 @@
 // Server-triggered capture worker:
 // - capture thread keeps latest frame
 // - trigger listener receives CAPTURE_REQ over local UDS
-// - pipeline worker writes requested output path and replies CAPTURE_ACK
+// - pipeline worker writes requested output path
 
 #include <opencv2/opencv.hpp>
 
@@ -47,7 +47,6 @@ std::mutex g_raw_mutex;
 std::queue<cv::Mat> g_raw_queue;
 
 struct CaptureRequest {
-    int client_fd = -1;
     std::string req_id;
     std::string object_id;
     std::string tag;
@@ -57,65 +56,6 @@ struct CaptureRequest {
 std::mutex g_request_mutex;
 std::condition_variable g_request_cv;
 std::queue<CaptureRequest> g_request_queue;
-
-std::string sanitize_field(std::string value) {
-    for (char& c : value) {
-        if (c == '|' || c == '\n' || c == '\r') c = '_';
-    }
-    return value;
-}
-
-bool send_all(int fd, const std::string& msg) {
-    std::size_t sent = 0;
-    while (sent < msg.size()) {
-        const ssize_t n = ::write(fd, msg.data() + sent, msg.size() - sent);
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            return false;
-        }
-        if (n == 0) return false;
-        sent += static_cast<std::size_t>(n);
-    }
-    return true;
-}
-
-std::string now_utc_iso8601() {
-    using namespace std::chrono;
-    const auto now = system_clock::now();
-    const auto ms = duration_cast<milliseconds>(now.time_since_epoch()) % 1000;
-    const std::time_t tt = system_clock::to_time_t(now);
-    std::tm tm_utc {};
-    gmtime_r(&tt, &tm_utc);
-
-    char buf[64];
-    std::snprintf(buf,
-                  sizeof(buf),
-                  "%04d-%02d-%02dT%02d:%02d:%02d.%03lldZ",
-                  tm_utc.tm_year + 1900,
-                  tm_utc.tm_mon + 1,
-                  tm_utc.tm_mday,
-                  tm_utc.tm_hour,
-                  tm_utc.tm_min,
-                  tm_utc.tm_sec,
-                  static_cast<long long>(ms.count()));
-    return std::string(buf);
-}
-
-void send_ack_ok(int fd, const CaptureRequest& req, const std::string& path) {
-    const std::string msg =
-        "CAPTURE_ACK|REQ_ID=" + sanitize_field(req.req_id) +
-        "|OK=1|PATH=" + sanitize_field(path) +
-        "|TS=" + sanitize_field(now_utc_iso8601()) + "\n";
-    send_all(fd, msg);
-}
-
-void send_ack_fail(int fd, const std::string& req_id, const std::string& err) {
-    const std::string msg =
-        "CAPTURE_ACK|REQ_ID=" + sanitize_field(req_id) +
-        "|OK=0|ERR=" + sanitize_field(err) +
-        "|TS=" + sanitize_field(now_utc_iso8601()) + "\n";
-    send_all(fd, msg);
-}
 
 std::vector<std::string> split_pipe(const std::string& raw) {
     std::vector<std::string> out;
@@ -285,20 +225,22 @@ void pipelineWorkerThread() {
         }
 
         if (snapshot.empty()) {
-            send_ack_fail(req.client_fd, req.req_id, "NO_FRAME");
-            ::close(req.client_fd);
+            std::cerr << "[camera] capture failed: req_id=" << req.req_id
+                      << ", object_id=" << req.object_id << ", reason=NO_FRAME" << std::endl;
             continue;
         }
 
         std::string err;
         if (!runFullPipeline(snapshot, g_raw_mode, req.out_path, err)) {
-            send_ack_fail(req.client_fd, req.req_id, err.empty() ? "CAPTURE_FAIL" : err);
-            ::close(req.client_fd);
+            std::cerr << "[camera] capture failed: req_id=" << req.req_id
+                      << ", object_id=" << req.object_id
+                      << ", reason=" << (err.empty() ? "CAPTURE_FAIL" : err) << std::endl;
             continue;
         }
 
-        send_ack_ok(req.client_fd, req, req.out_path);
-        ::close(req.client_fd);
+        std::cout << "[camera] capture saved: req_id=" << req.req_id
+                  << ", object_id=" << req.object_id
+                  << ", out=" << req.out_path << std::endl;
     }
 }
 
@@ -345,13 +287,13 @@ void triggerListenerThread() {
 
         std::string line;
         if (!read_line_with_timeout(client_fd, kClientReadTimeoutMs, line)) {
-            send_ack_fail(client_fd, "unknown", "READ_TIMEOUT");
+            std::cerr << "[camera] capture request dropped: reason=READ_TIMEOUT" << std::endl;
             ::close(client_fd);
             continue;
         }
 
         if (line.rfind("CAPTURE_REQ|", 0) != 0) {
-            send_ack_fail(client_fd, "unknown", "INVALID_PREFIX");
+            std::cerr << "[camera] capture request dropped: reason=INVALID_PREFIX" << std::endl;
             ::close(client_fd);
             continue;
         }
@@ -362,14 +304,15 @@ void triggerListenerThread() {
         const auto tag_it = kv.find("TAG");
         const auto out_it = kv.find("OUT");
         if (req_it == kv.end() || obj_it == kv.end() || tag_it == kv.end() || out_it == kv.end()) {
-            send_ack_fail(client_fd, req_it == kv.end() ? "unknown" : req_it->second, "MISSING_FIELD");
+            std::cerr << "[camera] capture request dropped: reason=MISSING_FIELD" << std::endl;
             ::close(client_fd);
             continue;
         }
 
         const std::string req_id = req_it->second;
         if (!is_safe_pending_output(out_it->second)) {
-            send_ack_fail(client_fd, req_id, "OUT_PATH_NOT_ALLOWED");
+            std::cerr << "[camera] capture request dropped: req_id=" << req_id
+                      << ", reason=OUT_PATH_NOT_ALLOWED, out=" << out_it->second << std::endl;
             ::close(client_fd);
             continue;
         }
@@ -377,19 +320,20 @@ void triggerListenerThread() {
         {
             std::lock_guard<std::mutex> lock(g_request_mutex);
             if (static_cast<int>(g_request_queue.size()) >= kRequestQueueMax) {
-                send_ack_fail(client_fd, req_id, "QUEUE_FULL");
+                std::cerr << "[camera] capture request dropped: req_id=" << req_id
+                          << ", reason=QUEUE_FULL" << std::endl;
                 ::close(client_fd);
                 continue;
             }
 
             CaptureRequest req;
-            req.client_fd = client_fd;
             req.req_id = req_id;
             req.object_id = obj_it->second;
             req.tag = tag_it->second;
             req.out_path = out_it->second;
             g_request_queue.push(std::move(req));
         }
+        ::close(client_fd);
         g_request_cv.notify_one();
     }
 

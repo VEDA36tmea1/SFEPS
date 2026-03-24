@@ -1,5 +1,6 @@
 #include "rfid_image_pipeline.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -7,11 +8,10 @@
 #include <cstring>
 #include <filesystem>
 #include <iostream>
-#include <map>
 #include <mutex>
-#include <poll.h>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_set>
 #include <unordered_map>
 #include <vector>
 
@@ -30,25 +30,10 @@ constexpr const char* kEventImagePendingDir = "/home/iam/SFEPS/event_images/pend
 constexpr const char* kEventImageFraudDir = "/home/iam/SFEPS/event_images/fraud";
 constexpr const char* kEventImageFailedDir = "/home/iam/SFEPS/event_images/failed";
 constexpr const char* kCameraTriggerSocketPath = "/tmp/sfeps_camera_trigger.sock";
-constexpr int kCaptureAckTimeoutMs = 700;
 
 struct EventImageRegistry {
     std::mutex mutex;
     std::unordered_map<std::string, fs::path> pending_by_object_id;
-};
-
-enum class TriggerRequestResult {
-    kOk = 0,
-    kTimeout = 1,
-    kAckFail = 2,
-    kTransportFail = 3,
-};
-
-struct TriggerAckResult {
-    TriggerRequestResult result = TriggerRequestResult::kTransportFail;
-    std::string req_id;
-    std::string path;
-    std::string err;
 };
 
 EventImageRegistry& event_image_registry() {
@@ -142,26 +127,19 @@ bool send_all(int fd, const std::string& msg) {
     return true;
 }
 
-std::vector<std::string> split_pipe(const std::string& raw) {
-    std::vector<std::string> out;
-    std::string token;
-    std::istringstream iss(raw);
-    while (std::getline(iss, token, '|')) {
-        out.push_back(token);
-    }
-    return out;
+bool is_existing_regular_file(const fs::path& path) {
+    std::error_code ec;
+    return fs::exists(path, ec) && !ec && fs::is_regular_file(path, ec) && !ec;
 }
 
-std::map<std::string, std::string> parse_ack_kv(const std::string& line) {
-    std::map<std::string, std::string> kv;
-    const std::vector<std::string> tokens = split_pipe(line);
-    for (std::size_t i = 1; i < tokens.size(); ++i) {
-        const std::string& t = tokens[i];
-        const std::size_t eq = t.find('=');
-        if (eq == std::string::npos) continue;
-        kv[t.substr(0, eq)] = t.substr(eq + 1);
+bool is_jpeg_image_path(const fs::path& path) {
+    const std::string ext = path.extension().string();
+    std::string lower;
+    lower.reserve(ext.size());
+    for (unsigned char c : ext) {
+        lower.push_back(static_cast<char>(std::tolower(c)));
     }
-    return kv;
+    return lower == ".jpg" || lower == ".jpeg";
 }
 
 bool is_pending_path_safe(const fs::path& path) {
@@ -180,28 +158,24 @@ bool is_pending_path_safe(const fs::path& path) {
     return b == base.end();
 }
 
-TriggerAckResult request_camera_capture(const std::string& req_id,
-                                        const std::string& object_id,
-                                        const std::string& tag_time,
-                                        const fs::path& out_path) {
-    TriggerAckResult out;
-    out.req_id = req_id;
-
+bool request_camera_capture(const std::string& req_id,
+                            const std::string& object_id,
+                            const std::string& tag_time,
+                            const fs::path& out_path,
+                            std::string& err) {
     const int sock_fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
     if (sock_fd < 0) {
-        out.result = TriggerRequestResult::kTransportFail;
-        out.err = "socket() failed";
-        return out;
+        err = "socket() failed";
+        return false;
     }
 
     sockaddr_un addr {};
     addr.sun_family = AF_UNIX;
     std::strncpy(addr.sun_path, kCameraTriggerSocketPath, sizeof(addr.sun_path) - 1);
     if (::connect(sock_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-        out.result = TriggerRequestResult::kTransportFail;
-        out.err = "connect() failed";
+        err = "connect() failed";
         ::close(sock_fd);
-        return out;
+        return false;
     }
 
     const std::string request =
@@ -210,82 +184,73 @@ TriggerAckResult request_camera_capture(const std::string& req_id,
         "|TAG=" + tag_time +
         "|OUT=" + out_path.string() + "\n";
     if (!send_all(sock_fd, request)) {
-        out.result = TriggerRequestResult::kTransportFail;
-        out.err = "send() failed";
+        err = "send() failed";
         ::close(sock_fd);
-        return out;
-    }
-
-    pollfd pfd {};
-    pfd.fd = sock_fd;
-    pfd.events = POLLIN;
-    const int poll_ret = ::poll(&pfd, 1, kCaptureAckTimeoutMs);
-    if (poll_ret == 0) {
-        out.result = TriggerRequestResult::kTimeout;
-        out.err = "ack timeout";
-        ::close(sock_fd);
-        return out;
-    }
-    if (poll_ret < 0) {
-        out.result = TriggerRequestResult::kTransportFail;
-        out.err = "poll() failed";
-        ::close(sock_fd);
-        return out;
-    }
-
-    std::string line;
-    char ch = '\0';
-    while (true) {
-        const ssize_t n = ::read(sock_fd, &ch, 1);
-        if (n == 0) break;
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            out.result = TriggerRequestResult::kTransportFail;
-            out.err = "read() failed";
-            ::close(sock_fd);
-            return out;
-        }
-        if (ch == '\n') break;
-        line.push_back(ch);
-        if (line.size() >= 4096) break;
+        return false;
     }
     ::close(sock_fd);
+    return true;
+}
 
-    if (line.rfind("CAPTURE_ACK|", 0) != 0) {
-        out.result = TriggerRequestResult::kAckFail;
-        out.err = "invalid ack prefix";
-        return out;
-    }
-
-    const std::map<std::string, std::string> kv = parse_ack_kv(line);
-    const auto req_it = kv.find("REQ_ID");
-    if (req_it == kv.end() || req_it->second != req_id) {
-        out.result = TriggerRequestResult::kAckFail;
-        out.err = "req_id mismatch";
-        return out;
-    }
-    const auto ok_it = kv.find("OK");
-    if (ok_it == kv.end()) {
-        out.result = TriggerRequestResult::kAckFail;
-        out.err = "missing OK";
-        return out;
-    }
-    if (ok_it->second != "1") {
-        out.result = TriggerRequestResult::kAckFail;
-        const auto err_it = kv.find("ERR");
-        out.err = (err_it != kv.end()) ? err_it->second : "capture failed";
-        return out;
+std::vector<fs::path> collect_pending_image_candidates_for_object(const std::string& object_id) {
+    std::vector<fs::path> candidates;
+    const std::string match_token = "_" + sanitize_filename_token(object_id) + "_";
+    std::error_code ec;
+    if (!fs::exists(kEventImagePendingDir, ec) || ec) {
+        return candidates;
     }
 
-    const auto path_it = kv.find("PATH");
-    if (path_it == kv.end() || path_it->second.empty()) {
-        out.result = TriggerRequestResult::kAckFail;
-        out.err = "missing PATH";
-        return out;
+    for (const auto& entry : fs::directory_iterator(kEventImagePendingDir, ec)) {
+        if (ec) break;
+        if (!entry.is_regular_file()) continue;
+        const fs::path path = entry.path();
+        if (!is_pending_path_safe(path) || !is_jpeg_image_path(path)) continue;
+        const std::string filename = path.filename().string();
+        if (filename.find(match_token) == std::string::npos) continue;
+        candidates.push_back(path);
     }
-    out.path = path_it->second;
-    out.result = TriggerRequestResult::kOk;
-    return out;
+
+    std::sort(candidates.begin(), candidates.end(), [](const fs::path& lhs, const fs::path& rhs) {
+        std::error_code lhs_ec;
+        std::error_code rhs_ec;
+        const auto lhs_time = fs::last_write_time(lhs, lhs_ec);
+        const auto rhs_time = fs::last_write_time(rhs, rhs_ec);
+        if (lhs_ec && rhs_ec) return lhs.string() < rhs.string();
+        if (lhs_ec) return false;
+        if (rhs_ec) return true;
+        if (lhs_time == rhs_time) return lhs.string() < rhs.string();
+        return lhs_time > rhs_time;
+    });
+    return candidates;
+}
+
+void dedupe_paths(std::vector<fs::path>& paths) {
+    std::unordered_set<std::string> seen;
+    std::vector<fs::path> deduped;
+    deduped.reserve(paths.size());
+    for (const auto& path : paths) {
+        const std::string key = path.string();
+        if (seen.insert(key).second) {
+            deduped.push_back(path);
+        }
+    }
+    paths.swap(deduped);
+}
+
+void prune_pending_images(const std::string& object_id,
+                          const std::vector<fs::path>& paths,
+                          const char* reason_key) {
+    for (const auto& path : paths) {
+        if (!is_existing_regular_file(path)) continue;
+        std::error_code remove_ec;
+        if (fs::remove(path, remove_ec)) {
+            std::cout << "[main.cpp] [" << reason_key << "] object_id=" << object_id
+                      << ", removed=" << path << std::endl;
+            continue;
+        }
+        std::cerr << "[main.cpp] [" << reason_key << "] object_id=" << object_id
+                  << ", path=" << path << ", reason=" << remove_ec.message() << std::endl;
+    }
 }
 
 }  // namespace
@@ -321,45 +286,21 @@ void snapshot_rfid_image_for_object(const std::string& object_id, const std::str
               << ", tag_time=" << tag_time << ", req_id=" << req_id
               << ", out=" << out_path << std::endl;
 
-    TriggerAckResult ack = request_camera_capture(req_id, object_id, tag_time, out_path);
-    if (ack.result == TriggerRequestResult::kTimeout) {
-        std::cerr << "[main.cpp] [CAM_TRIGGER_TIMEOUT] object_id=" << object_id
-                  << ", req_id=" << req_id << ", timeout_ms=" << kCaptureAckTimeoutMs
-                  << std::endl;
-        return;
-    }
-    if (ack.result == TriggerRequestResult::kTransportFail) {
-        std::cerr << "[main.cpp] [CAM_TRIGGER_ACK_FAIL] object_id=" << object_id
-                  << ", req_id=" << req_id << ", reason=" << ack.err << std::endl;
-        return;
-    }
-    if (ack.result == TriggerRequestResult::kAckFail) {
-        std::cerr << "[main.cpp] [CAM_TRIGGER_ACK_FAIL] object_id=" << object_id
-                  << ", req_id=" << req_id << ", reason=" << ack.err << std::endl;
-        return;
-    }
-
-    const fs::path ack_path(ack.path);
-    if (!is_pending_path_safe(ack_path) || !fs::exists(ack_path) || !fs::is_regular_file(ack_path)) {
-        std::cerr << "[main.cpp] [CAM_TRIGGER_ACK_FAIL] object_id=" << object_id
-                  << ", req_id=" << req_id << ", reason=invalid ack path, path=" << ack_path
-                  << std::endl;
+    std::string send_err;
+    if (!request_camera_capture(req_id, object_id, tag_time, out_path, send_err)) {
+        std::cerr << "[main.cpp] [CAM_TRIGGER_SEND_FAIL] object_id=" << object_id
+                  << ", req_id=" << req_id << ", reason=" << send_err << std::endl;
         return;
     }
 
     auto& registry = event_image_registry();
     {
         std::lock_guard<std::mutex> lock(registry.mutex);
-        const auto existing = registry.pending_by_object_id.find(object_id);
-        if (existing != registry.pending_by_object_id.end()) {
-            std::error_code remove_ec;
-            fs::remove(existing->second, remove_ec);
-        }
-        registry.pending_by_object_id[object_id] = ack_path;
+        registry.pending_by_object_id[object_id] = out_path;
     }
 
-    std::cout << "[main.cpp] [CAM_TRIGGER_ACK_OK] object_id=" << object_id
-              << ", req_id=" << req_id << ", path=" << ack_path << std::endl;
+    std::cout << "[main.cpp] [CAM_TRIGGER_REGISTRY_SET] object_id=" << object_id
+              << ", req_id=" << req_id << ", path=" << out_path << std::endl;
 }
 
 bool finalize_outline_image_for_object(
@@ -371,28 +312,56 @@ bool finalize_outline_image_for_object(
     if (payload.object_id.empty()) return false;
 
     auto& registry = event_image_registry();
-    std::lock_guard<std::mutex> lock(registry.mutex);
+    fs::path registry_path;
+    bool had_registry_path = false;
+    {
+        std::lock_guard<std::mutex> lock(registry.mutex);
+        const auto it = registry.pending_by_object_id.find(payload.object_id);
+        if (it != registry.pending_by_object_id.end()) {
+            registry_path = it->second;
+            registry.pending_by_object_id.erase(it);
+            had_registry_path = true;
+        }
+    }
 
-    const auto it = registry.pending_by_object_id.find(payload.object_id);
-    if (it == registry.pending_by_object_id.end()) {
-        std::cout << "[main.cpp] ["
-                  << (payload.is_fraud ? "RFID_IMAGE_KEEP" : "RFID_IMAGE_DELETE")
-                  << "] no pending image: object_id=" << payload.object_id
+    std::vector<fs::path> object_pending_paths =
+        collect_pending_image_candidates_for_object(payload.object_id);
+    fs::path pending_path;
+    bool used_fallback = false;
+
+    if (had_registry_path && is_existing_regular_file(registry_path)) {
+        pending_path = registry_path;
+    } else if (!object_pending_paths.empty()) {
+        pending_path = object_pending_paths.front();
+        used_fallback = true;
+    }
+
+    if (pending_path.empty()) {
+        std::cout << "[main.cpp] [RFID_IMAGE_FALLBACK_MISS] object_id=" << payload.object_id
+                  << ", tag_time=" << payload.tag_time
+                  << ", had_registry=" << (had_registry_path ? "1" : "0") << std::endl;
+        return false;
+    }
+
+    if (used_fallback) {
+        std::cout << "[main.cpp] [RFID_IMAGE_FALLBACK_HIT] object_id=" << payload.object_id
+                  << ", selected=" << pending_path
+                  << ", candidate_count=" << object_pending_paths.size()
                   << ", tag_time=" << payload.tag_time << std::endl;
-        return false;
     }
 
-    const fs::path pending_path = it->second;
-    registry.pending_by_object_id.erase(it);
-
-    if (!fs::exists(pending_path)) {
-        std::cout << "[main.cpp] ["
-                  << (payload.is_fraud ? "RFID_IMAGE_KEEP" : "RFID_IMAGE_DELETE")
-                  << "] pending image missing on disk: object_id=" << payload.object_id
-                  << ", path=" << pending_path << ", tag_time=" << payload.tag_time
-                  << std::endl;
-        return false;
+    std::vector<fs::path> duplicate_paths;
+    duplicate_paths.reserve(object_pending_paths.size() + 1);
+    for (const auto& candidate : object_pending_paths) {
+        if (candidate != pending_path) {
+            duplicate_paths.push_back(candidate);
+        }
     }
+    if (had_registry_path && !registry_path.empty() && registry_path != pending_path &&
+        is_existing_regular_file(registry_path)) {
+        duplicate_paths.push_back(registry_path);
+    }
+    dedupe_paths(duplicate_paths);
 
     if (!payload.is_fraud) {
         std::error_code remove_ec;
@@ -400,6 +369,7 @@ bool finalize_outline_image_for_object(
             std::cout << "[main.cpp] [RFID_IMAGE_DELETE] object_id=" << payload.object_id
                       << ", path=" << pending_path << ", tag_time=" << payload.tag_time
                       << std::endl;
+            prune_pending_images(payload.object_id, duplicate_paths, "RFID_IMAGE_FALLBACK_PRUNE");
             return false;
         }
 
@@ -412,6 +382,7 @@ bool finalize_outline_image_for_object(
             std::cerr << "[main.cpp] [RFID_IMAGE_DELETE] 실패: object_id=" << payload.object_id
                       << ", path=" << pending_path << ", 오류=" << e.what() << std::endl;
         }
+        prune_pending_images(payload.object_id, duplicate_paths, "RFID_IMAGE_FALLBACK_PRUNE");
         return false;
     }
 
@@ -426,6 +397,7 @@ bool finalize_outline_image_for_object(
             out_fraud_image_info->filename = kept.filename().string();
             out_fraud_image_info->absolute_path = kept.string();
         }
+        prune_pending_images(payload.object_id, duplicate_paths, "RFID_IMAGE_FALLBACK_PRUNE");
         return true;
     } catch (const std::exception& keep_err) {
         try {

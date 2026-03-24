@@ -10,7 +10,7 @@
 - 변경 방향:
   - RFID는 서버만 수신
   - 카메라는 UDS 트리거 기반 촬영 워커로 동작
-  - 촬영 결과를 요청별 경로(`OUT`)에 직접 저장 후 ACK 반환
+  - 촬영 결과를 요청별 경로(`OUT`)에 직접 저장
 
 ---
 
@@ -27,7 +27,7 @@
 - `camera_client`는 RFID를 직접 읽지 않음
 - 로컬 UDS 서버(`/tmp/sfeps_camera_trigger.sock`)를 열고 `CAPTURE_REQ` 대기
 - 요청마다 `OUT` 절대경로에 최종 이미지 저장
-- `CAPTURE_ACK`로 성공/실패를 서버에 즉시 회신
+- 서버 응답 없이 fire-and-forget으로 처리
 
 ---
 
@@ -48,32 +48,6 @@ CAPTURE_REQ|REQ_ID=<req_id>|OBJECT_ID=<object_id>|TAG=<tag_utc>|OUT=<abs_path>\n
 - `TAG`: RFID 매칭 시점 태그 시간(UTC 문자열)
 - `OUT`: 카메라가 저장해야 하는 절대 경로
 
-## 카메라 → 서버 응답
-
-성공:
-
-```text
-CAPTURE_ACK|REQ_ID=<req_id>|OK=1|PATH=<abs_path>|TS=<utc>\n
-```
-
-실패:
-
-```text
-CAPTURE_ACK|REQ_ID=<req_id>|OK=0|ERR=<reason>|TS=<utc>\n
-```
-
-주요 실패 사유 예시:
-
-- `READ_TIMEOUT`
-- `INVALID_PREFIX`
-- `MISSING_FIELD`
-- `OUT_PATH_NOT_ALLOWED`
-- `QUEUE_FULL`
-- `NO_FRAME`
-- `CAPTURE_FAIL`
-
----
-
 ## 4. 카메라 프로세스 내부 구조 (현재)
 
 `camera_client`는 현재 3개 스레드 구조입니다.
@@ -93,12 +67,11 @@ CAPTURE_ACK|REQ_ID=<req_id>|OK=0|ERR=<reason>|TS=<utc>\n
 - 최신 프레임 복제
 - ISP 파이프라인 실행
 - `OUT` 경로 저장
-- `CAPTURE_ACK` 송신 후 소켓 close
 
 큐 정책:
 
 - 요청 큐 최대 5개
-- 큐 초과 시 즉시 실패 ACK(`QUEUE_FULL`)
+- 큐 초과 시 경고 로그 후 드롭
 
 ---
 
@@ -128,7 +101,7 @@ CAPTURE_ACK|REQ_ID=<req_id>|OK=0|ERR=<reason>|TS=<utc>\n
 - `\n`, `\r`, `..` 포함 금지
 - `/home/iam/SFEPS/event_images/pending/` 하위 경로만 허용
 
-허용되지 않으면 `OUT_PATH_NOT_ALLOWED`로 실패 ACK 반환
+허용되지 않으면 `OUT_PATH_NOT_ALLOWED` 경고 로그를 남기고 드롭
 
 ## D. 파이프라인 출력 경로 인자화
 
@@ -141,11 +114,11 @@ CAPTURE_ACK|REQ_ID=<req_id>|OK=0|ERR=<reason>|TS=<utc>\n
 - `2_pure_isp_out.jpg` (RAW일 때)
 - `3_tuning_viewer.jpg`
 
-## E. ACK 응답 체계 도입
+## E. 요청 처리 정책
 
-- 성공 ACK: `OK=1`, `PATH=<out_path>`
-- 실패 ACK: `OK=0`, `ERR=<reason>`
-- 모든 응답에 UTC 타임스탬프(`TS`) 포함
+- 서버는 `CAPTURE_REQ` 전송 성공 시 바로 pending registry를 갱신
+- 카메라는 별도 ACK 없이 요청을 큐에 넣고 저장만 수행
+- 잘못된 요청, 큐 초과, 프레임 부재, 저장 실패는 카메라 서비스 로그로만 확인
 
 ## F. 종료 처리 개선
 
@@ -166,9 +139,8 @@ CAPTURE_ACK|REQ_ID=<req_id>|OK=0|ERR=<reason>|TS=<utc>\n
 
 2. RFID 매칭 시 카메라 촬영 요청
 - 서버가 `CAPTURE_REQ` 전송
-- ACK 최대 700ms 대기
-- 성공 ACK일 때만 pending registry 등록
-- 실패/타임아웃이면 `no-image` 처리(폴백 금지)
+- `connect + send` 성공 시점에 바로 pending registry 등록
+- outline 시점에는 registry 우선, registry miss면 `pending` 디렉터리에서 `object_id` 기반 fallback 검색 수행
 
 3. 파일명 규칙(서버 생성)
 - `capture_<TAG>_<object_id>_<req_id>.jpg`
@@ -176,9 +148,10 @@ CAPTURE_ACK|REQ_ID=<req_id>|OK=0|ERR=<reason>|TS=<utc>\n
 서버 측 로그 키:
 
 - `CAM_TRIGGER_SEND`
-- `CAM_TRIGGER_ACK_OK`
-- `CAM_TRIGGER_ACK_FAIL`
-- `CAM_TRIGGER_TIMEOUT`
+- `CAM_TRIGGER_SEND_FAIL`
+- `CAM_TRIGGER_REGISTRY_SET`
+- `RFID_IMAGE_FALLBACK_HIT`
+- `RFID_IMAGE_FALLBACK_MISS`
 
 ---
 
@@ -190,8 +163,8 @@ CAPTURE_ACK|REQ_ID=<req_id>|OK=0|ERR=<reason>|TS=<utc>\n
 2. 이벤트 단위 추적성 향상
 - 요청별 파일명/REQ_ID로 어떤 이벤트의 이미지인지 명확히 추적 가능
 
-3. 잘못된 폴백 이미지 사용 방지
-- ACK 실패/타임아웃 시 이미지 미생성으로 처리하여 오탐 연동 감소
+3. finalize 회복력 향상
+- 늦게 저장된 pending 파일도 outline 시점 fallback 검색으로 회수 가능
 
 ---
 
@@ -200,8 +173,8 @@ CAPTURE_ACK|REQ_ID=<req_id>|OK=0|ERR=<reason>|TS=<utc>\n
 1. 프로세스 기동 후 로그 확인
 - `[camera] trigger listener ready: /tmp/sfeps_camera_trigger.sock`
 
-2. 요청-응답 흐름 확인
-- 서버에서 `CAPTURE_REQ` 전송 시 카메라가 `CAPTURE_ACK`를 정상 반환하는지
+2. 요청 처리 흐름 확인
+- 서버에서 `CAPTURE_REQ` 전송 시 카메라가 요청을 큐에 적재하고 실제 파일을 생성하는지
 
 3. 출력 경로 확인
 - `OUT`가 `/home/iam/SFEPS/event_images/pending/...` 하위로 전달되는지
@@ -209,7 +182,7 @@ CAPTURE_ACK|REQ_ID=<req_id>|OK=0|ERR=<reason>|TS=<utc>\n
 
 4. 성능/안정성 확인
 - 연속 요청(2~3건)에서 큐 처리 정상 여부
-- 큐 초과 시 `QUEUE_FULL`로 즉시 실패 ACK하는지
+- 큐 초과 시 경고 로그만 남기고 서버가 계속 동작하는지
 
 5. 종료 처리 확인
 - 종료 시 `/tmp/sfeps_camera_trigger.sock` 정리되는지
@@ -226,4 +199,3 @@ CAPTURE_ACK|REQ_ID=<req_id>|OK=0|ERR=<reason>|TS=<utc>\n
   - `server/include/analytics.h`
   - `server/src/main.cpp`
   - `server/include/rfid_image_pipeline.h`
-

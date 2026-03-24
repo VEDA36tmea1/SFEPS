@@ -95,6 +95,10 @@ int main() {
     log_allowlist_mode("SFEPS_ALERT_ALLOW_IPS", sec_cfg.alert_allow_ips);
     log_transport_mode(sec_cfg);
     log_esp_transport_mode(sec_cfg);
+    std::cout << "[main.cpp] [ESP] test_track_pos_enable="
+              << (sec_cfg.esp_test_track_pos_enable ? "on" : "off")
+              << ", interval_sec=" << sec_cfg.esp_test_track_pos_interval_sec
+              << ", object_id=" << sec_cfg.esp_test_track_pos_object_id << std::endl;
 
     std::cout << "[main.cpp] [Security] auth_max_bytes=" << sec_cfg.auth_max_bytes
               << ", audio_max_bytes=" << sec_cfg.audio_max_bytes
@@ -107,6 +111,7 @@ int main() {
               << ", socket_read_timeout_ms=" << sec_cfg.socket_read_timeout_ms << std::endl;
     std::cout << "[main.cpp] [Security] fraud_image_http_base_url="
               << sec_cfg.fraud_image_http_base_url
+              << ", pending_image_retention_sec=" << sec_cfg.pending_image_retention_sec
               << ", fraud_image_retention_sec=" << sec_cfg.fraud_image_retention_sec << std::endl;
 
     signal(SIGINT, signal_handler);
@@ -197,7 +202,7 @@ int main() {
                                std::string(VIDEO_SAVE_DIR), 300);
     std::thread t_pending_image_cleanup(run_pending_image_cleanup_worker, std::ref(g_running),
                                         std::string(pending_image_directory_path()),
-                                        static_cast<long>(sec_cfg.fraud_image_retention_sec));
+                                        static_cast<long>(sec_cfg.pending_image_retention_sec));
     std::thread t_fraud_image_cleanup(run_fraud_image_cleanup_worker, std::ref(g_running),
                                       std::string(fraud_image_directory_path()),
                                       static_cast<long>(sec_cfg.fraud_image_retention_sec));

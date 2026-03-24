@@ -40,6 +40,7 @@ struct SecurityRuntimeOptions {
     std::string app_bind_ip = "0.0.0.0";
     std::string video_http_base_url = "http://127.0.0.1:8080/videos";
     std::string fraud_image_http_base_url = "http://127.0.0.1:8080/fraud-images";
+    std::size_t pending_image_retention_sec = 30;
     std::size_t fraud_image_retention_sec = 86400;
 
     bool esp_tcp_enable = false;
@@ -47,6 +48,9 @@ struct SecurityRuntimeOptions {
     std::size_t esp_tcp_max_clients = 4;
     std::string esp_tcp_bind_ip = "192.168.4.1";
     std::unordered_set<std::string> esp_tcp_allow_ips;
+    bool esp_test_track_pos_enable = false;
+    int esp_test_track_pos_interval_sec = 5;
+    std::string esp_test_track_pos_object_id = "ESP-TEST-01";
 };
 
 void run_audio_receiver(std::atomic<bool>& running, const SecurityRuntimeOptions& sec_cfg);
