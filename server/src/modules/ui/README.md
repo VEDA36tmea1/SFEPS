@@ -20,20 +20,28 @@
   - Position 구독 대상과 `EspManager` 추적 대상을 동기화
 
 ### `video_catalog_service.cpp`
-- 녹화 파일 목록 조회 서비스입니다.
-- 요청 형식:
-  - `LIST_REC|FROM=<...>|TO=<...>|Q=<...>|PAGE=<n>|SIZE=<n>`
-- 응답 형식:
-  - `REC|<id>|<created_at>|0|<play_url>`
-  - `REC_END|PAGE=<n>|SIZE=<n>|TOTAL=<n>|HAS_NEXT=<0|1>`
-  - 오류 시 `REC_ERR|<code>|<message>`
+- 녹화 파일 목록 구독 및 `id` 기반 재생 서비스입니다.
+- 연결 직후 스냅샷:
+  - `REC_SNAPSHOT_BEGIN|TOTAL=<n>`
+  - `REC|<id>|<created_at>`
+  - `REC_SNAPSHOT_END|TOTAL=<n>`
+- 연결 유지 중 실시간 갱신:
+  - `REC_ADD|<id>|<created_at>`
+  - `REC_DEL|<id>`
+- 클라이언트 재생 요청:
+  - `PLAY_REC|<id>`
+- 서버 재생 응답:
+  - `PLAY_URL|<id>|<created_at>|<url>`
+  - 오류 시 `REC_ERR|<code>|<message>`, `PLAY_ERR|<code>|<message>`
 - 주요 동작:
-  - `recordings` 테이블을 조회하고 실제 파일이 존재하는 항목만 반환
-  - `SFEPS_VIDEO_HTTP_BASE_URL`을 이용해 재생 URL 생성
-  - 페이지네이션과 텍스트 검색을 처리
-  - 최대 동시 요청 수(`SFEPS_VIDEO_MAX_CLIENTS`)를 제한
+  - 연결 시 `recordings` 테이블을 조회하고 실제 파일이 존재하는 항목만 스냅샷으로 전송
+  - 새 세그먼트 저장 완료 시 `REC_ADD` 이벤트를 푸시
+  - cleanup 삭제 시 `REC_DEL` 이벤트를 푸시
+  - `SFEPS_VIDEO_HTTP_BASE_URL`을 이용해 `PLAY_URL` 생성
+  - 최대 동시 연결 수(`SFEPS_VIDEO_MAX_CLIENTS`)를 제한
 
 ## 운영 메모
 
 - 두 서비스 모두 `core/network`와 `src/services`의 transport 공용 코드를 사용합니다.
 - 현재 allowlist는 별도 키가 아니라 서비스 공용 정책을 재사용합니다.
+- Video Catalog는 목록 전달만 앱 소켓으로 처리하고, 실제 MP4 전송은 외부 `/videos` HTTP 정적 서빙을 사용합니다.

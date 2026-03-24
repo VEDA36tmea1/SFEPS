@@ -20,13 +20,10 @@
   - 기본 포트 상수 (`5555`~`5558`)
   - Position/Object ID 관련 포맷 함수
   - 인증된 IP 세션 집합 관리
-  - Video Catalog 요청 파서
-  - MySQL literal escape
   - 에러/시간/URL 문자열 정규화
 - 대표 함수:
   - `mark_ip_authenticated`, `unmark_ip_authenticated`, `is_ip_authenticated`
   - `format_obj_pos_line`, `format_obj_end_line`
-  - `parse_video_catalog_request`
   - `join_http_url`
 
 ### `transport_utils.h` / `transport_utils.cpp`
@@ -63,7 +60,7 @@
 2. `transport_utils.h`
    - 서비스 공통 네트워크 추상화 이해
 3. `service_shared.h`
-   - 인증 상태, Position 포맷, Video Catalog 파싱 규칙 확인
+   - 인증 상태, Position 포맷, 공통 문자열 유틸 확인
 
 ## 설계 포인트
 
