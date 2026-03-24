@@ -5,6 +5,7 @@
 
 static esp_laser_set_fn s_laser_set = NULL;
 static esp_tcp_send_fn s_tcp_send = NULL;
+static esp_dbg_tx_fn s_dbg_tx = NULL;
 
 static void trim_left(const char **p)
 {
@@ -47,6 +48,7 @@ void ESP_Parser_SetCallbacks(esp_parser_callbacks_t *cb)
     return;
   s_laser_set = cb->laser_set;
   s_tcp_send = cb->tcp_send;
+  s_dbg_tx = cb->dbg_tx;
 }
 
 uint8_t ESP_Parser_HandleIpdLine(const char *line)
@@ -83,13 +85,21 @@ uint8_t ESP_Parser_HandleIpdLine(const char *line)
       snprintf(resp, sizeof(resp), "TRACK_START_ACK|%s\n", obj_id);
       s_tcp_send(resp);
     }
+    if (s_dbg_tx)
+    {
+      char line[160];
+      snprintf(line, sizeof(line), "[TRACK] START id=%s (PB0 ON if not manual)\r\n", obj_id);
+      s_dbg_tx(line);
+    }
     return 1;
   }
 
   /* TRACK_POS|<object_id>|L=...|T=...|... */
-  if (strncmp(p, "TRACK_POS|", 11) == 0)
+  /* "TRACK_POS|" 길이 = 10 */
+  if (strncmp(p, "TRACK_POS|", 10) == 0)
   {
-    /* 지금 단계에서는 ACK/서보 구동은 요청사항이 아니므로 "인식만" 처리 */
+    /* 지금 단계에서는 ACK/서보 구동은 요청사항이 아니므로 "인식만" 처리
+     * (매 프레임 호출되므로 USART2 디버그 출력은 하지 않음 — 원문은 WiFi 에코로 확인) */
     return 1;
   }
 
@@ -111,6 +121,17 @@ uint8_t ESP_Parser_HandleIpdLine(const char *line)
       else
         snprintf(resp, sizeof(resp), "TRACK_END_ACK|%s\n", obj_id[0] ? obj_id : "UNKNOWN");
       s_tcp_send(resp);
+    }
+    if (s_dbg_tx)
+    {
+      char line[200];
+      if (reason[0] != '\0')
+        snprintf(line, sizeof(line), "[TRACK] END id=%s REASON=%s (PB0 OFF if not manual)\r\n",
+                 obj_id[0] ? obj_id : "UNKNOWN", reason);
+      else
+        snprintf(line, sizeof(line), "[TRACK] END id=%s (PB0 OFF if not manual)\r\n",
+                 obj_id[0] ? obj_id : "UNKNOWN");
+      s_dbg_tx(line);
     }
     return 1;
   }
