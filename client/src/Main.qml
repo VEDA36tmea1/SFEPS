@@ -747,7 +747,11 @@ Window {
                             detailPopup.open()
                         }
                     }
-                    AnalyticsView {}
+                    AnalyticsView {
+                        monitoringTotalBoardingCount: monitoringView.totalBoardingCount
+                        monitoringFraudBoardingCount: monitoringView.fraudBoardingCount
+                        monitoringStreamLatency: monitoringView.streamLatency
+                    }
                     SettingsView {
                         laserTrackingEnabled: rootWindow.laserTrackingEnabled
                         onLaserTrackingToggled: function(enabled) {

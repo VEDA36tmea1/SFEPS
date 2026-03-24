@@ -7,6 +7,7 @@
 #include <QMutex>
 #include <QTimer>
 #include <QElapsedTimer>
+#include <QDateTime>
 #include <QNetworkAccessManager>
 #include <QString>
 #include <opencv2/opencv.hpp>
@@ -31,7 +32,7 @@ public:
     }
 
 signals:
-    void newFrame(const cv::Mat &frame);
+    void newFrame(const cv::Mat &frame, qint64 ts);
     void readFailed();
 
 protected:
@@ -39,8 +40,6 @@ protected:
         running = true;
         cv::Mat frame;
         int failCount = 0;
-        QElapsedTimer emitTimer;
-        emitTimer.start();
         qint64 lastEmitMs = 0;
         constexpr qint64 kMinEmitIntervalMs = 66; // ~15 FPS
         while (running) {
@@ -55,11 +54,11 @@ protected:
                 }
 
                 if (ok) {
-                    const qint64 now = emitTimer.elapsed();
+                    const qint64 now = QDateTime::currentMSecsSinceEpoch();
                     if (now - lastEmitMs >= kMinEmitIntervalMs) {
                         // Keep at most one queued frame; drop extras under UI load.
                         if (!framePending.exchange(true, std::memory_order_acq_rel)) {
-                            emit newFrame(frame.clone());
+                            emit newFrame(frame.clone(), now);
                             lastEmitMs = now;
                         }
                     }
@@ -93,6 +92,7 @@ private:
 class MainWindow : public QQuickPaintedItem
 {
     Q_OBJECT
+    Q_PROPERTY(int streamLatency READ streamLatency NOTIFY streamLatencyChanged)
     Q_PROPERTY(bool running READ isRunning WRITE setRunning NOTIFY runningChanged)
     Q_PROPERTY(int brightness READ brightness WRITE setBrightness NOTIFY brightnessChanged)
     Q_PROPERTY(int contrast READ contrast WRITE setContrast NOTIFY contrastChanged)
@@ -137,6 +137,7 @@ public:
     QString externalTrackedId() const { return m_externalTrackedId; }
     int imageWidth() const;
     int imageHeight() const;
+    int streamLatency() const { return m_streamLatencyMs; }
 
 signals:
     void runningChanged();
@@ -145,9 +146,10 @@ signals:
     void zoomRectChanged();
     void streamStatusChanged();
     void streamConnectedChanged();
+    void streamLatencyChanged();
 
 private slots:
-    void processFrame(const cv::Mat &frame);
+    void processFrame(const cv::Mat &frame, qint64 ts);
     void onReadFailed();
     void attemptReconnect();
 
@@ -186,6 +188,8 @@ private:
     bool m_hasPendingDetections;
     QString m_selectedDetectionId;
     QString m_externalTrackedId;
+
+    int m_streamLatencyMs = 0;
 
     bool m_useCameraCgiControl;
     bool m_cameraCgiAllowInsecureTls;

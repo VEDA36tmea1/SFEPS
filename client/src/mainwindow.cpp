@@ -2,6 +2,7 @@
 #include <QPainter>
 #include <QDebug>
 #include <QProcessEnvironment>
+#include <QDateTime>
 #include <QNetworkRequest>
 #include <QNetworkReply>
 #include <QAuthenticator>
@@ -194,7 +195,7 @@ void MainWindow::setZoomFromItem(const QRectF &itemRect, const QSizeF &itemSize)
     setZoomRect(QRectF(imgX, imgY, imgW, imgH));
 }
 
-void MainWindow::processFrame(const cv::Mat &frame)
+void MainWindow::processFrame(const cv::Mat &frame, qint64 ts)
 {
     if (!m_running) {
         if (worker) worker->markFrameConsumed();
@@ -258,6 +259,14 @@ void MainWindow::processFrame(const cv::Mat &frame)
 
     if (worker) {
         worker->markFrameConsumed();
+    }
+
+    // Update measured stream latency (ms) using the timestamp provided by the capture worker.
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    const int measured = int(nowMs - ts);
+    if (measured != m_streamLatencyMs) {
+        m_streamLatencyMs = measured;
+        emit streamLatencyChanged();
     }
 }
 
@@ -541,7 +550,7 @@ bool MainWindow::openStream()
         qputenv("OPENCV_FFMPEG_CAPTURE_OPTIONS",
             QByteArray("rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0"));
 
-    const QString rtspUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.82:8554/cam1");
+    const QString rtspUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.101:8554/cam1");
     cap.open(rtspUrl.toStdString(), cv::CAP_FFMPEG);
     if (!cap.isOpened()) {
         qWarning() << "[MainWindow] Failed to open stream:" << rtspUrl;

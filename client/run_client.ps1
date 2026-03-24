@@ -11,8 +11,8 @@ if ($clientDir -like '*build-mingw*') {
 }
 
 # ── 서버 연결 ──────────────────────────────────────────────────────────────────
-$env:RTSP_STREAM_URL         = "rtsp://192.168.0.82:8554/cam1"
-$env:FRAUD_SERVER_HOST       = "192.168.0.82"
+$env:RTSP_STREAM_URL         = "rtsp://192.168.0.101:8554/cam1"
+$env:FRAUD_SERVER_HOST       = "192.168.0.101"
 $env:FRAUD_SERVER_PORT       = "5557"
 $env:POS_SERVER_PORT         = "5558"
 $env:AUTH_TLS_ENABLE         = "0"          # TLS 사용 시 1

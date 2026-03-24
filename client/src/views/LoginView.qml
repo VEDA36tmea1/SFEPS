@@ -229,19 +229,7 @@ Window {
                                 Item {
                                     Layout.fillWidth: true
                                 }
-                                Button {
-                                    flat: true
-                                    text: "Forgot Password ?"
-                                    contentItem: Text {
-                                        text: parent.text
-                                        color: AppTheme.accent
-                                        font.pixelSize: 12
-                                        font.bold: true
-                                    }
-                                    background: Rectangle {
-                                        color: "transparent"
-                                    }
-                                }
+                                // Forgot Password button removed per UI update
                             }
                             Rectangle {
                                 Layout.fillWidth: true
@@ -291,25 +279,7 @@ Window {
                             }
                         }
 
-                        CheckBox {
-                            text: "Remember this device"
-                            checked: false
-                            contentItem: Text {
-                                text: parent.text
-                                color: "#888888"
-                                font.pixelSize: 14
-                                leftPadding: parent.indicator.width + parent.spacing
-                                verticalAlignment: Text.AlignVCenter
-                            }
-                            indicator: Rectangle {
-                                implicitWidth: 18
-                                implicitHeight: 18
-                                radius: 3
-                                border.color: "#555555"
-                                border.width: 2
-                                color: parent.checked ? AppTheme.primaryOrange : "#222529"
-                            }
-                        }
+                        // "Remember this device" removed per UI update
 
                         // Error Message
                         Text {
@@ -326,6 +296,7 @@ Window {
                             id: loginBtn
                             objectName: "loginButton"
                             Layout.fillWidth: true
+                            Layout.topMargin: 30
                             Layout.preferredHeight: 44
                             activeFocusOnTab: true
                             
