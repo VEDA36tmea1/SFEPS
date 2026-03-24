@@ -13,6 +13,7 @@
 #include <csignal>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <map>
 #include <mutex>
@@ -30,7 +31,7 @@
 
 #include "../inc/img_processing.h"
 
-#define LIVE_CAMERA_MODE 0
+#define LIVE_CAMERA_MODE 1
 
 namespace {
 
@@ -351,23 +352,6 @@ void triggerListenerThread() {
 constexpr int    kExposureTimeUs  = 8000;   // 8 ms — 역광 포화 억제용
 constexpr float  kAnalogueGain    = 1.0f;   // 센서 아날로그 게인
 
-// 파이프라인이 열린 뒤 OpenCV cap.set()으로 노출 제어
-static void applyExposureSettings(cv::VideoCapture& cap) {
-    // 자동 노출 OFF (0.25 = manual mode for GStreamer/V4L2 backend)
-    bool ok_ae  = cap.set(cv::CAP_PROP_AUTO_EXPOSURE, 0.25);
-    // 셔터 속도 설정
-    bool ok_exp = cap.set(cv::CAP_PROP_EXPOSURE, (double)kExposureTimeUs);
-    // 게인 설정
-    bool ok_gain = cap.set(cv::CAP_PROP_GAIN, (double)kAnalogueGain);
-
-    std::cout << "[camera] exposure control: "
-              << "auto_exposure=" << (ok_ae  ? "OK" : "SKIP")
-              << ", exposure="    << (ok_exp ? "OK" : "SKIP")
-              << ", gain="        << (ok_gain? "OK" : "SKIP")
-              << " (exposure_time=" << kExposureTimeUs << " µs"
-              << ", analogue_gain=" << kAnalogueGain << ")" << std::endl;
-}
-
 static const std::string PIPE_RAW =
     "libcamerasrc ! "
     "video/x-raw,format=SRGGB10,width=1920,height=1080,framerate=30/1 ! "
@@ -387,6 +371,8 @@ int main() {
     signal(SIGPIPE, SIG_IGN);
 
 #if LIVE_CAMERA_MODE
+    // 파이프라인 열기 전에 libcamera 노출 튜닝 파일 생성 (역광 포화 억제)
+
     cv::VideoCapture cap(PIPE_RAW, cv::CAP_GSTREAMER);
     if (cap.isOpened()) {
         g_raw_mode = true;
@@ -401,9 +387,6 @@ int main() {
         std::cout << "[camera] BGR fallback enabled" << std::endl;
     }
 
-    // 파이프라인 열린 뒤 셔터 속도 제한 적용 (역광 포화 억제)
-    applyExposureSettings(cap);
-
     std::thread capture_thread(captureThreadFunc, std::ref(cap));
     std::thread listener_thread(triggerListenerThread);
     std::thread worker_thread(pipelineWorkerThread);
@@ -417,7 +400,7 @@ int main() {
     if (worker_thread.joinable()) worker_thread.join();
     cap.release();
 #else
-    cv::Mat frame = cv::imread("img/test_image4.jpg", cv::IMREAD_UNCHANGED);
+    cv::Mat frame = cv::imread("img/test_image.jpg", cv::IMREAD_UNCHANGED);
     if (frame.empty()) return -1;
     std::string err;
     if (!runFullPipeline(frame, frame.type() == CV_16UC1, "4_best_shot_local.jpg", err)) {
