@@ -2,6 +2,7 @@
 #include "Config.h"
 #include <iostream>
 #include <cstring>
+#include <limits>
 
 RTSPClient::RTSPClient() : sock(
 #ifdef _WIN32
@@ -52,20 +53,25 @@ bool RTSPClient::connectToCamera() {
 void RTSPClient::sendHandshake() {
     char buffer[1024] = {0};
     std::string msg;
+    auto send_msg = [&](const std::string& s) {
+        const auto max_len = static_cast<size_t>((std::numeric_limits<int>::max)());
+        const int len = static_cast<int>(s.size() > max_len ? max_len : s.size());
+        send(sock, s.c_str(), len, 0);
+    };
 
     // 1. OPTIONS
     msg = "OPTIONS " + std::string(RTSP_URL) + " RTSP/1.0\r\nCSeq: 1\r\nUser-Agent: MyClient\r\n\r\n";
-    send(sock, msg.c_str(), msg.length(), 0);
+    send_msg(msg);
     recv(sock, buffer, 1024, 0);
 
     // 2. DESCRIBE
     msg = "DESCRIBE " + std::string(RTSP_URL) + " RTSP/1.0\r\nCSeq: 2\r\nAccept: application/sdp\r\nUser-Agent: MyClient\r\n\r\n";
-    send(sock, msg.c_str(), msg.length(), 0);
+    send_msg(msg);
     recv(sock, buffer, 1024, 0);
 
     // 3. SETUP (Video)
     msg = "SETUP " + std::string(RTSP_URL) + "/trackID=v RTSP/1.0\r\nCSeq: 3\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1\r\nUser-Agent: MyClient\r\n\r\n";
-    send(sock, msg.c_str(), msg.length(), 0);
+    send_msg(msg);
     memset(buffer, 0, 1024);
     recv(sock, buffer, 1024, 0);
 
@@ -80,12 +86,12 @@ void RTSPClient::sendHandshake() {
 
     // 4. SETUP (Metadata)
     msg = "SETUP " + std::string(RTSP_URL) + "/trackID=m RTSP/1.0\r\nCSeq: 4\r\nTransport: RTP/AVP/TCP;unicast;interleaved=2-3\r\nSession: " + session_id + "\r\nUser-Agent: MyClient\r\n\r\n";
-    send(sock, msg.c_str(), msg.length(), 0);
+    send_msg(msg);
     recv(sock, buffer, 1024, 0);
 
     // 5. PLAY
     msg = "PLAY " + std::string(RTSP_URL) + " RTSP/1.0\r\nCSeq: 5\r\nSession: " + session_id + "\r\nRange: npt=0.000-\r\nUser-Agent: MyClient\r\n\r\n";
-    send(sock, msg.c_str(), msg.length(), 0);
+    send_msg(msg);
     recv(sock, buffer, 1024, 0);
     
     std::cerr << "🚀 Streaming Started!" << std::endl;
@@ -96,7 +102,9 @@ void RTSPClient::sendHeartbeat() {
     time_t now = time(NULL);
     if (now - last_heartbeat > 30) {
         std::string msg = "GET_PARAMETER " + std::string(RTSP_URL) + " RTSP/1.0\r\nCSeq: 99\r\nSession: " + session_id + "\r\nUser-Agent: MyClient\r\n\r\n";
-        send(sock, msg.c_str(), msg.length(), 0);
+        const auto max_len = static_cast<size_t>((std::numeric_limits<int>::max)());
+        const int len = static_cast<int>(msg.size() > max_len ? max_len : msg.size());
+        send(sock, msg.c_str(), len, 0);
         last_heartbeat = now;
     }
 }

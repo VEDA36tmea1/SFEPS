@@ -318,3 +318,67 @@ CLICK_PWM id=596948 meas=(512,400) pred=(530,395) vel=(58.3,-16.2) PAN=1180 TILT
 [FPS] 29.8
 ```
 
+---
+
+### 6. 2026-03-24 업데이트 (Windows/GStreamer/Tracker 모드)
+
+#### 6.1 Windows 빌드 체계 정리
+
+- Windows에서 `Makefile` 기준 **MSVC(cl) + OpenCV vc17** 빌드로 정리됨
+- 기본 OpenCV 루트: `C:/Users/2-16/Downloads/opencv-gst/install`
+- 라이브러리/런타임 경로:
+  - `x64/vc17/lib`
+  - `x64/vc17/bin`
+- 실행 헬퍼 `make run-rbf`는 OpenCV/GStreamer PATH를 자동으로 설정
+
+자세한 절차는 `Window_build.md` 참고.
+
+#### 6.2 camera_RBF 수신 경로 저지연화
+
+- 수신은 별도 캡처 스레드에서 **최신 프레임만 유지**(old frame overwrite)
+- OpenCV 캡처 오픈 순서:
+  1) GStreamer UDP
+  2) GStreamer TCP
+  3) 기본 backend fallback
+- GStreamer 파이프라인은 `appsink sync=false max-buffers=1 drop=true` 저지연 옵션 사용
+
+#### 6.3 tracker 모드 전환 추가
+
+`Camera/get_metadata`의 `camera_RBF`는 트래커 모드를 인자로 전환할 수 있습니다.
+아래 명령은 `tmp_client`가 아니라 `Camera/get_metadata` 폴더에서 실행합니다.
+
+```powershell
+
+# 기본 실행(현재 기본값)
+make run-rbf
+
+# C++ 네이티브 트래커 모드
+make run-rbf-native
+
+# DeepSORT 모드
+make run-rbf-deepsort
+```
+
+직접 인자 전달도 가능합니다:
+
+```powershell
+make run-rbf ARGS="--tracker-mode native --predict-ms 200"
+make run-rbf ARGS="--tracker-mode deepsort --predict-ms 200"
+```
+
+
+---
+
+
+
+
+#### 6.4 native 모드 개선 포인트
+
+- IoU + 중심거리 기반 매칭
+- 겹침(crowded) 구간에서 게이트 강화로 ID 스위치 억제
+- 직전 매칭 det lock으로 교차 구간 ID 뒤바뀜 완화
+- 정지 상태 adaptive smoothing:
+  - center/size alpha 자동 하향
+  - size deadband 및 aspect-ratio jump guard
+  - bbox width/height 펌핑(늘어남/찝힘) 억제
+

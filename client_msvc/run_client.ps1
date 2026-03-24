@@ -29,7 +29,7 @@ Set-DefaultEnv "SFEPS_DIRECT_STREAM_MODE" "0"
 # 1이면 ONVIF 메타데이터(XMLParser)로 Human bbox를 직접 파싱해 오버레이
 Set-DefaultEnv "SFEPS_USE_ONVIF_METADATA" "1"
 # ffmpeg | gstreamer
-Set-DefaultEnv "RTSP_BACKEND" "ffmpeg"
+Set-DefaultEnv "RTSP_BACKEND" "gstreamer"
 # 목표 표시 FPS (worker emit 간격)
 Set-DefaultEnv "RTSP_TARGET_FPS" "30"
 # grab 후 추가로 버릴 프레임 수 (live-edge 유지)
@@ -70,15 +70,19 @@ $exePath = Join-Path $clientDir "build-msvc\Release\appHanwhaVisionSFEPS.exe"
 if (-not (Test-Path $exePath)) {
     Write-Error "실행파일을 찾을 수 없습니다: $exePath"
     Write-Host "MSVC 빌드 예시:"
-    Write-Host "  cmake -S . -B build-msvc -G ""Visual Studio 17 2022"" -A x64 -DOpenCV_DIR=""C:/Users/2-16/Downloads/opencv/build"""
+    Write-Host "  cmake -S . -B build-msvc -G ""Visual Studio 17 2022"" -A x64 -DOpenCV_DIR=""C:/Users/2-16/Downloads/opencv-gst/install"""
     Write-Host "  cmake --build build-msvc --config Release"
     exit 1
 }
 
-# OpenCV/Qt 런타임 DLL 경로를 우선 추가
-$opencvBin = "C:\Users\2-16\Downloads\opencv\build\x64\vc16\bin"
+# OpenCV/GStreamer/Qt 런타임 DLL 경로를 우선 추가
+$opencvBin = "C:\Users\2-16\Downloads\opencv-gst\install\x64\vc17\bin"
+$gstreamerBin = "C:\Program Files\gstreamer\1.0\msvc_x86_64\bin"
+$gstreamerPluginDir = "C:\Program Files\gstreamer\1.0\msvc_x86_64\lib\gstreamer-1.0"
 $qtBin = "C:\Qt\6.10.0\msvc2022_64\bin"
 if (Test-Path $opencvBin) { $env:Path = "$opencvBin;$env:Path" }
+if (Test-Path $gstreamerBin) { $env:Path = "$gstreamerBin;$env:Path" }
+if (Test-Path $gstreamerPluginDir) { Set-DefaultEnv "GST_PLUGIN_PATH" $gstreamerPluginDir }
 if (Test-Path $qtBin) { $env:Path = "$qtBin;$env:Path" }
 
 Write-Host "[run_client.ps1] AUTH_TLS_ENABLE=$($env:AUTH_TLS_ENABLE) AUTH_TLS_CA_FILE=$($env:AUTH_TLS_CA_FILE)"

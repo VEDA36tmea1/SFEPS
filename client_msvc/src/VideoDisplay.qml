@@ -15,13 +15,36 @@ Item {
     property string selectedDetection: ""
     property string externalTrackedId: ""
     property var detections: []
+    property int streamLatency: 0
+    property int videoMetaDelay: -1
+    property double latestMetaTsMs: -1
+    property double latestVideoTsMs: -1
 
     // Expose image size reported by MediaPlayer
     property int imageWidth: player && player.videoSize ? player.videoSize.width : 0
     property int imageHeight: player && player.videoSize ? player.videoSize.height : 0
 
-    function setDetections(list) { detections = list }
+    function setDetections(list) {
+        detections = list
+        latestVideoTsMs = Date.now()
+        var latestMeta = -1
+        for (var i = 0; i < detections.length; ++i) {
+            var d = detections[i]
+            if (!d) continue
+            if (d.metaTsMs !== undefined && d.metaTsMs > latestMeta) {
+                latestMeta = d.metaTsMs
+            }
+        }
+        latestMetaTsMs = latestMeta
+        if (latestMeta > 0) {
+            videoMetaDelay = Math.round(latestVideoTsMs - latestMeta)
+        } else {
+            videoMetaDelay = -1
+        }
+    }
     function setSelectedDetection(id) { selectedDetection = id }
+    function setZoomFromItem(itemRect, itemSize) { /* no-op in QMediaPlayer path */ }
+    function resetZoom() { zoomedIn = false }
 
     function detectionAt(x, y) {
         if (imageWidth <= 0 || imageHeight <= 0) return "";
@@ -63,28 +86,23 @@ Item {
         focus: true
     }
 
-    // Shader pipeline: take VideoOutput as source and apply brightness on GPU
-    ShaderEffect {
-        anchors.fill: videoOutput
-        property real u_brightness: root.brightness
-        property variant src: shaderSource
-        fragmentShader: """
-            varying highp vec2 qt_TexCoord0;
-            uniform lowp sampler2D src;
-            uniform lowp float u_brightness;
-            void main() {
-                lowp vec4 c = texture2D(src, qt_TexCoord0);
-                c.rgb += u_brightness / 255.0;
-                gl_FragColor = c;
+    Timer {
+        id: videoMetaLogTimer
+        interval: 1000
+        repeat: true
+        running: true
+        onTriggered: {
+            if (latestMetaTsMs > 0) {
+                var delay = Math.round(Date.now() - latestMetaTsMs)
+                videoMetaDelay = delay
+                console.log("[VIDEO-META]", delay, "ms", "detections=", detections.length)
             }
-        """
-        ShaderEffectSource {
-            id: shaderSource
-            sourceItem: videoOutput
-            live: true
-            hideSource: true
         }
     }
+
+    // NOTE:
+    // Brightness/contrast are applied by camera-side CGI control.
+    // Keep rendering path minimal (VideoOutput direct) for lowest latency.
 
     // Overlay detections as QML items
     Item {
@@ -127,6 +145,7 @@ Item {
             }
         }
     }
+
 
     // When `running` changes, start/stop player
     onRunningChanged: {

@@ -43,9 +43,6 @@ int main(int argc, char *argv[]) {
   // resources.qrc에 포함된 실제 파일로 설정
   app.setWindowIcon(QIcon(":/assets/SFEPS_Logo.png"));
 
-  // QML 타입 등록
-  qmlRegisterType<MainWindow>("src.backend", 1, 0, "VideoDisplay");
-
   QQmlApplicationEngine engine;
 
   // AuthManager를 컨텍스트 속성으로 등록 (싱글톤처럼 사용)
@@ -63,6 +60,10 @@ int main(int argc, char *argv[]) {
     // PositionManager를 컨텍스트 속성으로 등록 (포지션/트래킹 전용)
     PositionManager positionManager;
     engine.rootContext()->setContextProperty("positionManager", &positionManager);
+
+  // Video backend: ONVIF metadata parse + status/CGI control (no frame decoding)
+  MainWindow videoBackend;
+  engine.rootContext()->setContextProperty("videoBackend", &videoBackend);
 
   // 알림 서버 호스트: 환경변수 FRAUD_SERVER_HOST가 설정되어 있으면 그 값을 사용하고,
   // 설정되어 있지 않으면 기존 하드코드된 주소를 기본값으로 사용합니다.

@@ -10,21 +10,13 @@ set(CMAKE_AUTORCC ON)
 # Qt6 찾기 (Quick, QuickControls2, Network, Multimedia 모듈 필수)
 find_package(Qt6 6.4 REQUIRED COMPONENTS Quick QuickControls2 Network Multimedia)
 
-# OpenCV 설정 (MSVC 빌드 기준)
-# -DOpenCV_DIR=... 를 넘기면 그 값을 우선 사용하고,
-# 미지정 시 일반적인 MSVC 설치 경로를 힌트로 사용한다.
-if(NOT DEFINED OpenCV_DIR)
-    set(OpenCV_DIR "C:/opencv/build")
-endif()
-find_package(OpenCV REQUIRED)
-
 # Qt 리소스 추가
 qt_add_resources(RESOURCES resources.qrc)
 
 qt_add_executable(appHanwhaVisionSFEPS
     src/main.cpp
     src/authmanager.cpp src/authmanager.h
-    src/mainwindow.cpp src/mainwindow.h
+    src/videobackend.cpp src/mainwindow.h
     src/voicemanager.cpp src/voicemanager.h
     src/fraudmanager.cpp src/fraudmanager.h
     src/positionmanager.cpp src/positionmanager.h
@@ -41,7 +33,6 @@ target_include_directories(appHanwhaVisionSFEPS
 
 target_link_libraries(appHanwhaVisionSFEPS
     PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Network Qt6::Multimedia
-    ${OpenCV_LIBS}
 )
 
 # QML 리소스 설정
@@ -51,6 +42,7 @@ qt_add_qml_module(appHanwhaVisionSFEPS
     QML_FILES
         src/Main.qml
         src/AppTheme.qml
+        src/VideoDisplay.qml
         src/views/LoginView.qml
         src/views/MonitoringView.qml
         src/views/DetailView.qml
