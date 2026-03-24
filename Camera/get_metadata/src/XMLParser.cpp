@@ -9,7 +9,7 @@ namespace {
                               std::size_t start_pos,
                               std::size_t end_pos) {
         const std::size_t pos = raw.find(needle, start_pos);
-        if (pos == std::string::npos || pos >= end_pos) return std::string::npos;
+        if (pos == std::string::npos || pos >= end_pos) return std::string::npos; 
         return pos;
     }
 
@@ -18,13 +18,33 @@ namespace {
                           std::size_t value_offset,
                           float& out_value) {
         if (attr_pos == std::string::npos) return false;
+
         const std::size_t value_start = attr_pos + value_offset;
         const std::size_t value_end = raw.find("\"", value_start);
         if (value_end == std::string::npos) return false;
+
         try {
             out_value = std::stof(raw.substr(value_start, value_end - value_start));
-        } catch (...) { return false; }
+        } catch (...) {
+            return false;
+        }
         return true;
+    }
+
+    float calculate_iou(float l1, float t1, float r1, float b1,
+                        float l2, float t2, float r2, float b2) {
+        float xA = std::max(l1, l2);
+        float yA = std::max(t1, t2);
+        float xB = std::min(r1, r2);
+        float yB = std::min(b1, b2);
+
+        float interArea = std::max(0.0f, xB - xA) * std::max(0.0f, yB - yA);
+        if (interArea == 0.0f) return 0.0f;
+
+        float box1Area = (r1 - l1) * (b1 - t1);
+        float box2Area = (r2 - l2) * (b2 - t2);
+
+        return interArea / (box1Area + box2Area - interArea);
     }
 }
 
@@ -37,17 +57,18 @@ std::string XMLParser::get_current_time_str() {
     return std::string(buf);
 }
 
-// parseAndProcess: app(main.cpp)용 — IoU 트래킹 유지
 std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_xml, unsigned int last_timestamp) {
     std::vector<DetectedObject> results;
+
     try {
         std::string tag_time = "Unknown";
         size_t utc_pos = accumulated_xml.find("UtcTime=\"");
         if (utc_pos != std::string::npos) {
             size_t start = utc_pos + 9;
             size_t end = accumulated_xml.find("\"", start);
-            if (end != std::string::npos)
+            if (end != std::string::npos) {
                 tag_time = accumulated_xml.substr(start, end - start);
+            }
         }
 
         size_t search_pos = 0;
@@ -72,13 +93,13 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
                 if (end != std::string::npos) obj_type = accumulated_xml.substr(start, end - start);
             }
 
-            float likelihood = 1.0f;
+            float likelihood = 1.0f; 
             size_t likelihood_pos = accumulated_xml.find("<tt:Likelihood>", obj_start);
             if (likelihood_pos != std::string::npos && (next_obj == std::string::npos || likelihood_pos < next_obj)) {
                 size_t start = likelihood_pos + 15;
                 size_t end = accumulated_xml.find("</tt:Likelihood>", start);
                 if (end != std::string::npos) {
-                    try { likelihood = std::stof(accumulated_xml.substr(start, end - start)); }
+                    try { likelihood = std::stof(accumulated_xml.substr(start, end - start)); } 
                     catch (...) { likelihood = 1.0f; }
                 }
             }
@@ -104,43 +125,122 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
             size_t right_pos  = accumulated_xml.find("right=\"",  obj_start);
             size_t top_pos    = accumulated_xml.find("top=\"",    obj_start);
             size_t bottom_pos = accumulated_xml.find("bottom=\"", obj_start);
-            if (left_pos != std::string::npos && right_pos != std::string::npos &&
-                top_pos  != std::string::npos && bottom_pos != std::string::npos &&
+
+            if (left_pos != std::string::npos && right_pos != std::string::npos && 
+                top_pos  != std::string::npos && bottom_pos != std::string::npos && 
                 (next_obj == std::string::npos || left_pos < next_obj)) {
-                size_t el = accumulated_xml.find("\"", left_pos   + 6);
-                size_t er = accumulated_xml.find("\"", right_pos  + 7);
-                size_t et = accumulated_xml.find("\"", top_pos    + 5);
-                size_t eb = accumulated_xml.find("\"", bottom_pos + 8);
-                left   = std::stof(accumulated_xml.substr(left_pos   + 6, el - (left_pos   + 6)));
-                right  = std::stof(accumulated_xml.substr(right_pos  + 7, er - (right_pos  + 7)));
-                top    = std::stof(accumulated_xml.substr(top_pos    + 5, et - (top_pos    + 5)));
-                bottom = std::stof(accumulated_xml.substr(bottom_pos + 8, eb - (bottom_pos + 8)));
+                size_t end_left   = accumulated_xml.find("\"", left_pos   + 6);
+                size_t end_right  = accumulated_xml.find("\"", right_pos  + 7);
+                size_t end_top    = accumulated_xml.find("\"", top_pos    + 5);
+                size_t end_bottom = accumulated_xml.find("\"", bottom_pos + 8);
+
+                left   = std::stof(accumulated_xml.substr(left_pos   + 6, end_left   - (left_pos   + 6)));
+                right  = std::stof(accumulated_xml.substr(right_pos  + 7, end_right  - (right_pos  + 7)));
+                top    = std::stof(accumulated_xml.substr(top_pos    + 5, end_top    - (top_pos    + 5)));
+                bottom = std::stof(accumulated_xml.substr(bottom_pos + 8, end_bottom - (bottom_pos + 8)));
+
                 w = right - left;
                 h = bottom - top;
             }
 
+            std::string real_id = obj_id; 
+
             if (x != -1 && y != -1 && obj_type == "Head") {
-                results.push_back({obj_id, obj_type, x, y, likelihood, w, h});
+                if (tracking_map.find(obj_id) == tracking_map.end()) {
+                    std::string matched_old_id = "";
+                    float max_iou = 0.05f;
+
+                    for (auto& pair : tracking_map) {
+                        const std::string& old_id = pair.first;
+                        auto& track = pair.second;
+
+                        unsigned int dt = last_timestamp - track.last_rtp;
+
+                        if (dt > 0 && dt < 225000) {
+                            float expected_x = track.last_x + (track.vx * dt);
+                            float expected_y = track.last_y + (track.vy * dt);
+
+                            expected_x = std::max(0.0f, std::min(expected_x, SENSOR_WIDTH));
+                            expected_y = std::max(0.0f, std::min(expected_y, SENSOR_HEIGHT));
+
+                            float pred_l = expected_x - (track.last_w / 2.0f);
+                            float pred_r = expected_x + (track.last_w / 2.0f);
+                            float pred_t = expected_y - (track.last_h / 2.0f);
+                            float pred_b = expected_y + (track.last_h / 2.0f);
+
+                            float iou = calculate_iou(left, top, right, bottom, pred_l, pred_t, pred_r, pred_b);
+                            float threshold = (likelihood < 0.5f) ? 0.01f : 0.05f;
+
+                            if (iou > threshold && iou > max_iou) {
+                                max_iou = iou;
+                                matched_old_id = old_id;
+                            }
+                        }
+                    }
+
+                    if (matched_old_id != "") {
+                        tracking_map[obj_id] = tracking_map[matched_old_id]; 
+                        tracking_map.erase(matched_old_id); 
+                        real_id = tracking_map[obj_id].original_id; 
+                        tracking_map[obj_id].last_w = w;
+                        tracking_map[obj_id].last_h = h;
+                        std::cout << "🔗 [ID 복구] 카메라 ID: " << obj_id << " -> 오리지널 ID: " << real_id 
+                                  << " (IoU 매칭률: " << (int)(max_iou * 100) << "%)" << std::endl;
+                    } else {
+                        tracking_map[obj_id] = {obj_id, x, y, w, h, 0.0f, 0.0f, last_timestamp};
+                    }
+                } else {
+                    auto& track = tracking_map[obj_id];
+                    unsigned int dt = last_timestamp - track.last_rtp;
+
+                    if (dt > 0) {
+                        float current_vx = (x - track.last_x) / (float)dt;
+                        float current_vy = (y - track.last_y) / (float)dt;
+                        track.vx = (track.vx * 0.7f) + (current_vx * 0.3f);
+                        track.vy = (track.vy * 0.7f) + (current_vy * 0.3f);
+                    }
+                    track.last_x = x;
+                    track.last_y = y;
+                    track.last_w = w;
+                    track.last_h = h;
+                    track.last_rtp = last_timestamp;
+                    real_id = track.original_id; 
+                }
+
+                results.push_back({real_id, obj_type, x, y, likelihood, w, h});
 
                 constexpr bool k_enable_object_log = true;
-                if (k_enable_object_log) {
-                    std::cout << "🎯 [OBJ] ID: " << obj_id
+                bool is_new_id = (log_timer_map.find(real_id) == log_timer_map.end());
+                if (k_enable_object_log && (is_new_id || (last_timestamp - log_timer_map[real_id] > LOG_THROTTLE))) {
+                    std::string prefix = is_new_id ? "✨ [NEW]" : "🎯 [OBJ]";
+                    std::cout << prefix << " ID: " << real_id 
                               << " | Type: " << obj_type
-                              << " | Pos: (" << x << ", " << y << ")"
-                              << " | Size: (" << w << "x" << h << ")"
-                              << " | Lkhd: " << likelihood << std::endl;
+                              << " | Pos: (" << x << ", " << y << ")" 
+                              << " | Size: (" << w << "x" << h << ")" 
+                              << " | Lkhd: " << likelihood
+                              << " | TagTime: " << tag_time << std::endl;
+                    log_timer_map[real_id] = last_timestamp;
                 }
             }
             search_pos = obj_start + 1;
         }
 
-        // 이벤트 파싱
+        for (auto it = tracking_map.begin(); it != tracking_map.end(); ) {
+            if (last_timestamp - it->second.last_rtp > 450000) {
+                it = tracking_map.erase(it);
+            } else {
+                ++it;
+            }
+        }
+
         search_pos = 0;
         while (true) {
             size_t msg_start = accumulated_xml.find("<wsnt:NotificationMessage", search_pos);
             if (msg_start == std::string::npos) break;
+
             size_t msg_end = accumulated_xml.find("</wsnt:NotificationMessage>", msg_start);
             if (msg_end == std::string::npos) break;
+
             std::string message_block = accumulated_xml.substr(msg_start, msg_end - msg_start);
 
             std::string rule_name = "Unknown";
@@ -161,8 +261,8 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
                 if (val_pos != std::string::npos) {
                     size_t start = val_pos + 7;
                     size_t end = message_block.find("\"", start);
-                    std::string sv = message_block.substr(start, end - start);
-                    if (sv == "true" || sv == "1") is_active = true;
+                    std::string state_val = message_block.substr(start, end - start);
+                    if (state_val == "true" || state_val == "1") is_active = true;
                 }
             }
 
@@ -178,31 +278,30 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
             }
 
             if (rule_name != "Unknown" && is_active) {
-                unsigned int time_diff = last_timestamp - gate_last_pass_time[rule_name];
+                unsigned int time_diff = last_timestamp - gate_last_pass_time[rule_name];       
                 if (time_diff < TAILGATE_LIMIT && gate_last_pass_time[rule_name] != 0) {
                     float diff_sec = (float)time_diff / 90000.0f;
-                    std::cout << "🚨 [TAILGATING] " << rule_name
+                    std::cout << "🚨 [TAILGATING] " << rule_name 
                               << " | Trigger ID: " << triggered_id
+                              << " | RTP: " << last_timestamp 
                               << " | Gap: " << diff_sec << "s" << std::endl;
                 } else {
-                    std::cout << "✅ [EVENT] " << rule_name
-                              << " Active | ID: " << triggered_id << std::endl;
+                    std::cout << "✅ [EVENT] " << rule_name 
+                              << " Active | ID: " << triggered_id 
+                              << " | TagTime: " << tag_time << std::endl;
                 }
                 gate_last_pass_time[rule_name] = last_timestamp;
             }
+
             search_pos = msg_end;
         }
     } catch (...) {}
-    return results;
+
+    return results; 
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// parseHumanObjectsForAnalytics
-// camera_client / camera_RBF 용 — IoU 트래킹 제거, bbox만 반환
-// DeepSORT 워커가 camera_RBF.cpp 메인루프에서 ID를 부여함
-// ─────────────────────────────────────────────────────────────────────
-std::vector<ParsedMetadataObject> XMLParser::parseHumanObjectsForAnalytics(
-        const std::string& xml, bool detect_all) const {
+std::vector<ParsedMetadataObject> XMLParser::parseHumanObjectsForAnalytics(const std::string& xml,
+                                                                           bool detect_all) const {
     std::vector<ParsedMetadataObject> results;
     results.reserve(8);
     std::size_t search_pos = 0;
@@ -212,33 +311,30 @@ std::vector<ParsedMetadataObject> XMLParser::parseHumanObjectsForAnalytics(
         if (obj_start == std::string::npos) break;
 
         const std::size_t next_obj = xml.find("<tt:Object", obj_start + 1);
-        const std::size_t obj_end  = (next_obj == std::string::npos) ? xml.size() : next_obj;
+        const std::size_t obj_end = (next_obj == std::string::npos) ? xml.size() : next_obj;
         ParsedMetadataObject object = {"", "", -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f};
 
-        // id
         const std::size_t id_pos = find_in_range(xml, "ObjectId=\"", obj_start, obj_end);
         if (id_pos != std::string::npos) {
             const std::size_t start = id_pos + 10;
-            const std::size_t end   = xml.find("\"", start);
+            const std::size_t end = xml.find("\"", start);
             if (end != std::string::npos && end < obj_end)
                 object.id = xml.substr(start, end - start);
         }
 
-        // type — <tt:Type Likelihood=...> 두 번째 태그 사용
         const std::size_t type_pos = find_in_range(xml, "<tt:Type Likelihood=", obj_start, obj_end);
         if (type_pos != std::string::npos) {
             const std::size_t start = xml.find(">", type_pos) + 1;
-            const std::size_t end   = xml.find("</tt:Type>", start);
+            const std::size_t end = xml.find("</tt:Type>", start);
             if (end != std::string::npos && end < obj_end)
                 object.type = xml.substr(start, end - start);
         }
 
-        // x, y — CenterOfGravity 기준
         const std::size_t cog_pos = find_in_range(xml, "CenterOfGravity", obj_start, obj_end);
-        const std::size_t x_pos   = (cog_pos != std::string::npos)
-                                    ? find_in_range(xml, "x=\"", cog_pos, obj_end) : std::string::npos;
-        const std::size_t y_pos   = (cog_pos != std::string::npos)
-                                    ? find_in_range(xml, "y=\"", cog_pos, obj_end) : std::string::npos;
+        const std::size_t x_pos = (cog_pos != std::string::npos)
+                                  ? find_in_range(xml, "x=\"", cog_pos, obj_end) : std::string::npos;
+        const std::size_t y_pos = (cog_pos != std::string::npos)
+                                  ? find_in_range(xml, "y=\"", cog_pos, obj_end) : std::string::npos;
 
         const std::size_t left_pos   = find_in_range(xml, "left=\"",   obj_start, obj_end);
         const std::size_t right_pos  = find_in_range(xml, "right=\"",  obj_start, obj_end);

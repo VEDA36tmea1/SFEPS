@@ -50,7 +50,7 @@ $(CAM_TARGET): $(CAM_SRCS)
 	$(CXX) $(CXXFLAGS) $(CAM_SRCS) -o $(CAM_TARGET) $(OPENCV_FLAGS) -lpthread
 
 $(RBF_TARGET): $(RBF_SRCS)
-	$(CXX) $(CXXFLAGS) $(RBF_SRCS) -o $(RBF_TARGET) $(OPENCV_FLAGS) -lpthread
+	$(CXX) $(CXXFLAGS) $(RBF_SRCS) -o $(RBF_TARGET) $(OPENCV_FLAGS) -lpthreadd
 
 clean:
 	rm -f $(TARGET) $(CAM_TARGET) $(RBF_TARGET)
