@@ -430,7 +430,7 @@ Page {
                         width: 240
                         height: 120
                         color: AppTheme.surfaceCard
-                        radius: 8
+                        radius: 12
                         border.color: AppTheme.borderCard
 
                         ColumnLayout {
