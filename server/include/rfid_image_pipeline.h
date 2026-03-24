@@ -13,7 +13,7 @@ struct FinalizedFraudImageInfo {
 };
 
 bool ensure_runtime_media_dirs(std::string& err);
-void snapshot_rfid_image_for_object(const std::string& object_id);
+void snapshot_rfid_image_for_object(const std::string& object_id, const std::string& tag_time);
 bool finalize_outline_image_for_object(const AnalyticsProcessor::OutlineDecisionPayload& payload,
                                        FinalizedFraudImageInfo* out_fraud_image_info = nullptr);
 const char* pending_image_directory_path();
