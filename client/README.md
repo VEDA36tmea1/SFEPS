@@ -33,20 +33,20 @@
     *   RTSP Port `8554`: 영상 스트리밍 (Video)
 
 ### 네트워크 설정 (필수)
-현재 코드는 라즈베리파이 서버 IP를 `192.168.0.101`로 가정하고 있습니다. 서버 환경에 맞춰 다음 파일들을 확인하십시오.
+현재 코드는 라즈베리파이 서버 IP를 `192.168.0.82`로 가정하고 있습니다. 서버 환경에 맞춰 다음 파일들을 확인하십시오.
 *   `src/authmanager.cpp`: 인증 서버 IP/Port 설정.
-*   `src/mainwindow.cpp`: RTSP 주소 (`rtsp://192.168.0.101:8554/cam1`) 설정.
+*   `src/mainwindow.cpp`: RTSP 주소 (`rtsp://192.168.0.82:8554/cam1`) 설정.
 *   `src/voicemanager.cpp`: 오디오 서버 IP/Port 설정.
 
 환경변수로 런타임 네트워크 대상을 변경할 수도 있습니다.
-*   `AUTH_SERVER_HOST`: 로그인 인증 서버 호스트(기본값 `192.168.0.101`)
+*   `AUTH_SERVER_HOST`: 로그인 인증 서버 호스트(기본값 `192.168.0.82`)
 *   `AUTH_TLS_ENABLE`: 로그인 채널 TLS 사용 여부(기본값 `1`)
 *   `AUTH_TLS_PORT`: 로그인 TLS 포트(기본값 `6555`)
 *   `AUTH_PLAINTEXT_PORT`: 로그인 평문 포트(기본값 `5555`)
 *   `AUTH_ALLOW_PLAINTEXT_FALLBACK`: TLS 실패 시 평문 1회 재시도 허용(기본값 `0`)
 *   `AUTH_TLS_CA_FILE`: 서버 인증서 검증용 CA PEM 파일 경로(예: `.../client/certs/auth_ca.pem`)
-*   `RTSP_STREAM_URL`: 모니터링 RTSP 스트림 URL(기본값 `rtsp://192.168.0.101:8554/cam1`)
-*   `FRAUD_SERVER_HOST`: 알림 서버 호스트(기본값 `192.168.0.101`)
+*   `RTSP_STREAM_URL`: 모니터링 RTSP 스트림 URL(기본값 `rtsp://192.168.0.82:8554/cam1`)
+*   `FRAUD_SERVER_HOST`: 알림 서버 호스트(기본값 `192.168.0.82`)
 *   `FRAUD_SERVER_PORT`: 알림 서버 평문 포트(기본값 `5557`)
 *   `POS_SERVER_HOST`: Position 서버 호스트(기본값: `FRAUD_SERVER_HOST` 값)
 *   `POS_SERVER_PORT`: Position 서버 평문 포트(기본값 `5558`)
@@ -118,52 +118,96 @@ git clone --branch OpenCV-4.5.5-x64 --depth 1 https://github.com/huihut/OpenCV-M
 ### 3. 애플리케이션 실행
 빌드가 성공하면 빌드 디렉토리 내의 실행 파일을 실행합니다:
 ```powershell
-.\appHanwhaVisionSFEPS.exe
-    ```
+cd C:\Users\2-08\Desktop\SFEPS\client
+.\run_client.ps1
+```
 
-또는 완전한 예:
+직접 실행(비권장):
+
 ```powershell
 cd C:\Users\2-08\Desktop\SFEPS\client\build-mingw
 .\appHanwhaVisionSFEPS.exe
 ```
 
-### 4. TLS 로그인용 CA 설정 (중요)
-서버의 CA **인증서**(`ca.crt`)를 클라이언트 `certs/auth_ca.pem`으로 배포해야 TLS 검증이 성공합니다.
+직접 실행 시 `run_client.ps1`에 정의된 환경변수가 빠져 인증/연동 오류가 발생할 수 있습니다.
 
-*   복사 대상: `ca.crt` (공개 인증서)
-*   금지 대상: `ca.key` (개인키, 절대 클라이언트 배포 금지)
+## 6. 실행 설정 파일 (run_client.ps1)
 
-Linux/WSL에서 실행할 때는 아래 스크립트로 환경변수를 자동 설정할 수 있습니다:
+파일: `client/run_client.ps1`
 
-```bash
-cd client
-./run_client_tls.sh ./build/appHanwhaVisionSFEPS
-```
+다음 항목만 환경에 맞게 수정하면 됩니다.
 
----
+서버/스트림:
+- `RTSP_STREAM_URL`
+- `FRAUD_SERVER_HOST`, `FRAUD_SERVER_PORT`
+- `POS_SERVER_PORT`
 
-## 빌드 중 발견된 컴파일 문제
+예시(기본값):
+- `RTSP_STREAM_URL=rtsp://192.168.0.101:8554/cam1`
+- `FRAUD_SERVER_HOST=192.168.0.101`
+- `FRAUD_SERVER_PORT=5557`
+- `POS_SERVER_PORT=5558`
 
-- 빌드 중 `QSslConfiguration` 관련 incomplete type 에러가 발생할 수 있습니다. 이 경우 소스 파일 `src/authmanager.cpp`에
-    `#include <QSslConfiguration>` 헤더가 누락되어 있을 수 있으므로 추가하면 해결됩니다. (현재 저장소에 해당 패치가 적용되어 있습니다.)
+카메라 CGI:
+- `CAMERA_CGI_USER`
+- `CAMERA_CGI_PASSWORD`
+- `CAMERA_BRIGHTNESS_CGI_URL` (선택)
+- `CAMERA_CONTRAST_CGI_URL` (선택)
+- `CAMERA_CGI_ALLOW_INSECURE_TLS`
 
-## 윈도우 배포 팁
+예시(기본값):
+- `CAMERA_BRIGHTNESS_CGI_URL=https://192.168.0.84/stw-cgi/image.cgi?msubmenu=imageenhancements2&action=set&Brightness={value}`
+- `CAMERA_CONTRAST_CGI_URL=https://192.168.0.84/stw-cgi/image.cgi?msubmenu=imageenhancements2&action=set&Contrast={value}`
 
-- 런타임에 DLL 누락 에러가 발생하면 Qt와 OpenCV의 `bin` 폴더를 `PATH`에 추가하거나 필요한 DLL들을 실행파일 옆에 복사하세요.
-- Qt 배포 도구 사용 예:
-```powershell
-# Qt의 windeployqt로 필요한 Qt DLL과 QML 종속성을 복사
-C:\Qt\6.10.0\mingw_64\bin\windeployqt.exe --qmldir ..\src appHanwhaVisionSFEPS.exe
-```
+TLS 로그인:
+- `AUTH_TLS_ENABLE` (`1`이면 TLS)
+- `AUTH_TLS_CA_FILE` (기본: `client/certs/auth_ca.pem`)
+- `AUTH_TLS_PORT`
+- `AUTH_PLAINTEXT_PORT`
+- `AUTH_ALLOW_PLAINTEXT_FALLBACK`
 
-## 📂 프로젝트 구조
+## 7. 카메라 Brightness/Contrast CGI
 
-*   `src/`: C++/QML 소스 코드.
-    *   `main.cpp`: 프로그램 진입점 및 QML 타입 등록.
-    *   `mainwindow.h/cpp`: OpenCV 기반 영상 스트리밍 및 UI 핵심 로직 (`QQuickPaintedItem`).
-    *   `authmanager.h/cpp`: TCP 소켓 기반 로그인/인증 처리.
-    *   `fraudmanager.h/cpp`: 서버로부터 실시간 부정 승차 알림 수신용 소켓 관리.
-    *   `voicemanager.h/cpp`: 마이크 입력 캡처 및 서버 전송 (Voice over IP).
-    *   `views/`: 기능별 QML 화면 (Monitoring, Analytics, Login, Settings 등).
-*   `assets/`: 이미지, 아이콘 및 스타일 리소스.
-*   `CMakeLists.txt`: 프로젝트 빌드 설정.
+현재 클라이언트는 Hanwha CGI를 사용합니다.
+
+- Brightness set:
+  - `.../stw-cgi/image.cgi?msubmenu=imageenhancements2&action=set&Brightness={value}`
+- Contrast set:
+  - `.../stw-cgi/image.cgi?msubmenu=imageenhancements2&action=set&Contrast={value}`
+- 현재값 조회(view):
+  - `.../stw-cgi/image.cgi?msubmenu=imageenhancements2&action=view`
+
+동작 요약:
+- 슬라이더 범위: 1..100
+- 앱 시작 시 `action=view`로 현재 Brightness/Contrast 값을 읽어 UI에 반영
+- HTTPS 실패 시 HTTP 자동 재시도
+
+## 8. TLS CA 배포 가이드
+
+TLS 로그인 사용 시 서버 CA 인증서를 클라이언트에 배포해야 합니다.
+
+- 복사 대상: `ca.crt` (공개 인증서)
+- 금지 대상: `ca.key` (개인키, 절대 클라이언트 배포 금지)
+- 배치 경로: `client/certs/auth_ca.pem`
+
+## 9. 빠른 문제 해결
+
+- `401 호스트 인증이 필요함`
+  - 카메라 계정/비밀번호 확인
+  - `run_client.ps1`로 실행했는지 확인
+
+- `490 Error transferring https://...`
+  - 카메라 HTTPS 호환 문제일 수 있음
+  - `CAMERA_CGI_ALLOW_INSECURE_TLS=1` 확인
+  - 로그에서 HTTP 재시도 성공 여부 확인
+
+- 로그인/알림 서버 연결 실패
+  - `FRAUD_SERVER_HOST`, Auth 포트/Position 포트 설정 확인
+  - 서버가 실제로 실행 중인지 확인
+
+## 10. 프로젝트 구조
+
+- `src/`: C++/QML 소스
+- `assets/`: 이미지/아이콘 리소스
+- `run_client.ps1`: Windows 실행 스크립트 (권장)
+- `CMakeLists.txt`: 빌드 설정
