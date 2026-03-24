@@ -415,6 +415,9 @@ Page {
                     }
                 }
 
+                // Expose the low-level video stream latency to the parent scope
+                property alias streamLatency: videoDisplay.streamLatency
+
                 // Popup for Track controls when an object is selected
                 Popup {
                     id: trackPopup
@@ -1136,6 +1139,38 @@ Page {
                             // unknown format, skip
                         }
                     }
+                    // Update bottom stats from position port: compute total and fraud counts
+                    var total = out.length;
+                    var fraudCount = 0;
+                    for (var fi = 0; fi < out.length; ++fi) {
+                        if (out[fi] && out[fi].alert) fraudCount++;
+                    }
+                    // Use position-port data to update CUMULATIVE counts (unique boarding objects)
+                    // For each incoming detection, if we haven't seen this objectId before,
+                    // count it as a new boarding. If we've seen it before but fraud-flag
+                    // changed, update fraudBoardingCount accordingly. This preserves
+                    // appendMonitoringEvent() semantics which also updates boardingDecisionByObject.
+                    for (var j = 0; j < out.length; ++j) {
+                        var itm = out[j];
+                        if (!itm) continue;
+                        var oid = itm.id !== undefined ? String(itm.id) : "";
+                        if (oid === "") continue;
+                        var isAlert = !!itm.alert;
+                        var hasPrev = Object.prototype.hasOwnProperty.call(boardingDecisionByObject, oid);
+                        if (!hasPrev) {
+                            boardingDecisionByObject[oid] = isAlert;
+                            totalBoardingCount++;
+                            if (isAlert) fraudBoardingCount++;
+                        } else if (boardingDecisionByObject[oid] !== isAlert) {
+                            if (boardingDecisionByObject[oid]) {
+                                fraudBoardingCount = Math.max(0, fraudBoardingCount - 1);
+                            }
+                            if (isAlert) fraudBoardingCount++;
+                            boardingDecisionByObject[oid] = isAlert;
+                        }
+                    }
+                    
+
                     pendingDetections = out;
                     if (!detectionFlushTimer.running) {
                         detectionFlushTimer.start();

@@ -98,30 +98,7 @@ Page {
             }
         }
 
-        // Form
-        GridLayout {
-            columns: 2
-            rowSpacing: 20
-            columnSpacing: 20
-
-            Text {
-                text: "Latency Frequency"
-                color: "white"
-            }
-            ComboBox {
-                model: ["Low (Recommended)", "Ultra Low"]
-                width: 200
-            }
-
-            Text {
-                text: "Log Level"
-                color: "white"
-            }
-            ComboBox {
-                model: ["Verbose", "Info", "Error"]
-                width: 200
-            }
-        }
+        // Form (system-level controls removed: Latency Frequency, Log Level)
 
         Item {
             Layout.fillHeight: true
