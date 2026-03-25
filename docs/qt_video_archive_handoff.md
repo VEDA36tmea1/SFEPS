@@ -1,6 +1,6 @@
 # Qt 전달용: 서버 녹화영상 찾아보기(Video Catalog) 연동 안내
 
-최종 갱신: 2026-03-24
+최종 갱신: 2026-03-25
 
 ## 1) 목적
 
@@ -73,7 +73,29 @@ REC_STORAGE|USED_BYTES=2147483648|TOTAL_BYTES=128034708480|AVAILABLE_BYTES=85731
 - `AVAILABLE_BYTES`: 서버 파일시스템 가용 용량 바이트
 - `FILE_COUNT`: 현재 `videos` 폴더에서 Video Catalog에 잡히는 파일 개수
 
-### 2-3. 클라이언트 재생 요청
+### 2-3. 시스템 상태 갱신
+
+- Video Catalog 연결이 유지되는 동안 **5초마다만** 시스템 상태를 보냅니다.
+- `REC_SNAPSHOT_*`, `REC_STORAGE`, `REC_ADD`, `REC_DEL`, `PLAY_URL`과는 별도로 독립 전송합니다.
+
+형식:
+
+```text
+SYS_STATUS|CPU_TEMP_C=<float>|CPU_USAGE_PCT=<float>
+```
+
+예시:
+
+```text
+SYS_STATUS|CPU_TEMP_C=65.7|CPU_USAGE_PCT=12.4
+```
+
+필드 설명:
+- `CPU_TEMP_C`: 라즈베리파이 CPU 온도(섭씨), 소수점 1자리
+- `CPU_USAGE_PCT`: 라즈베리파이 전체 CPU 사용률(%), 소수점 1자리
+- 첫 `SYS_STATUS`는 연결 직후가 아니라 **연결 후 첫 5초 주기 시점**에 옵니다.
+
+### 2-4. 클라이언트 재생 요청
 
 - 사용자가 목록에서 항목을 고르면 `id`만 다시 서버로 보냅니다.
 
@@ -89,7 +111,7 @@ PLAY_REC|<id>
 PLAY_REC|3624
 ```
 
-### 2-4. 서버 재생 응답
+### 2-5. 서버 재생 응답
 
 - 서버는 해당 `id`를 DB에서 조회한 뒤 실제 파일이 있으면 HTTP 재생 URL을 반환합니다.
 
@@ -110,7 +132,7 @@ PLAY_URL|3624|2026-03-24T16:27:24|http://192.168.0.101:8080/videos/rec_20260324_
 - 목록 단계에서는 `filename`과 `play_url`을 보내지 않습니다.
 - `filename`은 서버 내부에서 파일 존재 확인과 URL 생성용으로만 사용합니다.
 
-### 2-5. 오류 응답
+### 2-6. 오류 응답
 
 목록/연결 단계 오류:
 
@@ -157,6 +179,7 @@ PLAY_ERR|NOT_FOUND|recording file missing
 - `REC_ADD` 수신 시 새 항목을 목록에 추가합니다.
 - `REC_DEL` 수신 시 해당 `id` 항목을 목록에서 제거합니다.
 - `REC_STORAGE` 수신 시 저장공간 UI를 갱신합니다.
+- `SYS_STATUS` 수신 시 온도/CPU 사용률 UI를 갱신합니다.
 - 사용자가 항목을 선택하면 `PLAY_REC|<id>\n` 전송 후 `PLAY_URL`을 기다립니다.
 - `PLAY_URL` 수신 시 마지막 필드의 URL을 `QMediaPlayer` 또는 QML `MediaPlayer.source`에 넣어 재생합니다.
 
@@ -166,9 +189,10 @@ PLAY_ERR|NOT_FOUND|recording file missing
 3. `REC` 수신 시 항목 누적
 4. `REC_SNAPSHOT_END` 수신 시 초기 로딩 종료
 5. `REC_STORAGE` 수신 시 저장공간 표시 갱신
-6. 사용자가 목록 선택
-7. `PLAY_REC|id` 전송
-8. `PLAY_URL` 수신 후 재생
+6. 연결 유지 중 5초마다 `SYS_STATUS` 수신 시 온도/CPU 사용률 표시 갱신
+7. 사용자가 목록 선택
+8. `PLAY_REC|id` 전송
+9. `PLAY_URL` 수신 후 재생
 
 ## 5) 검증 시나리오
 
@@ -182,16 +206,19 @@ PLAY_ERR|NOT_FOUND|recording file missing
 - cleanup로 오래된 파일 삭제 후 `REC_DEL|id` 수신
 - 직후 `REC_STORAGE|...`로 용량 정보 갱신
 
-4. 정상 재생
+4. 시스템 상태
+- 다른 응답과 무관하게 연결 유지 중 5초마다 `SYS_STATUS|...` 갱신 수신
+
+5. 정상 재생
 - `PLAY_REC|<valid_id>` -> `PLAY_URL|id|created_at|url`
 
-5. 잘못된 재생 요청
+6. 잘못된 재생 요청
 - `PLAY_REC|abc` -> `PLAY_ERR|INVALID_REQUEST|...`
 
-6. 존재하지 않는 항목
+7. 존재하지 않는 항목
 - `PLAY_REC|99999999` -> `PLAY_ERR|NOT_FOUND|...`
 
-7. HTTP 재생
+8. HTTP 재생
 - `PLAY_URL`의 `http://<host>:8080/videos/<file>.mp4`가 실제 재생 가능
 - seek가 필요하므로 운영 HTTP 서버는 `Range` 요청을 지원해야 함
 

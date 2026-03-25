@@ -1,6 +1,6 @@
 # SFEPS Server
 
-최종 갱신: 2026-03-24
+최종 갱신: 2026-03-25
 
 SFEPS 서버는 아래 기능을 담당합니다.
 - RTSP 녹화(1분 분할 MP4 저장)
@@ -87,6 +87,7 @@ export SFEPS_APP_TLS_HANDSHAKE_TIMEOUT_MS=3000
 # Video Catalog
 export SFEPS_VIDEO_HTTP_BASE_URL=http://127.0.0.1:8080/videos
 export SFEPS_FRAUD_IMAGE_HTTP_BASE_URL=http://127.0.0.1:8080/fraud-images
+export SFEPS_VIDEO_RETENTION_SEC=86400
 export SFEPS_PENDING_IMAGE_RETENTION_SEC=30
 export SFEPS_FRAUD_IMAGE_RETENTION_SEC=86400
 
@@ -208,6 +209,8 @@ Video Catalog:
   - `REC_ADD|<id>|<created_at>`
   - `REC_DEL|<id>`
   - `REC_STORAGE|USED_BYTES=<n>|TOTAL_BYTES=<n>|AVAILABLE_BYTES=<n>|FILE_COUNT=<n>`
+- 상태 갱신:
+  - `SYS_STATUS|CPU_TEMP_C=<float>|CPU_USAGE_PCT=<float>` (5초 주기 단독 전송)
 - 재생 요청: `PLAY_REC|<id>\n`
 - 재생 응답:
   - `PLAY_URL|<id>|<created_at>|<url>`
@@ -268,6 +271,7 @@ sudo systemctl enable --now sfeps-server.service
 - 운영에서 `http://<host>:8080/videos/<filename>`가
   `/home/iam/SFEPS/videos/<filename>`로 매핑되도록 정적 파일 서빙 구성이 필요합니다.
 - Qt seek/탐색을 위해 `/videos` 정적 서버는 HTTP Range 요청을 지원해야 합니다.
+- 영상은 `SFEPS_VIDEO_RETENTION_SEC`(기본 86400초, 1일) 지난 파일부터 자동 삭제됩니다.
 - 운영에서 `http://<host>:8080/fraud-images/<filename>`가
   `/home/iam/SFEPS/event_images/fraud/<filename>`로 매핑되도록 정적 파일 서빙 구성이 필요합니다.
 - pending 이미지는 `SFEPS_PENDING_IMAGE_RETENTION_SEC`(기본 30초) 지난 파일부터 자동 삭제됩니다.
