@@ -413,6 +413,7 @@ void run_video_catalog_service_impl(std::atomic<bool>& running,
                                     const RuntimeConfig& cfg,
                                     const SecurityRuntimeOptions& sec_cfg) {
     using namespace app_services_transport;
+    const auto& shared_alert_video_allow_ips = sec_cfg.alert_allow_ips;
 
     std::vector<VideoCatalogRecordInfo> initial_records;
     if (!load_initial_catalog_records(cfg, initial_records)) {
@@ -471,7 +472,7 @@ void run_video_catalog_service_impl(std::atomic<bool>& running,
                     AcceptedClient accepted;
                     if (!accept_client(listeners,
                                        target.listener_kind,
-                                       sec_cfg.alert_allow_ips,
+                                       shared_alert_video_allow_ips,
                                        "VideoCatalog",
                                        accepted)) {
                         continue;
@@ -536,6 +537,7 @@ void run_video_catalog_service_impl(std::atomic<bool>& running,
         close_client(client.conn);
     }
     close_listener_bundle(listeners);
+    std::cout << "[main.cpp] [VideoCatalog] 종료." << std::endl;
 }
 
 }  // namespace app_services_impl

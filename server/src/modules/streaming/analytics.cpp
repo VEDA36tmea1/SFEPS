@@ -283,6 +283,7 @@ void AnalyticsProcessor::stop() {
         mysql_close(conn);
         conn = nullptr;
     }
+    std::cout << "[analytics.cpp] [Analytics] 종료." << std::endl;
 }
 
 void AnalyticsProcessor::setTrackPosCallback(TrackPosCallback callback) {

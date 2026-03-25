@@ -212,6 +212,7 @@ int main() {
             if (!sleep_interruptible(g_running, std::chrono::seconds(60))) break;
             logger.requestDbCleanup();
         }
+        std::cout << "[main.cpp] [DBCleanup] 종료." << std::endl;
     });
 
     std::thread t_auth(run_login_auth, std::ref(g_running), std::cref(cfg), std::cref(sec_cfg));
@@ -245,7 +246,5 @@ int main() {
     if (t_file_cleanup.joinable()) t_file_cleanup.join();
 
     analytics.stop();
-
-    std::cout << "[main.cpp] [System] 서버 종료." << std::endl;
     return 0;
 }

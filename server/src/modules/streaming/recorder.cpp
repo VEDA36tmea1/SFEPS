@@ -430,4 +430,5 @@ void RTSPRecorder::run() {
             waited += chunk;
         }
     }
+    std::cout << "[recorder.cpp] [Recorder] 종료." << std::endl;
 }

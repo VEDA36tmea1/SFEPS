@@ -541,7 +541,6 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
         close_client(client.conn);
     }
     close_listener_bundle(listeners);
-    std::cout << "[main.cpp] [Position] 스트림 서비스 스레드 종료." << std::endl;
 }
 
 }  // namespace app_services_impl
