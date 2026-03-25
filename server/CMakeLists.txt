@@ -17,15 +17,19 @@ find_package(OpenSSL REQUIRED)
 set(AUDIO_SPEAKER_UNIT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../hardware/Raspi-driver/Audio_Speaker_Unit)
 set(CAMERA_GET_METADATA_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../Camera/get_metadata)
 
-if(EXISTS "${CAMERA_GET_METADATA_DIR}/CMakeLists.txt")
+# OpenCV를 요구하는 Camera/get_metadata 툴 빌드는 기본적으로 끄고,
+# 서버가 필요한 XML 파서 라이브러리만 항상 빌드한다.
+option(SFEPS_BUILD_CAMERA_GET_METADATA_TOOLS "Build OpenCV-based Camera/get_metadata tools" OFF)
+
+add_library(camera_metadata_parser STATIC
+    ${CAMERA_GET_METADATA_DIR}/src/XMLParser.cpp
+)
+target_include_directories(camera_metadata_parser PUBLIC
+    ${CAMERA_GET_METADATA_DIR}/inc
+)
+
+if(SFEPS_BUILD_CAMERA_GET_METADATA_TOOLS AND EXISTS "${CAMERA_GET_METADATA_DIR}/CMakeLists.txt")
     add_subdirectory(${CAMERA_GET_METADATA_DIR} ${CMAKE_CURRENT_BINARY_DIR}/camera_get_metadata)
-else()
-    add_library(camera_metadata_parser STATIC
-        ${CAMERA_GET_METADATA_DIR}/src/XMLParser.cpp
-    )
-    target_include_directories(camera_metadata_parser PUBLIC
-        ${CAMERA_GET_METADATA_DIR}/inc
-    )
 endif()
 
 # 4. 실행 파일 (오디오 모듈 소스 포함)
@@ -55,7 +59,6 @@ add_executable(smart_server
     src/modules/alerts/alert.cpp
     src/modules/esp/esp_manager.cpp
     src/core/network/tls_server.cpp
-    ${CAMERA_GET_METADATA_DIR}/src/XMLParser.cpp
     ${AUDIO_SPEAKER_UNIT_DIR}/src/audio_ring_buffer.cpp
     ${AUDIO_SPEAKER_UNIT_DIR}/src/audio_playback.cpp
 )
@@ -79,7 +82,6 @@ target_include_directories(smart_server PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/services
     ${CAMERA_GET_METADATA_DIR}/inc
     ${AUDIO_SPEAKER_UNIT_DIR}/include
-    ${CAMERA_GET_METADATA_DIR}/inc
 )
 
 # 6. 라이브러리 링크 (ALSA 오디오 재생)
@@ -89,5 +91,6 @@ target_link_libraries(smart_server PRIVATE
     OpenSSL::SSL
     OpenSSL::Crypto
     Threads::Threads
+    camera_metadata_parser
     asound
 )
