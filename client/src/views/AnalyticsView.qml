@@ -90,7 +90,7 @@ Page {
             // Charts Area (Entry Status & Demographic)
             RowLayout {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 320
+                Layout.preferredHeight: 240
                 Layout.leftMargin: 24
                 Layout.rightMargin: 24
                 spacing: 16
@@ -384,21 +384,21 @@ Page {
                 Layout.bottomMargin: 24
                 spacing: 16
 
-                Repeater {
+                    Repeater {
                     model: [
                         {
-                            title: "Active Cameras",
-                            value: "1",
-                            badge: "Active",
-                            color: "#22c55e",
-                            icon: "video"
+                            title: "CPU Usage",
+                            value: "-",
+                            badge: "CPU",
+                            color: "#06b6d4",
+                            icon: "activity"
                         },
                         {
-                            title: "Archived Videos",
-                            value: "0",
-                            badge: "Archived",
-                            color: "#d4e635",
-                            icon: "wifi"
+                            title: "CPU Temperature",
+                            value: "-",
+                            badge: "CPU",
+                            color: "#16a34a",
+                            icon: "thermometer"
                         },
                         {
                             title: "Stream Latency",
@@ -408,8 +408,15 @@ Page {
                             icon: "activity"
                         },
                         {
-                            title: "Storage Remaining",
-                            value: "2.4 TB",
+                            title: "Archived Videos",
+                            value: "0",
+                            badge: "Archived",
+                            color: "#d4e635",
+                            icon: "wifi"
+                        },
+                        {
+                            title: "Storage Capacity",
+                            value: "0%",
                             badge: "Storage",
                             color: "#a855f7",
                             icon: "database"
@@ -453,11 +460,18 @@ Page {
                                     font.pixelSize: 12
                                 }
                                 Text {
+                                    id: statValue
                                     text: modelData.title === "Stream Latency"
                                           ? (monitoringStreamLatency + " ms")
                                         : modelData.title === "Archived Videos"
                                             ? String(recordingListModel.count)
-                                            : modelData.value
+                                            : modelData.title === "Storage Capacity"
+                                                ? (storageTotal > 0 ? formatUsedTotal(storageUsed, storageTotal) : "-")
+                                                : modelData.title === "CPU Temperature"
+                                                    ? (cpuTempC > 0 ? (cpuTempC.toFixed(1) + " °C") : "-")
+                                                    : modelData.title === "CPU Usage"
+                                                        ? (typeof cpuUsagePct !== 'undefined' ? (cpuUsagePct.toFixed(1) + " %") : "-")
+                                                        : modelData.value
                                     color: "white"
                                     font.pixelSize: 18
                                     font.bold: true
@@ -469,4 +483,58 @@ Page {
             }
         }
     }
+
+    // Video storage properties (updated from VideoArchiveManager REC_STORAGE)
+
+    property var storageTotal: 0
+    property var storageAvailable: 0
+    property var storageUsed: 0
+    property real cpuTempC: 0.0
+    property real cpuUsagePct: 0.0
+
+    function bytesToReadable(bytes) {
+        if (!bytes || bytes <= 0) return "0 B";
+        var units = ["B","KB","MB","GB","TB","PB"];
+        var i = Math.floor(Math.log(bytes) / Math.log(1024));
+        if (i < 0) i = 0;
+        if (i > units.length - 1) i = units.length - 1;
+        var v = bytes / Math.pow(1024, i);
+        return (Math.round(v * 10) / 10) + " " + units[i];
+    }
+
+    function formatUsedTotal(used, total) {
+        if (!total || total <= 0) return "-";
+        var TB = 1024 * 1024 * 1024 * 1024;
+        var GB = 1024 * 1024 * 1024;
+        var MB = 1024 * 1024;
+        var unit = {name: "B", size: 1};
+        if (total >= TB) unit = {name: "TB", size: TB};
+        else if (total >= GB) unit = {name: "GB", size: GB};
+        else if (total >= MB) unit = {name: "MB", size: MB};
+        var usedV = used / unit.size;
+        var totalV = total / unit.size;
+        var usedStr = usedV.toFixed(2).toString();
+        var totalStr = (Math.round(totalV)).toString();
+        return usedStr + " / " + totalStr + " " + unit.name;
+    }
+
+    Connections {
+        target: videoArchiveManager
+        onStorageUpdated: function(usedBytes, totalBytes, availableBytes, fileCount) {
+            storageTotal = totalBytes
+            storageAvailable = availableBytes
+            storageUsed = usedBytes
+            console.log("storageUpdated -> used:", usedBytes, "total:", totalBytes, "avail:", availableBytes, "count:", fileCount)
+        }
+    }
+
+    Connections {
+        target: videoArchiveManager
+        onSysStatusUpdated: function(tempC, usagePct) {
+            cpuTempC = tempC
+            cpuUsagePct = usagePct
+            console.log("SYS_STATUS -> temp:", tempC, "usage:", usagePct)
+        }
+    }
+
 }

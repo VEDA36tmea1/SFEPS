@@ -135,6 +135,41 @@ void VideoArchiveManager::onReadyRead()
             if (parts.size() >= 4) {
                 emit playUrlReady(parts[1], parts[2], parts[3]);
             }
+        } else if (s.startsWith("REC_STORAGE|")) {
+            // format: REC_STORAGE|USED_BYTES=<n>|TOTAL_BYTES=<n>|AVAILABLE_BYTES=<n>|FILE_COUNT=<n>
+            const QStringList parts = s.split('|');
+            qulonglong used = 0;
+            qulonglong total = 0;
+            qulonglong avail = 0;
+            int fileCount = 0;
+            for (int i = 1; i < parts.size(); ++i) {
+                const QString &p = parts[i];
+                if (p.startsWith("USED_BYTES=")) used = p.mid(QString("USED_BYTES=").length()).toULongLong();
+                else if (p.startsWith("TOTAL_BYTES=")) total = p.mid(QString("TOTAL_BYTES=").length()).toULongLong();
+                else if (p.startsWith("AVAILABLE_BYTES=")) avail = p.mid(QString("AVAILABLE_BYTES=").length()).toULongLong();
+                else if (p.startsWith("FILE_COUNT=")) fileCount = p.mid(QString("FILE_COUNT=").length()).toInt();
+            }
+            qDebug() << "REC_STORAGE parsed:" << used << total << avail << fileCount;
+            emit storageUpdated(used, total, avail, fileCount);
+        } else if (s.startsWith("SYS_STATUS|")) {
+            // format: SYS_STATUS|CPU_TEMP_C=<float>|CPU_USAGE_PCT=<float>
+            const QStringList parts = s.split('|');
+            float cpuTemp = 0.0f;
+            float cpuUsage = 0.0f;
+            for (int i = 1; i < parts.size(); ++i) {
+                const QString &p = parts[i];
+                if (p.startsWith("CPU_TEMP_C=")) {
+                    bool ok = false;
+                    float v = p.mid(QString("CPU_TEMP_C=").length()).toFloat(&ok);
+                    if (ok) cpuTemp = v;
+                } else if (p.startsWith("CPU_USAGE_PCT=")) {
+                    bool ok = false;
+                    float v = p.mid(QString("CPU_USAGE_PCT=").length()).toFloat(&ok);
+                    if (ok) cpuUsage = v;
+                }
+            }
+            qDebug() << "SYS_STATUS parsed: temp=" << cpuTemp << "usage=" << cpuUsage;
+            emit sysStatusUpdated(cpuTemp, cpuUsage);
         } else if (s.startsWith("REC_ERR|")) {
             QStringList parts = s.split('|');
             const QString code = parts.size() > 1 ? parts[1] : QString();
