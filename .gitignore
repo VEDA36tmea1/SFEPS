@@ -162,7 +162,6 @@ Camera/calibration/*.png
 /event_images/
 
 # 개인 설정 파일
-.env.local
 *.local.*
 config.local.*
 secrets.*
