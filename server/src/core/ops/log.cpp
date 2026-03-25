@@ -1,8 +1,11 @@
 #include "log.h"
 
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <vector>
+
+#include "video_catalog_events.h"
 
 namespace {
 constexpr const char* kLoginLogInsertQuery =
@@ -70,6 +73,48 @@ int execute_delete(MYSQL* conn, const char* query, my_ulonglong* affected_rows) 
         *affected_rows = mysql_affected_rows(conn);
     }
     return 0;
+}
+
+std::string normalize_to_iso8601(std::string timestamp) {
+    if (timestamp.size() >= 19 && timestamp[10] == ' ') {
+        timestamp[10] = 'T';
+        timestamp.resize(19);
+    }
+    return timestamp;
+}
+
+bool fetch_recording_info_by_id(MYSQL* conn,
+                                unsigned long long insert_id,
+                                VideoCatalogRecordInfo& out_record) {
+    if (conn == nullptr || insert_id == 0) return false;
+
+    const std::string query =
+        "SELECT id, filename, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') "
+        "FROM recordings WHERE id=" +
+        std::to_string(insert_id) + " LIMIT 1";
+    if (mysql_query(conn, query.c_str()) != 0) {
+        std::cerr << "[log.cpp] [DB Error] recordings 조회 실패: " << mysql_error(conn)
+                  << std::endl;
+        return false;
+    }
+
+    MYSQL_RES* res = mysql_store_result(conn);
+    if (res == nullptr) {
+        std::cerr << "[log.cpp] [DB Error] recordings 결과 조회 실패." << std::endl;
+        return false;
+    }
+
+    MYSQL_ROW row = mysql_fetch_row(res);
+    if (row == nullptr || row[0] == nullptr || row[1] == nullptr || row[2] == nullptr) {
+        mysql_free_result(res);
+        return false;
+    }
+
+    out_record.id = std::strtoll(row[0], nullptr, 10);
+    out_record.filename = row[1];
+    out_record.created_at = normalize_to_iso8601(row[2]);
+    mysql_free_result(res);
+    return out_record.id > 0 && !out_record.filename.empty() && !out_record.created_at.empty();
 }
 
 void bind_login_params(const LogItem& item,
@@ -143,7 +188,6 @@ DBLogger::~DBLogger() {
     if (conn != nullptr) {
         mysql_close(conn);
         conn = nullptr;
-        std::cout << "[log.cpp] [System] DB 연결 종료." << std::endl;
     }
 }
 
@@ -253,7 +297,21 @@ void DBLogger::processQueue() {
                 MYSQL_BIND params[1];
                 unsigned long filename_len = 0;
                 bind_recording_params(item, params, filename_len);
-                execute_stmt(recordingStmt, params, "recordings");
+                if (!execute_stmt(recordingStmt, params, "recordings")) {
+                    continue;
+                }
+
+                VideoCatalogRecordInfo record_info;
+                if (!fetch_recording_info_by_id(conn, mysql_insert_id(conn), record_info)) {
+                    continue;
+                }
+
+                std::error_code ec;
+                if (!std::filesystem::exists(record_info.filename, ec) ||
+                    !std::filesystem::is_regular_file(record_info.filename, ec)) {
+                    continue;
+                }
+                publish_video_catalog_record_added(record_info);
             } else if (item.type == CLEANUP_DB_LOG) {
                 cleanup_requested = true;
             }

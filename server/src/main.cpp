@@ -95,6 +95,10 @@ int main() {
     log_allowlist_mode("SFEPS_ALERT_ALLOW_IPS", sec_cfg.alert_allow_ips);
     log_transport_mode(sec_cfg);
     log_esp_transport_mode(sec_cfg);
+    std::cout << "[main.cpp] [ESP] test_track_pos_enable="
+              << (sec_cfg.esp_test_track_pos_enable ? "on" : "off")
+              << ", interval_sec=" << sec_cfg.esp_test_track_pos_interval_sec
+              << ", object_id=" << sec_cfg.esp_test_track_pos_object_id << std::endl;
 
     std::cout << "[main.cpp] [Security] auth_max_bytes=" << sec_cfg.auth_max_bytes
               << ", audio_max_bytes=" << sec_cfg.audio_max_bytes
@@ -107,6 +111,8 @@ int main() {
               << ", socket_read_timeout_ms=" << sec_cfg.socket_read_timeout_ms << std::endl;
     std::cout << "[main.cpp] [Security] fraud_image_http_base_url="
               << sec_cfg.fraud_image_http_base_url
+              << ", video_retention_sec=" << sec_cfg.video_retention_sec
+              << ", pending_image_retention_sec=" << sec_cfg.pending_image_retention_sec
               << ", fraud_image_retention_sec=" << sec_cfg.fraud_image_retention_sec << std::endl;
 
     signal(SIGINT, signal_handler);
@@ -129,7 +135,9 @@ int main() {
     AnalyticsProcessor analytics(cfg.db_host.c_str(), cfg.db_user.c_str(), cfg.db_pass.c_str(),
                                  cfg.db_name_analytics.c_str());
     analytics.setRfidPairedCallback(
-        [](const std::string& object_id) { snapshot_rfid_image_for_object(object_id); });
+        [](const std::string& object_id, const std::string& tag_time) {
+            snapshot_rfid_image_for_object(object_id, tag_time);
+        });
     analytics.setOutlineDecisionCallback(
         [&sec_cfg](const AnalyticsProcessor::OutlineDecisionPayload& payload) {
             FinalizedFraudImageInfo fraud_image_info;
@@ -192,10 +200,11 @@ int main() {
     }
 
     std::thread t_file_cleanup(run_file_cleanup_worker, std::ref(g_running),
-                               std::string(VIDEO_SAVE_DIR), 300);
+                               std::string(VIDEO_SAVE_DIR),
+                               static_cast<long>(sec_cfg.video_retention_sec));
     std::thread t_pending_image_cleanup(run_pending_image_cleanup_worker, std::ref(g_running),
                                         std::string(pending_image_directory_path()),
-                                        static_cast<long>(sec_cfg.fraud_image_retention_sec));
+                                        static_cast<long>(sec_cfg.pending_image_retention_sec));
     std::thread t_fraud_image_cleanup(run_fraud_image_cleanup_worker, std::ref(g_running),
                                       std::string(fraud_image_directory_path()),
                                       static_cast<long>(sec_cfg.fraud_image_retention_sec));
@@ -205,6 +214,7 @@ int main() {
             if (!sleep_interruptible(g_running, std::chrono::seconds(60))) break;
             logger.requestDbCleanup();
         }
+        std::cout << "[main.cpp] [DBCleanup] 종료." << std::endl;
     });
 
     std::thread t_auth(run_login_auth, std::ref(g_running), std::cref(cfg), std::cref(sec_cfg));
@@ -238,7 +248,5 @@ int main() {
     if (t_file_cleanup.joinable()) t_file_cleanup.join();
 
     analytics.stop();
-
-    std::cout << "[main.cpp] [System] 서버 종료." << std::endl;
     return 0;
 }

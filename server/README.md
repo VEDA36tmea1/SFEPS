@@ -1,6 +1,6 @@
 # SFEPS Server
 
-최종 갱신: 2026-03-19
+최종 갱신: 2026-03-25
 
 SFEPS 서버는 아래 기능을 담당합니다.
 - RTSP 녹화(1분 분할 MP4 저장)
@@ -8,7 +8,7 @@ SFEPS 서버는 아래 기능을 담당합니다.
 - 음성 수신/재생(Audio)
 - 알림 브로드캐스트(Alert)
 - 객체 위치 스트리밍(Position)
-- 녹화 영상 목록 조회(Video Catalog)
+- 녹화 영상 목록 구독/재생(Video Catalog)
 - RFID 이벤트 수신 및 Analytics 매칭
 - 선택 기능: ESP TCP 연동
 
@@ -87,6 +87,8 @@ export SFEPS_APP_TLS_HANDSHAKE_TIMEOUT_MS=3000
 # Video Catalog
 export SFEPS_VIDEO_HTTP_BASE_URL=http://127.0.0.1:8080/videos
 export SFEPS_FRAUD_IMAGE_HTTP_BASE_URL=http://127.0.0.1:8080/fraud-images
+export SFEPS_VIDEO_RETENTION_SEC=86400
+export SFEPS_PENDING_IMAGE_RETENTION_SEC=30
 export SFEPS_FRAUD_IMAGE_RETENTION_SEC=86400
 
 # ESP(선택)
@@ -95,6 +97,10 @@ export SFEPS_ESP_TCP_BIND_IP=192.168.4.1
 export SFEPS_ESP_TCP_PORT=5565
 export SFEPS_ESP_TCP_MAX_CLIENTS=4
 # export SFEPS_ESP_TCP_ALLOW_IPS="192.168.4.2"
+# 개발용 TRACK_POS 테스트(5초 주기, 값 1 고정)
+export SFEPS_ESP_TEST_TRACK_POS_ENABLE=0
+export SFEPS_ESP_TEST_TRACK_POS_INTERVAL_SEC=5
+export SFEPS_ESP_TEST_TRACK_POS_OBJECT_ID=ESP-TEST-01
 ```
 
 ## 핵심 포트
@@ -194,11 +200,23 @@ ESP TCP:
 - 추적 종료 신호: `TRACK_END|<object_id>|REASON=<...>\n`
 
 Video Catalog:
-- 요청: `LIST_REC|FROM=<...>|TO=<...>|Q=<...>|PAGE=<n>|SIZE=<n>\n`
-- 정상 응답:
-  - `REC|<id>|<created_at>|0|<play_url>`
-  - `REC_END|PAGE=<n>|SIZE=<n>|TOTAL=<n>|HAS_NEXT=<0|1>`
-- 오류 응답: `REC_ERR|<code>|<message>`
+- 연결 직후 스냅샷:
+  - `REC_SNAPSHOT_BEGIN|TOTAL=<n>`
+  - `REC|<id>|<created_at>`
+  - `REC_SNAPSHOT_END|TOTAL=<n>`
+  - `REC_STORAGE|USED_BYTES=<n>|TOTAL_BYTES=<n>|AVAILABLE_BYTES=<n>|FILE_COUNT=<n>`
+- 실시간 갱신:
+  - `REC_ADD|<id>|<created_at>`
+  - `REC_DEL|<id>`
+  - `REC_STORAGE|USED_BYTES=<n>|TOTAL_BYTES=<n>|AVAILABLE_BYTES=<n>|FILE_COUNT=<n>`
+- 상태 갱신:
+  - `SYS_STATUS|CPU_TEMP_C=<float>|CPU_USAGE_PCT=<float>` (5초 주기 단독 전송)
+- 재생 요청: `PLAY_REC|<id>\n`
+- 재생 응답:
+  - `PLAY_URL|<id>|<created_at>|<url>`
+- 오류 응답:
+  - `REC_ERR|<code>|<message>`
+  - `PLAY_ERR|<code>|<message>`
 
 ## 운영 체크 명령
 
@@ -249,6 +267,12 @@ sudo systemctl enable --now sfeps-server.service
 
 운영 참고:
 - `IMG_REF` URL은 `SFEPS_FRAUD_IMAGE_HTTP_BASE_URL` 기반으로 생성됩니다.
+- `PLAY_URL` URL은 `SFEPS_VIDEO_HTTP_BASE_URL` 기반으로 생성됩니다.
+- 운영에서 `http://<host>:8080/videos/<filename>`가
+  `/home/iam/SFEPS/videos/<filename>`로 매핑되도록 정적 파일 서빙 구성이 필요합니다.
+- Qt seek/탐색을 위해 `/videos` 정적 서버는 HTTP Range 요청을 지원해야 합니다.
+- 영상은 `SFEPS_VIDEO_RETENTION_SEC`(기본 86400초, 1일) 지난 파일부터 자동 삭제됩니다.
 - 운영에서 `http://<host>:8080/fraud-images/<filename>`가
   `/home/iam/SFEPS/event_images/fraud/<filename>`로 매핑되도록 정적 파일 서빙 구성이 필요합니다.
+- pending 이미지는 `SFEPS_PENDING_IMAGE_RETENTION_SEC`(기본 30초) 지난 파일부터 자동 삭제됩니다.
 - fraud 이미지는 `SFEPS_FRAUD_IMAGE_RETENTION_SEC`(기본 86400초, 1일) 지난 파일부터 자동 삭제됩니다.

@@ -33,6 +33,23 @@ Page {
     // Dynamic scaling helper
     property int maxAgeCount: Math.max(1, ageCount18, ageCount25, ageCount35, ageCount45, ageCount60, ageCountPlus)
 
+    // Keep analytics counters updated from fraud events even though the alert list card is removed.
+    Connections {
+        target: fraudManager
+        function onFraudDetected(objectId, cardAgeText, ageGroup, isFraud) {
+            sessionEvasions++
+            totalEntries++
+
+            const grp = ageGroup.toLowerCase()
+            if (grp.indexOf("10") !== -1) ageCount18++
+            else if (grp.indexOf("20") !== -1) ageCount25++
+            else if (grp.indexOf("30") !== -1) ageCount35++
+            else if (grp.indexOf("40") !== -1) ageCount45++
+            else if (grp.indexOf("50") !== -1 || grp.indexOf("60") !== -1) ageCount60++
+            else ageCountPlus++
+        }
+    }
+
     ScrollView {
         id: scrollView
         anchors.fill: parent
@@ -73,7 +90,7 @@ Page {
             // Charts Area (Entry Status & Demographic)
             RowLayout {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 320
+                Layout.preferredHeight: 240
                 Layout.leftMargin: 24
                 Layout.rightMargin: 24
                 spacing: 16
@@ -328,10 +345,10 @@ Page {
                 }
             }
 
-            // Recent Alerts Table
+            // Video Storage
             Rectangle {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 300
+                Layout.preferredHeight: 240
                 Layout.leftMargin: 24
                 Layout.rightMargin: 24
                 color: AppTheme.surfaceCard
@@ -344,203 +361,17 @@ Page {
                     anchors.margins: 20
                     spacing: 16
 
-                    Connections {
-                        target: fraudManager
-                        function onFraudDetected(objectId, cardAgeText, ageGroup, isFraud) {
-                            alertsModel.insert(0, {
-                                ts: Qt.formatDateTime(new Date(), "HH:mm:ss"),
-                                location: "Object " + objectId,
-                                type: cardAgeText.toUpperCase() + " CARD",
-                                confidence: ageGroup.toUpperCase(),
-                                action: "Footage"
-                            })
-                            sessionEvasions++
-                            totalEntries++
-
-                            // Increment age demographics based on age_group text
-                            const grp = ageGroup.toLowerCase()
-                            if (grp.indexOf("10") !== -1) ageCount18++
-                            else if (grp.indexOf("20") !== -1) ageCount25++
-                            else if (grp.indexOf("30") !== -1) ageCount35++
-                            else if (grp.indexOf("40") !== -1) ageCount45++
-                            else if (grp.indexOf("50") !== -1 || grp.indexOf("60") !== -1) ageCount60++
-                            else ageCountPlus++
-                        }
+                    Text {
+                        text: "Video Storage"
+                        color: "white"
+                        font.bold: true
+                        font.pixelSize: 16
                     }
 
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Text {
-                            text: "Recent Fraud Alerts"
-                            color: "white"
-                            font.bold: true
-                            font.pixelSize: 16
-                        }
-                        Item {
-                            Layout.fillWidth: true
-                        }
-                    }
-
-                    // Search box (placed directly under Recent Fraud Alerts label)
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Rectangle {
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 38
-                            color: AppTheme.surfaceCard
-                            radius: 6
-                            border.color: AppTheme.borderCard
-
-                            RowLayout {
-                                anchors.fill: parent
-                                anchors.leftMargin: 12
-                                spacing: 10
-                                Image {
-                                    source: "qrc:/assets/search.svg"
-                                    sourceSize: Qt.size(16, 16)
-                                    opacity: 0.7
-                                }
-                                TextField {
-                                    Layout.fillWidth: true
-                                    placeholderText: "Search analytics data..."
-                                    color: "white"
-                                    font.pixelSize: 12
-                                    background: null
-                                }
-                            }
-                        }
-                    }
-
-                    // Table Header
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 20
-                        Text {
-                            text: "TIMESTAMP"
-                            color: AppTheme.textSecondary
-                            font.pixelSize: 11
-                            font.bold: true
-                            Layout.preferredWidth: 80
-                        }
-                        Text {
-                            text: "LOCATION"
-                            color: AppTheme.textSecondary
-                            font.pixelSize: 11
-                            font.bold: true
-                            Layout.preferredWidth: 150
-                        }
-                        Text {
-                            text: "CARD TYPE"
-                            color: AppTheme.textSecondary
-                            font.pixelSize: 11
-                            font.bold: true
-                            Layout.preferredWidth: 120
-                        }
-                        Text {
-                            text: "CARD ID"
-                            color: AppTheme.textSecondary
-                            font.pixelSize: 11
-                            font.bold: true
-                            Layout.preferredWidth: 100
-                        }
-                        Text {
-                            text: "ACTION"
-                            color: AppTheme.textSecondary
-                            font.pixelSize: 11
-                            font.bold: true
-                            Layout.fillWidth: true
-                        }
-                    }
-
-                    Rectangle {
-                        Layout.fillWidth: true
-                        height: 1
-                        color: AppTheme.borderCard
-                    }
-
-                    ListView {
+                    Loader {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        clip: true
-                        model: ListModel {
-                            id: alertsModel
-                        }
-                        delegate: ColumnLayout {
-                            width: ListView.view ? ListView.view.width : 0
-                            spacing: 0
-
-                            RowLayout {
-                                Layout.topMargin: 12
-                                Layout.bottomMargin: 12
-                                spacing: 20
-
-                                Text {
-                                    text: ts
-                                    color: "white"
-                                    Layout.preferredWidth: 80
-                                    font.pixelSize: 13
-                                }
-                                Text {
-                                    text: location
-                                    color: "white"
-                                    Layout.preferredWidth: 150
-                                    font.pixelSize: 13
-                                }
-                                Rectangle {
-                                    radius: 4
-                                    color: "#9a3412"
-                                    Layout.preferredWidth: 120
-                                    Layout.preferredHeight: 24
-                                    RowLayout {
-                                        anchors.centerIn: parent
-                                        Text {
-                                            text: type
-                                            color: "#fbbf24"
-                                            font.pixelSize: 10
-                                            font.bold: true
-                                        }
-                                    }
-                                }
-                                Text {
-                                    text: confidence
-                                    color: "white"
-                                    Layout.preferredWidth: 100
-                                    font.pixelSize: 13
-                                }
-                                Button {
-                                    Layout.preferredHeight: 28
-                                    flat: true
-                                    background: Rectangle {
-                                        color: "transparent"
-                                        border.color: "#4b5563"
-                                        border.width: 1
-                                        radius: 4
-                                    }
-                                    contentItem: RowLayout {
-                                        anchors.centerIn: parent
-                                        spacing: 4
-                                        Text {
-                                            text: "▶"
-                                            color: "white"
-                                            font.pixelSize: 10
-                                        }
-                                        Text {
-                                            text: action
-                                            color: "white"
-                                            font.pixelSize: 12
-                                            font.bold: true
-                                        }
-                                    }
-                                }
-                            }
-
-                            Rectangle {
-                                Layout.fillWidth: true
-                                height: 1
-                                color: AppTheme.surfaceBackground
-                                opacity: 0.5
-                            }
-                        }
+                        source: "ArchiveView.qml"
                     }
                 }
             }
@@ -553,21 +384,21 @@ Page {
                 Layout.bottomMargin: 24
                 spacing: 16
 
-                Repeater {
+                    Repeater {
                     model: [
                         {
-                            title: "Active Cameras",
-                            value: "1",
-                            badge: "Active",
-                            color: "#22c55e",
-                            icon: "video"
+                            title: "CPU Usage",
+                            value: "-",
+                            badge: "CPU",
+                            color: "#06b6d4",
+                            icon: "activity"
                         },
                         {
-                            title: "Gate Sensors",
-                            value: "1",
-                            badge: "Online",
-                            color: AppTheme.accent,
-                            icon: "wifi"
+                            title: "CPU Temperature",
+                            value: "-",
+                            badge: "CPU",
+                            color: "#16a34a",
+                            icon: "thermometer"
                         },
                         {
                             title: "Stream Latency",
@@ -577,8 +408,15 @@ Page {
                             icon: "activity"
                         },
                         {
-                            title: "Storage Remaining",
-                            value: "2.4 TB",
+                            title: "Archived Videos",
+                            value: "0",
+                            badge: "Archived",
+                            color: "#d4e635",
+                            icon: "wifi"
+                        },
+                        {
+                            title: "Storage Capacity",
+                            value: "0%",
                             badge: "Storage",
                             color: "#a855f7",
                             icon: "database"
@@ -613,7 +451,8 @@ Page {
                                 }
                             }
 
-                                ColumnLayout {
+                            ColumnLayout {
+                                Layout.alignment: Qt.AlignVCenter
                                 spacing: 4
                                 Text {
                                     text: modelData.title
@@ -621,8 +460,18 @@ Page {
                                     font.pixelSize: 12
                                 }
                                 Text {
-                                    // If this card represents stream latency, show the live measured value
-                                    text: modelData.title === "Stream Latency" ? (monitoringStreamLatency + " ms") : modelData.value
+                                    id: statValue
+                                    text: modelData.title === "Stream Latency"
+                                          ? (monitoringStreamLatency + " ms")
+                                        : modelData.title === "Archived Videos"
+                                            ? String(recordingListModel.count)
+                                            : modelData.title === "Storage Capacity"
+                                                ? (storageTotal > 0 ? formatUsedTotal(storageUsed, storageTotal) : "-")
+                                                : modelData.title === "CPU Temperature"
+                                                    ? (cpuTempC > 0 ? (cpuTempC.toFixed(1) + " °C") : "-")
+                                                    : modelData.title === "CPU Usage"
+                                                        ? (typeof cpuUsagePct !== 'undefined' ? (cpuUsagePct.toFixed(1) + " %") : "-")
+                                                        : modelData.value
                                     color: "white"
                                     font.pixelSize: 18
                                     font.bold: true
@@ -634,4 +483,58 @@ Page {
             }
         }
     }
+
+    // Video storage properties (updated from VideoArchiveManager REC_STORAGE)
+
+    property var storageTotal: 0
+    property var storageAvailable: 0
+    property var storageUsed: 0
+    property real cpuTempC: 0.0
+    property real cpuUsagePct: 0.0
+
+    function bytesToReadable(bytes) {
+        if (!bytes || bytes <= 0) return "0 B";
+        var units = ["B","KB","MB","GB","TB","PB"];
+        var i = Math.floor(Math.log(bytes) / Math.log(1024));
+        if (i < 0) i = 0;
+        if (i > units.length - 1) i = units.length - 1;
+        var v = bytes / Math.pow(1024, i);
+        return (Math.round(v * 10) / 10) + " " + units[i];
+    }
+
+    function formatUsedTotal(used, total) {
+        if (!total || total <= 0) return "-";
+        var TB = 1024 * 1024 * 1024 * 1024;
+        var GB = 1024 * 1024 * 1024;
+        var MB = 1024 * 1024;
+        var unit = {name: "B", size: 1};
+        if (total >= TB) unit = {name: "TB", size: TB};
+        else if (total >= GB) unit = {name: "GB", size: GB};
+        else if (total >= MB) unit = {name: "MB", size: MB};
+        var usedV = used / unit.size;
+        var totalV = total / unit.size;
+        var usedStr = usedV.toFixed(2).toString();
+        var totalStr = (Math.round(totalV)).toString();
+        return usedStr + " / " + totalStr + " " + unit.name;
+    }
+
+    Connections {
+        target: videoArchiveManager
+        onStorageUpdated: function(usedBytes, totalBytes, availableBytes, fileCount) {
+            storageTotal = totalBytes
+            storageAvailable = availableBytes
+            storageUsed = usedBytes
+            console.log("storageUpdated -> used:", usedBytes, "total:", totalBytes, "avail:", availableBytes, "count:", fileCount)
+        }
+    }
+
+    Connections {
+        target: videoArchiveManager
+        onSysStatusUpdated: function(tempC, usagePct) {
+            cpuTempC = tempC
+            cpuUsagePct = usagePct
+            console.log("SYS_STATUS -> temp:", tempC, "usage:", usagePct)
+        }
+    }
+
 }

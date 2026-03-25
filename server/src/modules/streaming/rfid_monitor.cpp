@@ -216,5 +216,5 @@ void RfidMonitor::run_loop() {
         if (m_running) std::this_thread::sleep_for(std::chrono::seconds(1));
     }  // 바깥 while 끝
 
-    std::cout << "[rfid_monitor.cpp] " << ">> [RFID] 모니터링 스레드 종료." << std::endl;
+    std::cout << "[rfid_monitor.cpp] [RFID] monitor 종료." << std::endl;
 }

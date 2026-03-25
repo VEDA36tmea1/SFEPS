@@ -2,6 +2,7 @@
 
 #include <poll.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -146,9 +147,22 @@ void run_login_auth_impl(std::atomic<bool>& running,
         }
     };
 
+    struct ClientState {
+        AcceptedClient conn;
+    };
+
+    std::vector<ClientState> clients;
+
     while (running.load()) {
         std::vector<pollfd> pfds;
+        std::vector<bool> listener_entries;
         append_listener_pollfds(listeners, pfds);
+        const std::size_t listener_count = pfds.size();
+        listener_entries.resize(pfds.size(), true);
+        for (const ClientState& client : clients) {
+            pfds.push_back(pollfd {client.conn.fd, POLLIN, 0});
+            listener_entries.push_back(false);
+        }
         if (pfds.empty()) break;
 
         const int poll_ret = poll(pfds.data(), pfds.size(), 1000);
@@ -159,72 +173,105 @@ void run_login_auth_impl(std::atomic<bool>& running,
         }
         if (poll_ret == 0) continue;
 
-        for (const pollfd& pfd : pfds) {
-            if ((pfd.revents & POLLIN) == 0) continue;
+        std::vector<std::size_t> remove_indices;
+        for (std::size_t i = 0; i < pfds.size(); ++i) {
+            const pollfd& pfd = pfds[i];
+            if (pfd.revents == 0) continue;
 
-            TransportKind kind;
-            if (!resolve_listener_kind(listeners, pfd.fd, kind)) continue;
+            if (listener_entries[i]) {
+                if ((pfd.revents & POLLIN) == 0) continue;
 
-            AcceptedClient client;
-            if (!accept_client(listeners, kind, sec_cfg.auth_allow_ips, "Auth", client)) {
-                if (!running.load()) break;
+                TransportKind kind;
+                if (!resolve_listener_kind(listeners, pfd.fd, kind)) continue;
+
+                AcceptedClient client;
+                if (!accept_client(listeners, kind, sec_cfg.auth_allow_ips, "Auth", client)) {
+                    if (!running.load()) break;
+                    continue;
+                }
+
+                std::cout << "[AuthFlow][4] " << (kind == TransportKind::Plain ? "plain" : "TLS")
+                          << " auth client accepted: ip=" << client.ip << ", fd=" << client.fd
+                          << std::endl;
+
+                apply_read_timeout(client, sec_cfg.socket_read_timeout_ms);
+                clients.push_back(ClientState {std::move(client)});
                 continue;
             }
 
-            std::cout << "[AuthFlow][4] " << (kind == TransportKind::Plain ? "plain" : "TLS")
-                      << " auth client accepted: ip=" << client.ip << ", fd=" << client.fd
-                      << std::endl;
+            const std::size_t client_index = i - listener_count;
+            if (client_index >= clients.size()) continue;
 
-            apply_read_timeout(client, sec_cfg.socket_read_timeout_ms);
+            ClientState& client = clients[client_index];
+            if ((pfd.revents & (POLLHUP | POLLERR | POLLNVAL)) != 0) {
+                remove_indices.push_back(client_index);
+                continue;
+            }
+            if ((pfd.revents & POLLIN) == 0) continue;
 
             std::vector<char> buf(sec_cfg.auth_max_bytes + 1, 0);
-            const ssize_t bytes_read = client_read(client, buf.data(), buf.size());
+            const ssize_t bytes_read = client_read(client.conn, buf.data(), buf.size());
             if (bytes_read <= 0) {
                 if (bytes_read < 0 && errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
-                    std::cerr << "[Auth] " << transport_name(kind)
+                    std::cerr << "[Auth] " << transport_name(client.conn.kind)
                               << " read() 실패: " << std::strerror(errno) << std::endl;
                 }
-                close_client(client);
+                remove_indices.push_back(client_index);
                 continue;
             }
 
             const bool oversized = static_cast<std::size_t>(bytes_read) > sec_cfg.auth_max_bytes;
             const std::size_t data_len =
                 oversized ? sec_cfg.auth_max_bytes : static_cast<std::size_t>(bytes_read);
-            const std::string data(buf.data(), data_len);
+            const std::string data = trim_copy(std::string(buf.data(), data_len));
 
             std::string user;
             bool success = false;
-            evaluate_auth(data, client.ip, oversized, user, success);
-            std::cout << "[main.cpp] [Auth] " << transport_name(kind)
-                      << " login attempt result: ip=" << client.ip << ", user=" << user
+            evaluate_auth(data, client.conn.ip, oversized, user, success);
+            std::cout << "[main.cpp] [Auth] " << transport_name(client.conn.kind)
+                      << " login attempt result: ip=" << client.conn.ip << ", user=" << user
                       << ", result=" << (success ? "PASS" : "FAIL") << std::endl;
 
             if (oversized) {
-                std::cout << "[main.cpp] [Auth] " << transport_name(kind)
+                std::cout << "[main.cpp] [Auth] " << transport_name(client.conn.kind)
                           << " payload 거부: 초과 SFEPS_AUTH_MAX_BYTES="
-                          << sec_cfg.auth_max_bytes << " (ip=" << client.ip << ")"
+                          << sec_cfg.auth_max_bytes << " (ip=" << client.conn.ip << ")"
                           << std::endl;
             }
 
             const char* resp = success ? "PASS" : "FAIL";
-            client_send_all(client, resp, 4);
+            if (!client_send_all(client.conn, resp, 4)) {
+                remove_indices.push_back(client_index);
+                continue;
+            }
 
             if (success) {
-                mark_ip_authenticated(client.ip);
-                std::cout << "[main.cpp] [Auth] " << transport_name(kind)
-                          << " login session registered: ip=" << client.ip
+                mark_ip_authenticated(client.conn.ip);
+                std::cout << "[main.cpp] [Auth] " << transport_name(client.conn.kind)
+                          << " login session registered: ip=" << client.conn.ip
                           << ", user=" << user << std::endl;
                 send_alert_to_clients("TEST|LOGIN_OK|" + user + "\n");
             }
 
-            auth_logger.enqueueLogin(user, client.ip, success);
-            close_client(client);
+            auth_logger.enqueueLogin(user, client.conn.ip, success);
+        }
+
+        if (!remove_indices.empty()) {
+            std::sort(remove_indices.begin(), remove_indices.end());
+            remove_indices.erase(std::unique(remove_indices.begin(), remove_indices.end()),
+                                 remove_indices.end());
+            for (auto it = remove_indices.rbegin(); it != remove_indices.rend(); ++it) {
+                if (*it >= clients.size()) continue;
+                close_client(clients[*it].conn);
+                clients.erase(clients.begin() + static_cast<std::ptrdiff_t>(*it));
+            }
         }
     }
 
+    for (ClientState& client : clients) {
+        close_client(client.conn);
+    }
     close_listener_bundle(listeners);
-    std::cout << "[main.cpp] [Auth] auth 스레드 종료." << std::endl;
 }
 
 }  // namespace app_services_impl

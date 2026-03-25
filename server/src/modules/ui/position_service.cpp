@@ -59,6 +59,8 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
     std::string esp_active_object_id;
     bool esp_has_last_sent = false;
     AnalyticsProcessor::ObjectPositionSnapshot esp_last_sent;
+    std::chrono::steady_clock::time_point esp_last_sent_at =
+        std::chrono::steady_clock::time_point::min();
 
     struct ObjLastSentState {
         std::chrono::steady_clock::time_point updated_at;
@@ -76,6 +78,10 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
     const auto deauth_grace =
         std::chrono::milliseconds(std::max(0, sec_cfg.auth_deauth_grace_ms));
     const auto force_logout_cooldown = std::chrono::seconds(5);
+    const auto esp_min_send_interval = std::chrono::seconds(1);
+    const auto esp_test_track_pos_interval =
+        std::chrono::seconds(std::max(1, sec_cfg.esp_test_track_pos_interval_sec));
+    auto esp_test_track_pos_next_at = std::chrono::steady_clock::now();
 
     constexpr std::size_t kMaxRecvBuffer = 16 * 1024;
     constexpr std::size_t kReadBufferSize = 4096;
@@ -175,6 +181,9 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
         if ((now - snapshot.updated_at) > esp_stale_limit) {
             return false;
         }
+        if (esp_has_last_sent && (now - esp_last_sent_at) < esp_min_send_interval) {
+            return false;
+        }
 
         EspManager::TrackPosPayload payload;
         payload.object_id = snapshot.object_id;
@@ -191,6 +200,7 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
 
         esp_last_sent = snapshot;
         esp_has_last_sent = true;
+        esp_last_sent_at = now;
         return true;
     };
 
@@ -206,6 +216,7 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
 
         esp_active_object_id = requested_id;
         esp_has_last_sent = false;
+        esp_last_sent_at = std::chrono::steady_clock::time_point::min();
         esp_manager.setClientTrackObjectId(esp_active_object_id);
         esp_manager.publishTrackStart(esp_active_object_id);
         try_publish_esp_track_pos(esp_active_object_id);
@@ -218,6 +229,7 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
             esp_manager.publishTrackEnd(esp_active_object_id, reason_text);
             esp_active_object_id.clear();
             esp_has_last_sent = false;
+            esp_last_sent_at = std::chrono::steady_clock::time_point::min();
             esp_manager.clearClientTrackObjectId();
         }
     };
@@ -436,6 +448,25 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
             }
         }
 
+        if (sec_cfg.esp_test_track_pos_enable &&
+            !sec_cfg.esp_test_track_pos_object_id.empty() &&
+            now >= esp_test_track_pos_next_at) {
+            EspManager::TrackPosPayload test_payload;
+            test_payload.object_id = sec_cfg.esp_test_track_pos_object_id;
+            test_payload.left = 1.0f;
+            test_payload.top = 1.0f;
+            test_payload.right = 1.0f;
+            test_payload.bottom = 1.0f;
+            test_payload.x = 1.0f;
+            test_payload.y = 1.0f;
+            test_payload.tag_time = "1";
+            const bool sent = esp_manager.publishTrackPos(test_payload);
+            std::cout << "[main.cpp] [ESP_TEST] TRACK_POS(" << test_payload.object_id
+                      << ") " << (sent ? "sent" : "skipped(no client/send fail)")
+                      << std::endl;
+            esp_test_track_pos_next_at = now + esp_test_track_pos_interval;
+        }
+
         const auto broadcast_obj_line = [&](const std::string& line) -> bool {
             if (line.empty()) return true;
 
@@ -510,7 +541,6 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
         close_client(client.conn);
     }
     close_listener_bundle(listeners);
-    std::cout << "[main.cpp] [Position] 스트림 서비스 스레드 종료." << std::endl;
 }
 
 }  // namespace app_services_impl

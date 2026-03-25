@@ -26,6 +26,7 @@ Page {
     property string currentTrackedId: ""
     property string visualTrackedId: ""
     property string streamStatusOverrideForTest: ""
+    property int streamLatency: videoDisplay ? videoDisplay.streamLatency : 0
     readonly property string effectiveStreamStatus: streamStatusOverrideForTest !== ""
                                                     ? streamStatusOverrideForTest
                                                     : (videoDisplay ? videoDisplay.streamStatus : "STOPPED")
@@ -415,9 +416,6 @@ Page {
                     }
                 }
 
-                // Expose the low-level video stream latency to the parent scope
-                property alias streamLatency: videoDisplay.streamLatency
-
                 // Popup for Track controls when an object is selected
                 Popup {
                     id: trackPopup
@@ -432,7 +430,7 @@ Page {
                         width: 240
                         height: 120
                         color: AppTheme.surfaceCard
-                        radius: 8
+                        radius: 12
                         border.color: AppTheme.borderCard
 
                         ColumnLayout {
@@ -862,6 +860,8 @@ Page {
                             Layout.fillWidth: true
                             placeholderText: "Filter events..."
                             color: "white"
+                            placeholderTextColor: "#9ca3af"
+                            palette.text: "white"
                             font.pixelSize: 12
                             background: null
                         }

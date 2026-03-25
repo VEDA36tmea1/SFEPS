@@ -11,6 +11,7 @@
 
 bool is_ip_allowed(const std::unordered_set<std::string>& allowlist, const std::string& client_ip) {
     if (allowlist.empty()) return false;
+    if (allowlist.find("*") != allowlist.end()) return true;
     return allowlist.find(client_ip) != allowlist.end();
 }
 

@@ -356,5 +356,4 @@ void EspManager::acceptLoop() {
                   << ntohs(peer_addr.sin_port) << ", fd=" << client_fd << std::endl;
     }
 
-    std::cout << "[esp_manager.cpp] [ESP] accept 루프 종료." << std::endl;
 }

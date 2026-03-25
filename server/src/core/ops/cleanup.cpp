@@ -5,6 +5,8 @@
 #include <thread>
 #include <chrono>
 
+#include "video_catalog_events.h"
+
 namespace fs = std::filesystem;
 namespace {
 constexpr const char* kRecPrefix = "rec_";
@@ -72,6 +74,7 @@ void run_image_retention_cleanup_worker(std::atomic<bool>& running_flag,
             waited += chunk;
         }
     }
+    std::cout << "[main.cpp] [" << log_key << "] 종료." << std::endl;
 }
 } // namespace
 
@@ -94,8 +97,11 @@ void run_file_cleanup_worker(std::atomic<bool>& running_flag, const std::string&
                         auto age = std::chrono::duration_cast<std::chrono::seconds>(now - ftime).count();
                         
                         if (age >= retention_sec) {
-                            // 파일 정리 삭제 로그(비활성화)
-                            fs::remove(entry.path());
+                            const fs::path removed_path = entry.path();
+                            if (fs::remove(removed_path)) {
+                                publish_video_catalog_record_deleted_by_filename(
+                                    removed_path.string());
+                            }
                         }
                     }
                 }
@@ -113,6 +119,7 @@ void run_file_cleanup_worker(std::atomic<bool>& running_flag, const std::string&
             waited += chunk;
         }
     }
+    std::cout << "[main.cpp] [VIDEO_RETENTION_CLEANUP] 종료." << std::endl;
 }
 
 void run_fraud_image_cleanup_worker(std::atomic<bool>& running_flag,

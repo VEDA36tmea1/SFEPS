@@ -7,8 +7,8 @@ import src.views 1.0
 Window {
     id: rootWindow
     objectName: "mainWindow"
-    width: 1250
-    height: 750
+    width: 1350
+    height: 810
     visible: true
     title: "Hanwha Vision SFEPS"
     color: AppTheme.background

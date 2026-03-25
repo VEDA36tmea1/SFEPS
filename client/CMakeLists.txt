@@ -25,6 +25,8 @@ qt_add_executable(appHanwhaVisionSFEPS
     src/voicemanager.cpp src/voicemanager.h
     src/fraudmanager.cpp src/fraudmanager.h
     src/positionmanager.cpp src/positionmanager.h
+    src/videoarchivemanager.cpp src/videoarchivemanager.h
+    src/recordinglistmodel.cpp src/recordinglistmodel.h
     ${RESOURCES}
 )
 
@@ -45,6 +47,7 @@ qt_add_qml_module(appHanwhaVisionSFEPS
         src/views/DetailView.qml
         src/views/AnalyticsView.qml
         src/views/SettingsView.qml
+        src/views/ArchiveView.qml
 )
 
 # 편의를 위해 자산 폴더를 빌드 디렉토리로 복사 (배포 방식에 따라 선택 사항)

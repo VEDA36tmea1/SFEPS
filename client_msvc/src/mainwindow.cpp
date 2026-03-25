@@ -1,4 +1,12 @@
 #include "mainwindow.h"
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#endif
+#include "RTSPClient.h"
+#include "XMLParser.h"
+#include "Config.h"
 #include <QPainter>
 #include <QDebug>
 #include <QProcessEnvironment>
@@ -10,6 +18,9 @@
 #include <QByteArray>
 #include <QSslConfiguration>
 #include <QSslSocket>
+#include <QMetaObject>
+#include <algorithm>
+#include <cmath>
 
 namespace {
 bool parseEnvBool(const QProcessEnvironment &env, const QString &key, bool defaultValue)
@@ -69,6 +80,14 @@ MainWindow::MainWindow(QQuickItem *parent)
     connect(m_updateTimer, &QTimer::timeout, this, &MainWindow::onUpdateTimerTimeout);
 
     const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    m_targetFps = parseEnvInt(env, "RTSP_TARGET_FPS", 30);
+    if (m_targetFps < 1) m_targetFps = 1;
+    m_dropGrabCount = parseEnvInt(env, "RTSP_DROP_GRABS", 2);
+    if (m_dropGrabCount < 0) m_dropGrabCount = 0;
+    m_rtspBackend = env.value("RTSP_BACKEND", "ffmpeg").trimmed().toLower();
+    m_useGStreamer = (m_rtspBackend == "gstreamer");
+    m_directStreamMode = parseEnvBool(env, "SFEPS_DIRECT_STREAM_MODE", false);
+    m_useOnvifMetadata = parseEnvBool(env, "SFEPS_USE_ONVIF_METADATA", true);
     m_cameraBrightnessCgiUrlTemplate = env.value(
         "CAMERA_BRIGHTNESS_CGI_URL",
         "https://192.168.0.84/stw-cgi/image.cgi?msubmenu=imageenhancements2&action=set&Brightness={value}").trimmed();
@@ -108,6 +127,7 @@ MainWindow::MainWindow(QQuickItem *parent)
 MainWindow::~MainWindow()
 {
     setRunning(false);
+    stopMetadataWorker();
     if (cap.isOpened()) {
         cap.release();
     }
@@ -132,6 +152,7 @@ void MainWindow::setRunning(bool running)
         }
     } else {
         m_reconnectTimer->stop();
+        stopMetadataWorker();
         if (worker) {
             worker->stop();
             delete worker;
@@ -267,6 +288,23 @@ void MainWindow::processFrame(const cv::Mat &frame, qint64 ts)
     if (measured != m_streamLatencyMs) {
         m_streamLatencyMs = measured;
         emit streamLatencyChanged();
+    }
+
+    // Estimate overlay lag: current video frame time - latest metadata arrival time.
+    qint64 latestMetaMs = -1;
+    {
+        QMutexLocker locker(&m_mutex);
+        for (const QVariant &v : m_detections) {
+            if (!v.canConvert<QVariantMap>()) continue;
+            const QVariantMap m = v.toMap();
+            const qint64 metaMs = m.value("metaTsMs").toLongLong();
+            if (metaMs > latestMetaMs) latestMetaMs = metaMs;
+        }
+    }
+    const int delayMs = (latestMetaMs > 0) ? int(nowMs - latestMetaMs) : -1;
+    if (delayMs != m_videoMetaDelayMs) {
+        m_videoMetaDelayMs = delayMs;
+        emit videoMetaDelayChanged();
     }
 }
 
@@ -521,6 +559,7 @@ void MainWindow::onReadFailed()
     if (cap.isOpened()) {
         cap.release();
     }
+    stopMetadataWorker();
 
     updateStreamStatus("RECONNECTING", false);
 
@@ -547,25 +586,45 @@ bool MainWindow::openStream()
         return true;
     }
 
-        qputenv("OPENCV_FFMPEG_CAPTURE_OPTIONS",
-            QByteArray("rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0"));
+    const QByteArray ffmpegOpts = QProcessEnvironment::systemEnvironment().value(
+        "RTSP_FFMPEG_OPTIONS",
+        "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0|probesize;32768|analyzeduration;0|reorder_queue_size;0")
+        .toUtf8();
+    qputenv("OPENCV_FFMPEG_CAPTURE_OPTIONS", ffmpegOpts);
 
     const QString rtspUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.82:8554/cam1");
-    cap.open(rtspUrl.toStdString(), cv::CAP_FFMPEG);
+    const QString explicitGstPipeline = QProcessEnvironment::systemEnvironment().value("RTSP_GSTREAMER_PIPELINE").trimmed();
+
+    if (!explicitGstPipeline.isEmpty()) {
+        cap.open(explicitGstPipeline.toStdString(), cv::CAP_GSTREAMER);
+        m_useGStreamer = true;
+    } else if (m_useGStreamer) {
+        const QString gstPipeline = QString(
+            "rtspsrc location=%1 protocols=tcp latency=0 drop-on-late=true ! "
+            "rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! "
+            "appsink sync=false max-buffers=1 drop=true").arg(rtspUrl);
+        cap.open(gstPipeline.toStdString(), cv::CAP_GSTREAMER);
+    } else {
+        cap.open(rtspUrl.toStdString(), cv::CAP_FFMPEG);
+    }
     if (!cap.isOpened()) {
-        qWarning() << "[MainWindow] Failed to open stream:" << rtspUrl;
+        qWarning() << "[MainWindow] Failed to open stream. backend=" << (m_useGStreamer ? "gstreamer" : "ffmpeg")
+                   << "url=" << rtspUrl;
         return false;
     }
 
     cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
-    // Conservative decode size to avoid FFmpeg/OpenCV allocation spikes.
-    cap.set(cv::CAP_PROP_FRAME_WIDTH, 1280);
-    cap.set(cv::CAP_PROP_FRAME_HEIGHT, 720);
-    cap.set(cv::CAP_PROP_FPS, 15);
+    cap.set(cv::CAP_PROP_FPS, m_targetFps);
     // Log stream and source frame size for diagnosing image-size/resolution
     double srcW = cap.get(cv::CAP_PROP_FRAME_WIDTH);
     double srcH = cap.get(cv::CAP_PROP_FRAME_HEIGHT);
-    qDebug() << "[MainWindow] Stream open success:" << rtspUrl << "source size:" << srcW << "x" << srcH;
+    qDebug() << "[MainWindow] Stream open success:" << rtspUrl << "backend=" << (m_useGStreamer ? "gstreamer" : "ffmpeg")
+             << "source size:" << srcW << "x" << srcH
+             << "targetFps=" << m_targetFps
+             << "dropGrabs=" << m_dropGrabCount;
+    if (m_directStreamMode && m_useOnvifMetadata) {
+        startMetadataWorker();
+    }
     emit imageSizeChanged();
     return true;
 }
@@ -574,6 +633,8 @@ void MainWindow::ensureWorkerRunning()
 {
     if (!worker) {
         worker = new VideoCaptureWorker(&cap, this);
+        worker->setTargetFps(m_targetFps);
+        worker->setDropGrabCount(m_dropGrabCount);
         connect(worker, &VideoCaptureWorker::newFrame, this, &MainWindow::processFrame, Qt::QueuedConnection);
         connect(worker, &VideoCaptureWorker::readFailed, this, &MainWindow::onReadFailed);
     }
@@ -593,6 +654,120 @@ void MainWindow::updateStreamStatus(const QString &status, bool connected)
     if (m_streamConnected != connected) {
         m_streamConnected = connected;
         emit streamConnectedChanged();
+    }
+}
+
+void MainWindow::startMetadataWorker()
+{
+    if (m_metadataRunning.load(std::memory_order_acquire)) return;
+    m_metadataRunning.store(true, std::memory_order_release);
+    m_metadataThread = std::thread([this]() {
+        RTSPClient client;
+        XMLParser parser;
+        if (!client.connectToCamera()) {
+            qWarning() << "[MainWindow] metadata worker: camera connect failed";
+            m_metadataRunning.store(false, std::memory_order_release);
+            return;
+        }
+        client.sendHandshake();
+
+        unsigned char header[4];
+        std::string accumulatedXml;
+        unsigned int lastTimestamp = 0;
+        std::vector<char> bigBuffer(65536);
+        socket_t sock = client.getSocket();
+#ifdef _WIN32
+        DWORD tv = 1000;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv));
+#else
+        timeval tv{};
+        tv.tv_sec = 1;
+        tv.tv_usec = 0;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+#endif
+
+        while (m_metadataRunning.load(std::memory_order_acquire))
+        {
+            client.sendHeartbeat();
+            const int readLen = recv(sock, reinterpret_cast<char*>(header), 4, MSG_WAITALL);
+            if (readLen <= 0) break;
+            if (header[0] != '$') continue;
+
+            const int channel = static_cast<int>(header[1]);
+            const int payloadLen = (static_cast<int>(header[2]) << 8) | static_cast<int>(header[3]);
+            int totalRead = 0;
+            while (totalRead < payloadLen) {
+                int toRead = payloadLen - totalRead;
+                if (toRead > static_cast<int>(bigBuffer.size())) toRead = static_cast<int>(bigBuffer.size());
+                int r = recv(sock, bigBuffer.data() + totalRead, toRead, 0);
+                if (r <= 0) { totalRead = 0; break; }
+                totalRead += r;
+            }
+            if (totalRead <= 12) continue;
+            if (channel != 2) continue;
+
+            auto *rtp = reinterpret_cast<unsigned char*>(bigBuffer.data());
+            unsigned int currentTimestamp =
+                (rtp[4] << 24) | (rtp[5] << 16) | (rtp[6] << 8) | rtp[7];
+            char *xmlData = bigBuffer.data() + 12;
+            int xmlLen = totalRead - 12;
+
+            if (currentTimestamp != lastTimestamp && lastTimestamp != 0)
+            {
+                auto humans = parser.parseHumanObjectsForAnalytics(accumulatedXml, false);
+                accumulatedXml.clear();
+
+                QVariantList dets;
+                const qint64 frameNo = m_metaFrameCounter.fetch_add(1, std::memory_order_acq_rel) + 1;
+                m_lastMetaTimestamp.store(static_cast<long long>(lastTimestamp), std::memory_order_release);
+                for (const auto &obj : humans)
+                {
+                    float l = obj.left;
+                    float t = obj.top;
+                    float r = obj.right;
+                    float b = obj.bottom;
+                    const float maxAbs = std::max(std::max(std::fabs(l), std::fabs(t)),
+                                                  std::max(std::fabs(r), std::fabs(b)));
+                    if (maxAbs > 2.0f) {
+                        l /= SENSOR_WIDTH; r /= SENSOR_WIDTH;
+                        t /= SENSOR_HEIGHT; b /= SENSOR_HEIGHT;
+                    }
+                    l = std::max(0.0f, std::min(1.0f, l));
+                    r = std::max(0.0f, std::min(1.0f, r));
+                    t = std::max(0.0f, std::min(1.0f, t));
+                    b = std::max(0.0f, std::min(1.0f, b));
+
+                    QVariantMap m;
+                    m["id"] = QString::fromStdString(obj.id);
+                    m["type"] = QString::fromStdString(obj.type);
+                    m["x"] = l;
+                    m["y"] = t;
+                    m["w"] = std::max(0.0f, r - l);
+                    m["h"] = std::max(0.0f, b - t);
+                    m["metaFrameNo"] = frameNo;
+                    m["metaTimestamp"] = static_cast<qlonglong>(lastTimestamp);
+                    m["metaTsMs"] = QDateTime::currentMSecsSinceEpoch();
+                    dets.push_back(m);
+                }
+
+                QMetaObject::invokeMethod(this, [this, dets]() {
+                    this->setDetections(dets);
+                }, Qt::QueuedConnection);
+            }
+
+            accumulatedXml.append(xmlData, xmlLen);
+            lastTimestamp = currentTimestamp;
+        }
+        m_metadataRunning.store(false, std::memory_order_release);
+    });
+}
+
+void MainWindow::stopMetadataWorker()
+{
+    if (!m_metadataRunning.load(std::memory_order_acquire)) return;
+    m_metadataRunning.store(false, std::memory_order_release);
+    if (m_metadataThread.joinable()) {
+        m_metadataThread.join();
     }
 }
 

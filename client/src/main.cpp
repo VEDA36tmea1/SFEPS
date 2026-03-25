@@ -6,9 +6,6 @@
 #include <QWindow>
 #include <QTimer>
 #include <QCoreApplication>
-#include <QFile>
-#include <QTextStream>
-#include <QDateTime>
 #include <QProcessEnvironment>
 #include <QString>
 #include "authmanager.h"
@@ -16,16 +13,15 @@
 #include "voicemanager.h"
 #include "fraudmanager.h"
 #include "positionmanager.h"
+#include "videoarchivemanager.h"
+#include "recordinglistmodel.h"
 
 void myMessageOutput(QtMsgType type, const QMessageLogContext &context, const QString &msg)
 {
+    Q_UNUSED(type);
+    Q_UNUSED(context);
     fprintf(stderr, "%s\n", qPrintable(msg));
     fflush(stderr);
-    QFile file("C:/Users/2-08/Desktop/qt_client_ui/debug_output.txt");
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Append))
-        return;
-    QTextStream out(&file);
-    out << QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz ") << msg << "\n";
 }
 
 int main(int argc, char *argv[]) {
@@ -48,6 +44,12 @@ int main(int argc, char *argv[]) {
 
   QQmlApplicationEngine engine;
 
+  QObject::connect(&engine, &QQmlApplicationEngine::warnings, [](const QList<QQmlError> &warnings) {
+      for (const QQmlError &warning : warnings) {
+          qWarning().noquote() << "[QML Warning]" << warning.toString();
+      }
+  });
+
   // AuthManager를 컨텍스트 속성으로 등록 (싱글톤처럼 사용)
   AuthManager authManager;
   engine.rootContext()->setContextProperty("authManager", &authManager);
@@ -63,6 +65,12 @@ int main(int argc, char *argv[]) {
     // PositionManager를 컨텍스트 속성으로 등록 (포지션/트래킹 전용)
     PositionManager positionManager;
     engine.rootContext()->setContextProperty("positionManager", &positionManager);
+
+    // Video archive manager + recording list model
+    VideoArchiveManager videoArchiveManager;
+    RecordingListModel recordingListModel;
+    engine.rootContext()->setContextProperty("videoArchiveManager", &videoArchiveManager);
+    engine.rootContext()->setContextProperty("recordingListModel", &recordingListModel);
 
   // 알림 서버 호스트: 환경변수 FRAUD_SERVER_HOST가 설정되어 있으면 그 값을 사용하고,
   // 설정되어 있지 않으면 기존 하드코드된 주소를 기본값으로 사용합니다.
@@ -83,7 +91,7 @@ int main(int argc, char *argv[]) {
       return parsed;
   };
 
-  const QString alertHost = env.value("FRAUD_SERVER_HOST", "192.168.0.101");
+  const QString alertHost = env.value("FRAUD_SERVER_HOST", "192.168.0.82");
   const bool clientTlsEnabled = parseEnvBool(env, "SFEPS_CLIENT_TLS_ENABLE", false);
   const bool alertTlsEnabled = parseEnvBool(env, "SFEPS_ALERT_TLS_ENABLE", clientTlsEnabled);
   const int alertPort = alertTlsEnabled
@@ -185,7 +193,7 @@ int main(int argc, char *argv[]) {
     });
 
     // Expose RTSP stream URL to QML so QML MediaPlayer can use it
-    const QString rtspStreamUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.101:8554/cam1");
+    const QString rtspStreamUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.82:8554/cam1");
     engine.rootContext()->setContextProperty("rtspStreamUrl", rtspStreamUrl);
 
     // Auto-subscribe helper for testing: if SFEPS_AUTO_SUB_POS_ID env var is set,
@@ -206,13 +214,16 @@ int main(int argc, char *argv[]) {
       &engine, &QQmlApplicationEngine::objectCreated, &app,
       [loginUrl, mainUrl](QObject *obj, const QUrl &objUrl) {
         // 로드 실패 시 종료 (LoginWindow 또는 MainWindow 중 하나라도 실패하면)
-        if (!obj && (objUrl == loginUrl || objUrl == mainUrl))
+                if (!obj && (objUrl == loginUrl || objUrl == mainUrl)) {
+                    qCritical() << "[Main] Failed to create root object:" << objUrl;
           QCoreApplication::exit(-1);
+                }
       },
       Qt::QueuedConnection);
 
   // 로그인 성공 시 메인 창으로 전환
   QObject::connect(&authManager, &AuthManager::loginSuccess, [&engine, mainUrl](){
+      qInfo() << "[Main] loginSuccess received, loading main window:" << mainUrl;
       // 1. 메인 윈도우 로드 (앱 종료 방지를 위해 먼저 로드)
       engine.load(mainUrl);
       

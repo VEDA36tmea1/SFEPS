@@ -29,8 +29,8 @@ SFEPS Client는 Qt 6/QML 기반 관제 애플리케이션입니다.
 - RTSP: 8554
 
 기본 주소(기본값):
-- RTSP 스트리밍: `rtsp://192.168.0.101:8554/cam1`
-- Auth/Fraud/Position 서버: `192.168.0.101`
+- RTSP 스트리밍: `rtsp://192.168.0.82:8554/cam1`
+- Auth/Fraud/Position 서버: `192.168.0.82`
 - 카메라 CGI 서버: `192.168.0.84`
 
 주요 대상 주소는 `run_client.ps1`에서 변경합니다.
@@ -85,8 +85,8 @@ cd C:\Users\2-08\Desktop\SFEPS\client\build-mingw
 - `POS_SERVER_PORT`
 
 예시(기본값):
-- `RTSP_STREAM_URL=rtsp://192.168.0.101:8554/cam1`
-- `FRAUD_SERVER_HOST=192.168.0.101`
+- `RTSP_STREAM_URL=rtsp://192.168.0.82:8554/cam1`
+- `FRAUD_SERVER_HOST=192.168.0.82`
 - `FRAUD_SERVER_PORT=5557`
 - `POS_SERVER_PORT=5558`
 
@@ -124,7 +124,26 @@ TLS 로그인:
 - 앱 시작 시 `action=view`로 현재 Brightness/Contrast 값을 읽어 UI에 반영
 - HTTPS 실패 시 HTTP 자동 재시도
 
-## 8. TLS CA 배포 가이드
+## 8. 영상 보관함 (Video Archive)
+
+Analytics > Video Storage에서 서버 보관 영상 목록 조회 및 재생.
+
+**주요 컴포넌트**:
+- `VideoArchiveManager` (C++): Video Catalog 서버 TCP/SSL 연결, Push 프로토콜 파싱
+- `RecordingListModel` (C++): QAbstractListModel 구현, 실시간 add/delete 처리
+- `ArchiveView.qml`: 영상 목록 전시 (DATE/TIME/ACTION 칼럼), 모달 팝업 재생
+
+**환경변수** (`run_client.ps1`):
+- `VIDEO_CATALOG_HOST`: Video Catalog 서버 주소 (기본값: 127.0.0.1)
+- `SFEPS_VIDEO_CATALOG_PORT`: TCP 포트 (기본값: 5559)
+- `SFEPS_VIDEO_CATALOG_TLS_ENABLE`: TLS 사용 여부 (기본값: 0)
+
+**프로토콜**:
+- 스냅샷: `REC_SNAPSHOT_BEGIN|TOTAL=N` → `REC|id|createdAt` 반복 → `REC_SNAPSHOT_END|TOTAL=N`
+- 실시간: `REC_ADD|id|createdAt`, `REC_DEL|id`
+- 재생: `PLAY_RECORD|id` 요청 → `PLAY_URL|id|createdAt|url` 응답
+
+## 9. TLS CA 배포 가이드
 
 TLS 로그인 사용 시 서버 CA 인증서를 클라이언트에 배포해야 합니다.
 
@@ -132,7 +151,7 @@ TLS 로그인 사용 시 서버 CA 인증서를 클라이언트에 배포해야 
 - 금지 대상: `ca.key` (개인키, 절대 클라이언트 배포 금지)
 - 배치 경로: `client/certs/auth_ca.pem`
 
-## 9. 빠른 문제 해결
+## 10. 빠른 문제 해결
 
 - `401 호스트 인증이 필요함`
   - 카메라 계정/비밀번호 확인
@@ -147,7 +166,7 @@ TLS 로그인 사용 시 서버 CA 인증서를 클라이언트에 배포해야 
   - `FRAUD_SERVER_HOST`, Auth 포트/Position 포트 설정 확인
   - 서버가 실제로 실행 중인지 확인
 
-## 10. 프로젝트 구조
+## 11. 프로젝트 구조
 
 - `src/`: C++/QML 소스
 - `assets/`: 이미지/아이콘 리소스

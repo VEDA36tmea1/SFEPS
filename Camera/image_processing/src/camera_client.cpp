@@ -1,272 +1,356 @@
 // camera_client.cpp
-// ─────────────────────────────────────────────────────────────────────
-// 단일 프로세스, 스레드 3개
-//   [1] captureThread  : 카메라 프레임 캡처 → raw_queue (최신 1장 유지)
-//   [2] rfidThread     : /tmp/rc522_events.sock 수신 → pipeline_queue push
-//   [3] pipelineThread : pipeline_queue에서 꺼내 ISP 처리
-//
-// rc522 데몬이 /dev/rc522 를 읽고 소켓으로 JSON을 내보냄.
-// 이 프로세스는 소켓 클라이언트로만 동작 — 하드웨어 직접 접근 없음.
-// ─────────────────────────────────────────────────────────────────────
+// Server-triggered capture worker:
+// - capture thread keeps latest frame
+// - trigger listener receives CAPTURE_REQ over local UDS
+// - pipeline worker writes requested output path
 
 #include <opencv2/opencv.hpp>
-#include <iostream>
-#include <queue>
-#include <thread>
-#include <mutex>
+
 #include <atomic>
+#include <cerrno>
+#include <chrono>
 #include <condition_variable>
 #include <csignal>
+#include <cstring>
+#include <cstdio>
+#include <cstdlib>
+#include <iostream>
+#include <map>
+#include <mutex>
+#include <queue>
+#include <sstream>
 #include <string>
+#include <thread>
+#include <vector>
 
-#include <unistd.h>
 #include <poll.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <unistd.h>
 
 #include "../inc/img_processing.h"
 
-// 0이면 로컬 이미지 테스트, 1이면 실제 카메라 가동
 #define LIVE_CAMERA_MODE 1
 
-static constexpr const char* RC522_SOCK_PATH   = "/tmp/rc522_events.sock";
-static constexpr int         PIPELINE_QUEUE_MAX = 5; // 태그 이벤트 최대 누적 수
+namespace {
 
-std::atomic<bool> g_running{true};
-bool              g_raw_mode = false;
+constexpr const char* kTriggerSocketPath = "/tmp/sfeps_camera_trigger.sock";
+constexpr const char* kPendingBaseDir = "/home/iam/SFEPS/event_images/pending";
+constexpr int kRequestQueueMax = 5;
+constexpr int kClientReadTimeoutMs = 1000;
 
-// ── 카메라 프레임 큐 (captureThread → rfidThread) ─────────────────────
-std::mutex          mtx_raw;
-std::queue<cv::Mat> raw_queue; // 최신 1장만 유지
+std::atomic<bool> g_running {true};
+std::atomic<int> g_listener_fd {-1};
+bool g_raw_mode = false;
 
-// ── 파이프라인 큐 (rfidThread → pipelineThread) ───────────────────────
-std::mutex              mtx_pipeline;
-std::condition_variable cv_pipeline;
-std::queue<cv::Mat>     pipeline_queue;
+std::mutex g_raw_mutex;
+std::queue<cv::Mat> g_raw_queue;
 
-// ──────────────────────────────────────────────────────────────────────
-// 시그널 핸들러 (Ctrl+C)
-// ──────────────────────────────────────────────────────────────────────
-void signalHandler(int /*signum*/) {
-    const char msg[] = "\n[종료] 시스템을 종료합니다.\n";
-    write(STDOUT_FILENO, msg, sizeof(msg) - 1);
-    _exit(0);
+struct CaptureRequest {
+    std::string req_id;
+    std::string object_id;
+    std::string tag;
+    std::string out_path;
+};
+
+std::mutex g_request_mutex;
+std::condition_variable g_request_cv;
+std::queue<CaptureRequest> g_request_queue;
+
+std::vector<std::string> split_pipe(const std::string& raw) {
+    std::vector<std::string> out;
+    std::string token;
+    std::istringstream iss(raw);
+    while (std::getline(iss, token, '|')) {
+        out.push_back(token);
+    }
+    return out;
+}
+
+std::map<std::string, std::string> parse_kv_line(const std::string& line) {
+    std::map<std::string, std::string> kv;
+    const std::vector<std::string> tokens = split_pipe(line);
+    for (std::size_t i = 1; i < tokens.size(); ++i) {
+        const std::size_t eq = tokens[i].find('=');
+        if (eq == std::string::npos) continue;
+        kv[tokens[i].substr(0, eq)] = tokens[i].substr(eq + 1);
+    }
+    return kv;
+}
+
+bool read_line_with_timeout(int fd, int timeout_ms, std::string& out_line) {
+    out_line.clear();
+    pollfd pfd {};
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+
+    const int poll_ret = ::poll(&pfd, 1, timeout_ms);
+    if (poll_ret <= 0) return false;
+    if ((pfd.revents & POLLIN) == 0) return false;
+
+    char ch = '\0';
+    while (true) {
+        const ssize_t n = ::read(fd, &ch, 1);
+        if (n == 0) break;
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return false;
+        }
+        if (ch == '\n') break;
+        out_line.push_back(ch);
+        if (out_line.size() >= 8192) break;
+    }
+    return !out_line.empty();
+}
+
+bool is_safe_pending_output(const std::string& path_str) {
+    if (path_str.empty() || path_str[0] != '/') return false;
+    if (path_str.find('\n') != std::string::npos) return false;
+    if (path_str.find('\r') != std::string::npos) return false;
+    if (path_str.find("..") != std::string::npos) return false;
+
+    const std::string base_prefix = std::string(kPendingBaseDir) + "/";
+    if (path_str.rfind(base_prefix, 0) != 0) return false;
+    return true;
+}
+
+bool ensure_dir_exists(const std::string& dir_path) {
+    if (dir_path.empty()) return false;
+
+    std::string current;
+    if (dir_path[0] == '/') current = "/";
+
+    std::istringstream iss(dir_path);
+    std::string part;
+    while (std::getline(iss, part, '/')) {
+        if (part.empty()) continue;
+        if (!current.empty() && current.back() != '/') current += "/";
+        current += part;
+
+        if (::mkdir(current.c_str(), 0755) != 0) {
+            if (errno != EEXIST) return false;
+        }
+    }
+    return true;
+}
+
+std::string parent_dir_of(const std::string& path) {
+    const std::size_t pos = path.find_last_of('/');
+    if (pos == std::string::npos) return std::string();
+    if (pos == 0) return "/";
+    return path.substr(0, pos);
+}
+
+void signalHandler(int) {
+    g_running = false;
+    g_request_cv.notify_all();
+    const int fd = g_listener_fd.load();
+    if (fd >= 0) ::close(fd);
 }
 
 #if LIVE_CAMERA_MODE
-
-// ──────────────────────────────────────────────────────────────────────
-// [스레드 1] 카메라 캡처
-// ──────────────────────────────────────────────────────────────────────
 void captureThreadFunc(cv::VideoCapture& cap) {
     while (g_running) {
         if (!cap.grab()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
-        cv::Mat tmp;
-        cap.retrieve(tmp);
-        if (!tmp.empty()) {
-            std::lock_guard<std::mutex> lock(mtx_raw);
-            while (!raw_queue.empty()) raw_queue.pop();
-            raw_queue.push(std::move(tmp));
-        }
+
+        cv::Mat frame;
+        cap.retrieve(frame);
+        if (frame.empty()) continue;
+
+        std::lock_guard<std::mutex> lock(g_raw_mutex);
+        while (!g_raw_queue.empty()) g_raw_queue.pop();
+        g_raw_queue.push(std::move(frame));
     }
 }
+#endif
 
-// ──────────────────────────────────────────────────────────────────────
-// 태그 이벤트 발생 시 호출 — 프레임 스냅샷 후 pipeline_queue push
-// ──────────────────────────────────────────────────────────────────────
-static void onTagDetected(const std::string& uid) {
-    cv::Mat snapshot;
-    {
-        std::lock_guard<std::mutex> lock(mtx_raw);
-        if (!raw_queue.empty())
-            snapshot = raw_queue.front().clone();
+bool runFullPipeline(const cv::Mat& frame,
+                     bool raw_mode,
+                     const std::string& out_path,
+                     std::string& err) {
+    if (frame.empty()) {
+        err = "empty frame";
+        return false;
     }
-    if (snapshot.empty()) {
-        std::cerr << "[rfid] ⚠️  프레임 미준비 — 이벤트 버림 (uid=" << uid << ")" << std::endl;
-        return;
-    }
-    {
-        std::lock_guard<std::mutex> lock(mtx_pipeline);
-        if ((int)pipeline_queue.size() >= PIPELINE_QUEUE_MAX) {
-            std::cerr << "[rfid] ⚠️  큐 가득 참 — 이벤트 버림 (uid=" << uid << ")" << std::endl;
-            return;
-        }
-        pipeline_queue.push(std::move(snapshot));
-        std::cout << "[rfid] 📥 큐 적재: "
-                  << pipeline_queue.size() << "/" << PIPELINE_QUEUE_MAX
-                  << "  uid=" << uid << std::endl;
-    }
-    cv_pipeline.notify_one();
-}
 
-// ──────────────────────────────────────────────────────────────────────
-// 간단한 JSON 파서 — "key": "value" 추출
-// rfid_monitor.cpp 와 동일한 방식
-// ──────────────────────────────────────────────────────────────────────
-static std::string extractJsonValue(const std::string& json, const std::string& key) {
-    const std::string token = "\"" + key + "\"";
-    size_t kpos = json.find(token);
-    if (kpos == std::string::npos) return "";
-    size_t cursor = json.find(':', kpos + token.size());
-    if (cursor == std::string::npos) return "";
-    ++cursor;
-    while (cursor < json.size() && std::isspace((unsigned char)json[cursor])) ++cursor;
-    if (cursor >= json.size()) return "";
-    if (json[cursor] == '"') {
-        ++cursor;
-        std::string val;
-        for (; cursor < json.size(); ++cursor) {
-            if (json[cursor] == '\\') { ++cursor; val.push_back(json[cursor]); continue; }
-            if (json[cursor] == '"') break;
-            val.push_back(json[cursor]);
-        }
-        return val;
-    }
-    size_t end = json.find_first_of(",}", cursor);
-    std::string val = (end == std::string::npos) ? json.substr(cursor)
-                                                  : json.substr(cursor, end - cursor);
-    // trim
-    size_t s = val.find_first_not_of(" \t\r\n");
-    size_t e = val.find_last_not_of(" \t\r\n");
-    return (s == std::string::npos) ? "" : val.substr(s, e - s + 1);
-}
-
-// ──────────────────────────────────────────────────────────────────────
-// [스레드 2] RFID 이벤트 수신
-// /tmp/rc522_events.sock 에 클라이언트로 접속 (rfid_monitor.cpp 와 동일 구조)
-// 연결 끊기면 1초 후 자동 재접속
-// ──────────────────────────────────────────────────────────────────────
-void rfidThreadFunc() {
-    while (g_running) {
-        // ── 소켓 연결 ─────────────────────────────────────────────────
-        int sock_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-        if (sock_fd < 0) {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-            continue;
-        }
-        sockaddr_un addr{};
-        addr.sun_family = AF_UNIX;
-        strncpy(addr.sun_path, RC522_SOCK_PATH, sizeof(addr.sun_path) - 1);
-
-        if (connect(sock_fd, (sockaddr*)&addr, sizeof(addr)) < 0) {
-            // rc522 데몬 미실행 시 조용히 재시도
-            close(sock_fd);
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-            continue;
-        }
-        std::cout << "[rfid] ✅ rc522 데몬 연결 성공" << std::endl;
-
-        // ── 수신 루프 ─────────────────────────────────────────────────
-        char buf[4096];
-        std::string line_buf;
-
-        while (g_running) {
-            struct pollfd pfd{sock_fd, POLLIN, 0};
-            int ret = poll(&pfd, 1, 1000); // 1초 타임아웃 → g_running 체크
-
-            if (ret < 0) {
-                if (errno == EINTR) continue;
-                break;
-            }
-            if (ret == 0) continue; // 타임아웃
-
-            if (pfd.revents & (POLLERR | POLLHUP)) {
-                std::cerr << "[rfid] 소켓 끊김. 재접속 시도..." << std::endl;
-                break;
-            }
-            if (!(pfd.revents & POLLIN)) continue;
-
-            ssize_t n = read(sock_fd, buf, sizeof(buf) - 1);
-            if (n == 0) {
-                std::cerr << "[rfid] 데몬 연결 종료. 재접속 시도..." << std::endl;
-                break;
-            }
-            if (n < 0) {
-                if (errno == EINTR) continue;
-                break;
-            }
-
-            buf[n] = '\0';
-            line_buf += buf;
-
-            // NDJSON: '\n' 단위로 파싱
-            size_t pos;
-            while ((pos = line_buf.find('\n')) != std::string::npos) {
-                std::string line = line_buf.substr(0, pos);
-                line_buf.erase(0, pos + 1);
-                if (line.empty()) continue;
-
-                std::string uid = extractJsonValue(line, "id");
-                if (uid.empty()) continue; // 필수 필드 없으면 무시
-
-                std::cout << "[rfid] 💳 태그: uid=" << uid << std::endl;
-                onTagDetected(uid);
-            }
-        }
-
-        close(sock_fd);
-        if (g_running)
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-    }
-    std::cout << "[rfid] 스레드 종료" << std::endl;
-}
-
-// ──────────────────────────────────────────────────────────────────────
-// ISP 파이프라인
-// ──────────────────────────────────────────────────────────────────────
-static void runFullPipeline(cv::Mat& frame, bool raw_mode) {
     cv::imwrite("1_raw_capture.jpg", frame);
 
     cv::Mat isp_out;
     if (raw_mode) {
         if (frame.type() != CV_16UC1) {
-            std::cerr << "⚠️  CV_16UC1 아님 — BGR 폴백" << std::endl;
             isp_out = frame;
         } else {
-            std::cout << "🔧 자체 RAW ISP 실행 중..." << std::endl;
             isp_out = runPureISP(frame);
             cv::imwrite("2_pure_isp_out.jpg", isp_out);
         }
     } else {
         isp_out = frame;
-        std::cout << "ℹ️  BGR 모드: libcamera ISP 출력 사용" << std::endl;
     }
 
-    std::cout << "📐 ShadowBoost/CLAHE 후처리 실행 중..." << std::endl;
     cv::Mat tuning_view;
     cv::Mat best_frame = processISPAndGetBest(isp_out, tuning_view);
-
     cv::imwrite("3_tuning_viewer.jpg", tuning_view);
-    cv::imwrite("4_best_shot.jpg", best_frame);
-    std::cout << "✅ 저장 완료 (1_raw / 2_isp / 3_tuning / 4_best)" << std::endl;
-}
 
-// ──────────────────────────────────────────────────────────────────────
-// [스레드 3] ISP 파이프라인 처리
-// ──────────────────────────────────────────────────────────────────────
-void pipelineThreadFunc() {
-    while (g_running) {
-        cv::Mat frame;
-        {
-            std::unique_lock<std::mutex> lock(mtx_pipeline);
-            cv_pipeline.wait(lock, [] {
-                return !pipeline_queue.empty() || !g_running;
-            });
-            if (!g_running && pipeline_queue.empty()) break;
-
-            frame = std::move(pipeline_queue.front());
-            pipeline_queue.pop();
-            std::cout << "[pipeline] 🔄 큐 잔여: "
-                      << pipeline_queue.size() << "/" << PIPELINE_QUEUE_MAX << std::endl;
-        }
-        std::cout << "📸 ISP 파이프라인 시작..." << std::endl;
-        runFullPipeline(frame, g_raw_mode);
+    const std::string out_dir = parent_dir_of(out_path);
+    if (out_dir.empty() || !ensure_dir_exists(out_dir)) {
+        err = "mkdir failed";
+        return false;
     }
-    std::cout << "[pipeline] 스레드 종료" << std::endl;
+
+    if (!cv::imwrite(out_path, best_frame)) {
+        err = "cv::imwrite failed";
+        return false;
+    }
+    return true;
 }
+
+void pipelineWorkerThread() {
+    while (true) {
+        CaptureRequest req;
+        {
+            std::unique_lock<std::mutex> lock(g_request_mutex);
+            g_request_cv.wait(lock, [] { return !g_running || !g_request_queue.empty(); });
+            if (!g_running && g_request_queue.empty()) break;
+            req = std::move(g_request_queue.front());
+            g_request_queue.pop();
+        }
+
+        cv::Mat snapshot;
+        {
+            std::lock_guard<std::mutex> lock(g_raw_mutex);
+            if (!g_raw_queue.empty()) snapshot = g_raw_queue.front().clone();
+        }
+
+        if (snapshot.empty()) {
+            std::cerr << "[camera] capture failed: req_id=" << req.req_id
+                      << ", object_id=" << req.object_id << ", reason=NO_FRAME" << std::endl;
+            continue;
+        }
+
+        std::string err;
+        if (!runFullPipeline(snapshot, g_raw_mode, req.out_path, err)) {
+            std::cerr << "[camera] capture failed: req_id=" << req.req_id
+                      << ", object_id=" << req.object_id
+                      << ", reason=" << (err.empty() ? "CAPTURE_FAIL" : err) << std::endl;
+            continue;
+        }
+
+        std::cout << "[camera] capture saved: req_id=" << req.req_id
+                  << ", object_id=" << req.object_id
+                  << ", out=" << req.out_path << std::endl;
+    }
+}
+
+void triggerListenerThread() {
+    ::unlink(kTriggerSocketPath);
+
+    const int listen_fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    if (listen_fd < 0) {
+        std::cerr << "[camera] trigger socket create failed" << std::endl;
+        g_running = false;
+        return;
+    }
+    g_listener_fd.store(listen_fd);
+
+    sockaddr_un addr {};
+    addr.sun_family = AF_UNIX;
+    std::strncpy(addr.sun_path, kTriggerSocketPath, sizeof(addr.sun_path) - 1);
+
+    if (::bind(listen_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+        std::cerr << "[camera] trigger socket bind failed" << std::endl;
+        ::close(listen_fd);
+        g_listener_fd.store(-1);
+        g_running = false;
+        return;
+    }
+    if (::listen(listen_fd, 16) < 0) {
+        std::cerr << "[camera] trigger socket listen failed" << std::endl;
+        ::close(listen_fd);
+        g_listener_fd.store(-1);
+        g_running = false;
+        return;
+    }
+
+    std::cout << "[camera] trigger listener ready: " << kTriggerSocketPath << std::endl;
+
+    while (g_running) {
+        const int client_fd = ::accept(listen_fd, nullptr, nullptr);
+        if (client_fd < 0) {
+            if (!g_running) break;
+            if (errno == EINTR) continue;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
+        }
+
+        std::string line;
+        if (!read_line_with_timeout(client_fd, kClientReadTimeoutMs, line)) {
+            std::cerr << "[camera] capture request dropped: reason=READ_TIMEOUT" << std::endl;
+            ::close(client_fd);
+            continue;
+        }
+
+        if (line.rfind("CAPTURE_REQ|", 0) != 0) {
+            std::cerr << "[camera] capture request dropped: reason=INVALID_PREFIX" << std::endl;
+            ::close(client_fd);
+            continue;
+        }
+
+        const std::map<std::string, std::string> kv = parse_kv_line(line);
+        const auto req_it = kv.find("REQ_ID");
+        const auto obj_it = kv.find("OBJECT_ID");
+        const auto tag_it = kv.find("TAG");
+        const auto out_it = kv.find("OUT");
+        if (req_it == kv.end() || obj_it == kv.end() || tag_it == kv.end() || out_it == kv.end()) {
+            std::cerr << "[camera] capture request dropped: reason=MISSING_FIELD" << std::endl;
+            ::close(client_fd);
+            continue;
+        }
+
+        const std::string req_id = req_it->second;
+        if (!is_safe_pending_output(out_it->second)) {
+            std::cerr << "[camera] capture request dropped: req_id=" << req_id
+                      << ", reason=OUT_PATH_NOT_ALLOWED, out=" << out_it->second << std::endl;
+            ::close(client_fd);
+            continue;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(g_request_mutex);
+            if (static_cast<int>(g_request_queue.size()) >= kRequestQueueMax) {
+                std::cerr << "[camera] capture request dropped: req_id=" << req_id
+                          << ", reason=QUEUE_FULL" << std::endl;
+                ::close(client_fd);
+                continue;
+            }
+
+            CaptureRequest req;
+            req.req_id = req_id;
+            req.object_id = obj_it->second;
+            req.tag = tag_it->second;
+            req.out_path = out_it->second;
+            g_request_queue.push(std::move(req));
+        }
+        ::close(client_fd);
+        g_request_cv.notify_one();
+    }
+
+    ::close(listen_fd);
+    g_listener_fd.store(-1);
+    ::unlink(kTriggerSocketPath);
+}
+
+// ── 셔터 속도 설정 ──────────────────────────────────────────
+// 역광 환경에서 픽셀 포화를 억제하기 위해 노출 시간을 제한합니다.
+// kExposureTimeUs: 마이크로초 단위 (기본 8000 µs = 8 ms)
+//   ↓ 값을 낮출수록 셔터가 빨라져 밝은 영역의 포화를 방지
+//   ↑ 값을 높이면 어두운 환경에서 밝기 확보
+// kAnalogueGain: 센서 아날로그 게인 (기본 1.0, 셔터를 줄인 만큼 보상)
+constexpr int    kExposureTimeUs  = 8000;   // 8 ms — 역광 포화 억제용
+constexpr float  kAnalogueGain    = 1.0f;   // 센서 아날로그 게인
 
 static const std::string PIPE_RAW =
     "libcamerasrc ! "
@@ -279,53 +363,49 @@ static const std::string PIPE_BGR =
     "videoconvert ! video/x-raw,format=BGR ! "
     "appsink drop=true max-buffers=1 emit-signals=false wait-on-eos=false";
 
-#endif // LIVE_CAMERA_MODE
+}  // namespace
 
 int main() {
-    signal(SIGINT,  signalHandler);
+    signal(SIGINT, signalHandler);
     signal(SIGTERM, signalHandler);
     signal(SIGPIPE, SIG_IGN);
 
 #if LIVE_CAMERA_MODE
+    // 파이프라인 열기 전에 libcamera 노출 튜닝 파일 생성 (역광 포화 억제)
 
     cv::VideoCapture cap(PIPE_RAW, cv::CAP_GSTREAMER);
     if (cap.isOpened()) {
         g_raw_mode = true;
-        std::cout << "✅ RAW 파이프라인 성공 → 자체 ISP 사용" << std::endl;
+        std::cout << "[camera] RAW pipeline enabled" << std::endl;
     } else {
-        std::cout << "⚠️  RAW 실패 → BGR 폴백..." << std::endl;
         cap.open(PIPE_BGR, cv::CAP_GSTREAMER);
         if (!cap.isOpened()) {
-            std::cerr << "❌ BGR 파이프라인도 실패. 카메라 확인 필요." << std::endl;
+            std::cerr << "[camera] camera pipeline open failed" << std::endl;
             return -1;
         }
         g_raw_mode = false;
-        std::cout << "✅ BGR 파이프라인 성공 → libcamera ISP 사용" << std::endl;
+        std::cout << "[camera] BGR fallback enabled" << std::endl;
     }
 
-    std::thread cap_thread(captureThreadFunc, std::ref(cap));
-    std::thread rfid_thread(rfidThreadFunc);
-    std::thread pipeline_thread(pipelineThreadFunc);
+    std::thread capture_thread(captureThreadFunc, std::ref(cap));
+    std::thread listener_thread(triggerListenerThread);
+    std::thread worker_thread(pipelineWorkerThread);
 
-    while (g_running)
+    while (g_running) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
 
-    cap_thread.detach();
-    rfid_thread.detach();
-    pipeline_thread.detach();
+    if (capture_thread.joinable()) capture_thread.join();
+    if (listener_thread.joinable()) listener_thread.join();
+    if (worker_thread.joinable()) worker_thread.join();
     cap.release();
-
 #else
-    cv::Mat target_frame = cv::imread("img/test_image4.jpg", cv::IMREAD_UNCHANGED);
-    if (target_frame.empty()) {
-        std::cerr << "❌ 이미지 로드 실패" << std::endl;
+    cv::Mat frame = cv::imread("img/test_image.jpg", cv::IMREAD_UNCHANGED);
+    if (frame.empty()) return -1;
+    std::string err;
+    if (!runFullPipeline(frame, frame.type() == CV_16UC1, "4_best_shot_local.jpg", err)) {
         return -1;
     }
-    bool local_raw_mode = (target_frame.type() == CV_16UC1);
-    std::cout << "🖼️  로컬 테스트 (타입: "
-              << (local_raw_mode ? "CV_16UC1 RAW" : "CV_8UC3 BGR") << ")" << std::endl;
-    runFullPipeline(target_frame, local_raw_mode);
 #endif
-
     return 0;
 }
