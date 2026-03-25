@@ -23,6 +23,7 @@
 #include <thread>
 #include <vector>
 
+#include <pthread.h>
 #include <poll.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
@@ -37,11 +38,17 @@ namespace {
 
 constexpr const char* kTriggerSocketPath = "/tmp/sfeps_camera_trigger.sock";
 constexpr const char* kPendingBaseDir = "/home/iam/SFEPS/event_images/pending";
+constexpr const char* kShutdownAbortReason = "SHUTDOWN";
 constexpr int kRequestQueueMax = 5;
 constexpr int kClientReadTimeoutMs = 1000;
 
 std::atomic<bool> g_running {true};
+std::atomic<bool> g_shutdown_started {false};
+std::atomic<bool> g_signal_thread_stop {false};
 std::atomic<int> g_listener_fd {-1};
+std::atomic<int> g_active_client_fd {-1};
+std::atomic<std::uint64_t> g_shutdown_started_ms {0};
+std::atomic<cv::VideoCapture*> g_capture_device {nullptr};
 bool g_raw_mode = false;
 
 std::mutex g_raw_mutex;
@@ -142,28 +149,138 @@ std::string parent_dir_of(const std::string& path) {
     return path.substr(0, pos);
 }
 
-void signalHandler(int) {
-    g_running = false;
-    g_request_cv.notify_all();
-    const int fd = g_listener_fd.load();
+std::uint64_t monotonic_ms_now() {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
+
+const char* signal_name(int sig) {
+    switch (sig) {
+        case SIGINT:
+            return "SIGINT";
+        case SIGTERM:
+            return "SIGTERM";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+void close_fd_slot(std::atomic<int>& fd_slot) {
+    const int fd = fd_slot.exchange(-1);
     if (fd >= 0) ::close(fd);
+}
+
+std::size_t clear_pending_requests() {
+    std::lock_guard<std::mutex> lock(g_request_mutex);
+    const std::size_t dropped = g_request_queue.size();
+    while (!g_request_queue.empty()) g_request_queue.pop();
+    return dropped;
+}
+
+void clear_latest_frames() {
+    std::lock_guard<std::mutex> lock(g_raw_mutex);
+    while (!g_raw_queue.empty()) g_raw_queue.pop();
+}
+
+void release_capture_device() {
+    cv::VideoCapture* capture = g_capture_device.load();
+    if (capture == nullptr) return;
+
+    if (capture->isOpened()) {
+        std::cout << "[camera] shutdown: releasing capture pipeline" << std::endl;
+        capture->release();
+    }
+}
+
+void requestShutdown(const char* reason) {
+    if (g_shutdown_started.exchange(true)) return;
+
+    const std::uint64_t started_ms = monotonic_ms_now();
+    g_shutdown_started_ms.store(started_ms);
+    g_running = false;
+
+    const std::size_t dropped_requests = clear_pending_requests();
+    clear_latest_frames();
+
+    std::cout << "[camera] shutdown start: reason="
+              << (reason != nullptr ? reason : "UNKNOWN")
+              << ", dropped_requests=" << dropped_requests << std::endl;
+
+    close_fd_slot(g_active_client_fd);
+    close_fd_slot(g_listener_fd);
+    ::unlink(kTriggerSocketPath);
+    g_request_cv.notify_all();
+    release_capture_device();
+}
+
+bool block_termination_signals(sigset_t& signal_set) {
+    ::sigemptyset(&signal_set);
+    ::sigaddset(&signal_set, SIGINT);
+    ::sigaddset(&signal_set, SIGTERM);
+    const int rc = ::pthread_sigmask(SIG_BLOCK, &signal_set, nullptr);
+    if (rc != 0) {
+        std::cerr << "[camera] pthread_sigmask failed: rc=" << rc << std::endl;
+        return false;
+    }
+    return true;
+}
+
+void signalWaitThread(sigset_t signal_set) {
+    while (true) {
+        int sig = 0;
+        const int rc = ::sigwait(&signal_set, &sig);
+        if (rc != 0) {
+            std::cerr << "[camera] sigwait failed: rc=" << rc << std::endl;
+            continue;
+        }
+
+        if (g_signal_thread_stop.load()) break;
+
+        requestShutdown(signal_name(sig));
+        break;
+    }
+
+    std::cout << "[camera] signal watcher exit" << std::endl;
+}
+
+void stopSignalThread(std::thread& signal_thread) {
+    g_signal_thread_stop = true;
+    if (!signal_thread.joinable()) return;
+
+    const int rc = ::pthread_kill(signal_thread.native_handle(), SIGTERM);
+    (void)rc;
+    signal_thread.join();
 }
 
 #if LIVE_CAMERA_MODE
 void captureThreadFunc(cv::VideoCapture& cap) {
     while (g_running) {
         if (!cap.grab()) {
+            if (!g_running || !cap.isOpened()) break;
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
 
+        if (!g_running) break;
+
         cv::Mat frame;
-        cap.retrieve(frame);
+        if (!cap.retrieve(frame)) {
+            if (!g_running || !cap.isOpened()) break;
+            continue;
+        }
+
+        if (!g_running) break;
         if (frame.empty()) continue;
 
         std::lock_guard<std::mutex> lock(g_raw_mutex);
         while (!g_raw_queue.empty()) g_raw_queue.pop();
         g_raw_queue.push(std::move(frame));
+    }
+
+    if (!g_shutdown_started.load()) {
+        requestShutdown("capture_thread_stopped");
     }
 }
 #endif
@@ -172,6 +289,11 @@ bool runFullPipeline(const cv::Mat& frame,
                      bool raw_mode,
                      const std::string& out_path,
                      std::string& err) {
+    if (!g_running) {
+        err = kShutdownAbortReason;
+        return false;
+    }
+
     if (frame.empty()) {
         err = "empty frame";
         return false;
@@ -191,13 +313,28 @@ bool runFullPipeline(const cv::Mat& frame,
         isp_out = frame;
     }
 
+    if (!g_running) {
+        err = kShutdownAbortReason;
+        return false;
+    }
+
     cv::Mat tuning_view;
     cv::Mat best_frame = processISPAndGetBest(isp_out, tuning_view);
     cv::imwrite("3_tuning_viewer.jpg", tuning_view);
 
+    if (!g_running) {
+        err = kShutdownAbortReason;
+        return false;
+    }
+
     const std::string out_dir = parent_dir_of(out_path);
     if (out_dir.empty() || !ensure_dir_exists(out_dir)) {
         err = "mkdir failed";
+        return false;
+    }
+
+    if (!g_running) {
+        err = kShutdownAbortReason;
         return false;
     }
 
@@ -214,16 +351,20 @@ void pipelineWorkerThread() {
         {
             std::unique_lock<std::mutex> lock(g_request_mutex);
             g_request_cv.wait(lock, [] { return !g_running || !g_request_queue.empty(); });
-            if (!g_running && g_request_queue.empty()) break;
+            if (!g_running) break;
             req = std::move(g_request_queue.front());
             g_request_queue.pop();
         }
+
+        if (!g_running) break;
 
         cv::Mat snapshot;
         {
             std::lock_guard<std::mutex> lock(g_raw_mutex);
             if (!g_raw_queue.empty()) snapshot = g_raw_queue.front().clone();
         }
+
+        if (!g_running) break;
 
         if (snapshot.empty()) {
             std::cerr << "[camera] capture failed: req_id=" << req.req_id
@@ -233,6 +374,11 @@ void pipelineWorkerThread() {
 
         std::string err;
         if (!runFullPipeline(snapshot, g_raw_mode, req.out_path, err)) {
+            if (!g_running && err == kShutdownAbortReason) {
+                std::cout << "[camera] capture dropped during shutdown: req_id=" << req.req_id
+                          << ", object_id=" << req.object_id << std::endl;
+                break;
+            }
             std::cerr << "[camera] capture failed: req_id=" << req.req_id
                       << ", object_id=" << req.object_id
                       << ", reason=" << (err.empty() ? "CAPTURE_FAIL" : err) << std::endl;
@@ -251,7 +397,7 @@ void triggerListenerThread() {
     const int listen_fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
     if (listen_fd < 0) {
         std::cerr << "[camera] trigger socket create failed" << std::endl;
-        g_running = false;
+        requestShutdown("trigger_socket_create_failed");
         return;
     }
     g_listener_fd.store(listen_fd);
@@ -262,22 +408,41 @@ void triggerListenerThread() {
 
     if (::bind(listen_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
         std::cerr << "[camera] trigger socket bind failed" << std::endl;
-        ::close(listen_fd);
-        g_listener_fd.store(-1);
-        g_running = false;
+        close_fd_slot(g_listener_fd);
+        requestShutdown("trigger_socket_bind_failed");
         return;
     }
     if (::listen(listen_fd, 16) < 0) {
         std::cerr << "[camera] trigger socket listen failed" << std::endl;
-        ::close(listen_fd);
-        g_listener_fd.store(-1);
-        g_running = false;
+        close_fd_slot(g_listener_fd);
+        requestShutdown("trigger_socket_listen_failed");
         return;
     }
 
     std::cout << "[camera] trigger listener ready: " << kTriggerSocketPath << std::endl;
 
+    pollfd listen_pfd {};
+    listen_pfd.fd = listen_fd;
+    listen_pfd.events = POLLIN;
+
     while (g_running) {
+        listen_pfd.revents = 0;
+        const int poll_ret = ::poll(&listen_pfd, 1, 200);
+        if (poll_ret < 0) {
+            if (!g_running) break;
+            if (errno == EINTR) continue;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
+        }
+        if (poll_ret == 0) continue;
+        if ((listen_pfd.revents & POLLIN) == 0) {
+            if (!g_running) break;
+            if ((listen_pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            continue;
+        }
+
         const int client_fd = ::accept(listen_fd, nullptr, nullptr);
         if (client_fd < 0) {
             if (!g_running) break;
@@ -286,16 +451,32 @@ void triggerListenerThread() {
             continue;
         }
 
+        g_active_client_fd.store(client_fd);
+
+        if (!g_running) {
+            std::cerr << "[camera] capture request dropped: reason=SHUTDOWN" << std::endl;
+            close_fd_slot(g_active_client_fd);
+            break;
+        }
+
         std::string line;
         if (!read_line_with_timeout(client_fd, kClientReadTimeoutMs, line)) {
-            std::cerr << "[camera] capture request dropped: reason=READ_TIMEOUT" << std::endl;
-            ::close(client_fd);
+            std::cerr << "[camera] capture request dropped: reason="
+                      << (g_running ? "READ_TIMEOUT" : kShutdownAbortReason) << std::endl;
+            close_fd_slot(g_active_client_fd);
+            if (!g_running) break;
             continue;
+        }
+
+        if (!g_running) {
+            std::cerr << "[camera] capture request dropped: reason=SHUTDOWN" << std::endl;
+            close_fd_slot(g_active_client_fd);
+            break;
         }
 
         if (line.rfind("CAPTURE_REQ|", 0) != 0) {
             std::cerr << "[camera] capture request dropped: reason=INVALID_PREFIX" << std::endl;
-            ::close(client_fd);
+            close_fd_slot(g_active_client_fd);
             continue;
         }
 
@@ -306,7 +487,7 @@ void triggerListenerThread() {
         const auto out_it = kv.find("OUT");
         if (req_it == kv.end() || obj_it == kv.end() || tag_it == kv.end() || out_it == kv.end()) {
             std::cerr << "[camera] capture request dropped: reason=MISSING_FIELD" << std::endl;
-            ::close(client_fd);
+            close_fd_slot(g_active_client_fd);
             continue;
         }
 
@@ -314,16 +495,22 @@ void triggerListenerThread() {
         if (!is_safe_pending_output(out_it->second)) {
             std::cerr << "[camera] capture request dropped: req_id=" << req_id
                       << ", reason=OUT_PATH_NOT_ALLOWED, out=" << out_it->second << std::endl;
-            ::close(client_fd);
+            close_fd_slot(g_active_client_fd);
             continue;
         }
 
         {
             std::lock_guard<std::mutex> lock(g_request_mutex);
+            if (!g_running) {
+                std::cerr << "[camera] capture request dropped: req_id=" << req_id
+                          << ", reason=SHUTDOWN" << std::endl;
+                close_fd_slot(g_active_client_fd);
+                break;
+            }
             if (static_cast<int>(g_request_queue.size()) >= kRequestQueueMax) {
                 std::cerr << "[camera] capture request dropped: req_id=" << req_id
                           << ", reason=QUEUE_FULL" << std::endl;
-                ::close(client_fd);
+                close_fd_slot(g_active_client_fd);
                 continue;
             }
 
@@ -334,12 +521,12 @@ void triggerListenerThread() {
             req.out_path = out_it->second;
             g_request_queue.push(std::move(req));
         }
-        ::close(client_fd);
+        close_fd_slot(g_active_client_fd);
         g_request_cv.notify_one();
     }
 
-    ::close(listen_fd);
-    g_listener_fd.store(-1);
+    close_fd_slot(g_active_client_fd);
+    close_fd_slot(g_listener_fd);
     ::unlink(kTriggerSocketPath);
 }
 
@@ -366,9 +553,13 @@ static const std::string PIPE_BGR =
 }  // namespace
 
 int main() {
-    signal(SIGINT, signalHandler);
-    signal(SIGTERM, signalHandler);
+    sigset_t signal_set {};
+    if (!block_termination_signals(signal_set)) {
+        return -1;
+    }
     signal(SIGPIPE, SIG_IGN);
+
+    std::thread signal_thread(signalWaitThread, signal_set);
 
 #if LIVE_CAMERA_MODE
     // 파이프라인 열기 전에 libcamera 노출 튜닝 파일 생성 (역광 포화 억제)
@@ -381,12 +572,14 @@ int main() {
         cap.open(PIPE_BGR, cv::CAP_GSTREAMER);
         if (!cap.isOpened()) {
             std::cerr << "[camera] camera pipeline open failed" << std::endl;
+            stopSignalThread(signal_thread);
             return -1;
         }
         g_raw_mode = false;
         std::cout << "[camera] BGR fallback enabled" << std::endl;
     }
 
+    g_capture_device.store(&cap);
     std::thread capture_thread(captureThreadFunc, std::ref(cap));
     std::thread listener_thread(triggerListenerThread);
     std::thread worker_thread(pipelineWorkerThread);
@@ -395,17 +588,29 @@ int main() {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
+    release_capture_device();
     if (capture_thread.joinable()) capture_thread.join();
     if (listener_thread.joinable()) listener_thread.join();
     if (worker_thread.joinable()) worker_thread.join();
+    g_capture_device.store(nullptr);
     cap.release();
 #else
     cv::Mat frame = cv::imread("img/test_image.jpg", cv::IMREAD_UNCHANGED);
-    if (frame.empty()) return -1;
+    if (frame.empty()) {
+        stopSignalThread(signal_thread);
+        return -1;
+    }
     std::string err;
     if (!runFullPipeline(frame, frame.type() == CV_16UC1, "4_best_shot_local.jpg", err)) {
+        stopSignalThread(signal_thread);
         return -1;
     }
 #endif
+
+    stopSignalThread(signal_thread);
+    if (g_shutdown_started_ms.load() != 0) {
+        const std::uint64_t elapsed_ms = monotonic_ms_now() - g_shutdown_started_ms.load();
+        std::cout << "[camera] shutdown complete: elapsed_ms=" << elapsed_ms << std::endl;
+    }
     return 0;
 }
