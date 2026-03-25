@@ -1340,16 +1340,14 @@ int main(int argc, char** argv)
     bool draw_grid = true;
     double predict_ms = 300.0;
     int pwm_log_interval_ms = 2000; // 사용자 요청: 터미널 로그만 2초마다
-<<<<<<< HEAD
-    std::string remoteHost = "192.168.0.101";
+    // origin/develop 쪽 기본값 유지 (rebase 목적에 맞춰 stashed 값은 폐기)
+    std::string remoteHost = "192.168.0.82";
     int remotePort = 5565;
     bool remoteEnable = true;
     TrackerMode trackerMode = TrackerMode::DeepSort;
-=======
     std::string remote_id_host = "192.168.0.101";
     int remote_id_port = 5565;
     bool remote_id_enable = true;
->>>>>>> c81c78fbec72f5c805fa82ed3d54c89adc4cd661
 
     for (int i = 1; i < argc; ++i)
     {
