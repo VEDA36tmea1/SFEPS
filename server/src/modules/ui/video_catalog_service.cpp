@@ -47,8 +47,7 @@ struct PollTarget {
 
 struct VideoStorageStats {
     std::uintmax_t used_bytes = 0;
-    std::uintmax_t total_bytes = 0;
-    std::uintmax_t available_bytes = 0;
+    std::uintmax_t cap_bytes = 0;
     std::size_t file_count = 0;
 };
 
@@ -285,10 +284,12 @@ std::string format_system_status_line(const SystemStatusSnapshot& status) {
 }
 
 VideoStorageStats collect_storage_stats_from_records(
-    const std::vector<VideoCatalogRecordInfo>& records) {
+    const std::vector<VideoCatalogRecordInfo>& records,
+    std::uintmax_t cap_bytes) {
     namespace fs = std::filesystem;
 
     VideoStorageStats stats;
+    stats.cap_bytes = cap_bytes;
     for (const auto& record : records) {
         if (record.filename.empty()) continue;
 
@@ -303,35 +304,27 @@ VideoStorageStats collect_storage_stats_from_records(
         stats.used_bytes += file_size;
         ++stats.file_count;
     }
-
-    std::error_code ec;
-    const fs::space_info space_info = fs::space(VIDEO_SAVE_DIR, ec);
-    if (!ec) {
-        stats.total_bytes = space_info.capacity;
-        stats.available_bytes = space_info.available;
-    }
     return stats;
 }
 
-VideoStorageStats collect_storage_stats_from_registry() {
+VideoStorageStats collect_storage_stats_from_registry(std::uintmax_t cap_bytes) {
     std::vector<VideoCatalogRecordInfo> records;
     (void)snapshot_video_catalog_registry(records);
-    return collect_storage_stats_from_records(records);
+    return collect_storage_stats_from_records(records, cap_bytes);
 }
 
 std::string format_storage_line(const VideoStorageStats& stats) {
     return "REC_STORAGE|USED_BYTES=" +
            std::to_string(static_cast<unsigned long long>(stats.used_bytes)) +
-           "|TOTAL_BYTES=" + std::to_string(static_cast<unsigned long long>(stats.total_bytes)) +
-           "|AVAILABLE_BYTES=" +
-           std::to_string(static_cast<unsigned long long>(stats.available_bytes)) +
+           "|CAP_BYTES=" + std::to_string(static_cast<unsigned long long>(stats.cap_bytes)) +
            "|FILE_COUNT=" + std::to_string(stats.file_count) + "\n";
 }
 
-bool send_snapshot_to_client(ClientState& client) {
+bool send_snapshot_to_client(ClientState& client, const SecurityRuntimeOptions& sec_cfg) {
     std::vector<VideoCatalogRecordInfo> records;
     const std::uint64_t snapshot_seq = snapshot_video_catalog_registry(records);
-    const VideoStorageStats storage_stats = collect_storage_stats_from_records(records);
+    const VideoStorageStats storage_stats =
+        collect_storage_stats_from_records(records, sec_cfg.video_max_storage_bytes);
 
     std::cout << "[main.cpp] [VideoCatalog] snapshot 전송 시작: ip=" << client.conn.ip
               << ", fd=" << client.conn.fd << ", total=" << records.size()
@@ -369,8 +362,7 @@ bool send_snapshot_to_client(ClientState& client) {
               << ", fd=" << client.conn.fd << ", total=" << records.size()
                       << ", snapshot_seq=" << client.last_seen_seq
                       << ", used_bytes=" << storage_stats.used_bytes
-                      << ", total_bytes=" << storage_stats.total_bytes
-                      << ", available_bytes=" << storage_stats.available_bytes
+                      << ", cap_bytes=" << storage_stats.cap_bytes
               << ", file_count=" << storage_stats.file_count << std::endl;
     return true;
 }
@@ -494,7 +486,7 @@ bool handle_client_input(ClientState& client,
     return true;
 }
 
-bool sync_client_events(ClientState& client) {
+bool sync_client_events(ClientState& client, const SecurityRuntimeOptions& sec_cfg) {
     std::vector<VideoCatalogEvent> events;
     collect_video_catalog_events_since(client.last_seen_seq, events);
     bool sent_any_event = false;
@@ -524,7 +516,8 @@ bool sync_client_events(ClientState& client) {
     }
 
     if (sent_any_event) {
-        const VideoStorageStats storage_stats = collect_storage_stats_from_registry();
+        const VideoStorageStats storage_stats =
+            collect_storage_stats_from_registry(sec_cfg.video_max_storage_bytes);
         if (!app_services_transport::client_send_line(client.conn,
                                                       format_storage_line(storage_stats))) {
             std::cerr << "[main.cpp] [VideoCatalog] REC_STORAGE 전송 실패: ip="
@@ -534,8 +527,7 @@ bool sync_client_events(ClientState& client) {
         std::cout << "[main.cpp] [VideoCatalog] REC_STORAGE 전송: ip=" << client.conn.ip
                   << ", fd=" << client.conn.fd
                   << ", used_bytes=" << storage_stats.used_bytes
-                  << ", total_bytes=" << storage_stats.total_bytes
-                  << ", available_bytes=" << storage_stats.available_bytes
+                  << ", cap_bytes=" << storage_stats.cap_bytes
                   << ", file_count=" << storage_stats.file_count << std::endl;
     }
 
@@ -676,7 +668,7 @@ void run_video_catalog_service_impl(std::atomic<bool>& running,
                     }
                     ClientState client;
                     client.conn = std::move(accepted);
-                    if (!send_snapshot_to_client(client)) {
+                    if (!send_snapshot_to_client(client, sec_cfg)) {
                         close_client(client.conn);
                         continue;
                     }
@@ -706,7 +698,7 @@ void run_video_catalog_service_impl(std::atomic<bool>& running,
         }
 
         for (std::size_t i = 0; i < clients.size(); ++i) {
-            if (!sync_client_events(clients[i])) {
+            if (!sync_client_events(clients[i], sec_cfg)) {
                 remove_indices.push_back(i);
             }
         }

@@ -18,7 +18,7 @@ public:
     explicit PositionManager(QObject *parent = nullptr);
     ~PositionManager();
 
-    Q_INVOKABLE void connectPositionServer(const QString &host = "192.168.0.82", int port = 5558);
+    Q_INVOKABLE void connectPositionServer(const QString &host = "192.168.0.101", int port = 5558);
     Q_INVOKABLE void sendPositionCommand(const QString &msg);
     Q_INVOKABLE void unsubscribeCurrent();
     Q_INVOKABLE QString currentSubscribedId() const;
