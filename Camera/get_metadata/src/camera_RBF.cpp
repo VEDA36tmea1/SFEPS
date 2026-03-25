@@ -101,7 +101,7 @@ static std::string g_click_pending_id;
 static std::mutex g_remote_msg_mutex;
 static std::string g_remote_last_msg;
 static std::string g_remote_last_id;
-static std::string g_remote_src_host = "192.168.0.82";
+static std::string g_remote_src_host = "192.168.0.101";
 static bool g_remote_tracking = false;
 static std::chrono::steady_clock::time_point g_remote_last_rx_tp = std::chrono::steady_clock::now();
 static bool g_remote_bbox_valid = false;
@@ -1346,7 +1346,7 @@ int main(int argc, char** argv)
     bool remoteEnable = true;
     TrackerMode trackerMode = TrackerMode::DeepSort;
 =======
-    std::string remote_id_host = "192.168.0.82";
+    std::string remote_id_host = "192.168.0.101";
     int remote_id_port = 5565;
     bool remote_id_enable = true;
 >>>>>>> c81c78fbec72f5c805fa82ed3d54c89adc4cd661

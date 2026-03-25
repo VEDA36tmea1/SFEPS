@@ -98,7 +98,7 @@ int main(int argc, char *argv[]) {
       return parsed;
   };
 
-  const QString alertHost = env.value("FRAUD_SERVER_HOST", "192.168.0.82");
+  const QString alertHost = env.value("FRAUD_SERVER_HOST", "192.168.0.101");
   const bool directStreamMode = parseEnvBool(env, "SFEPS_DIRECT_STREAM_MODE", false);
   const bool clientTlsEnabled = parseEnvBool(env, "SFEPS_CLIENT_TLS_ENABLE", false);
   const bool alertTlsEnabled = parseEnvBool(env, "SFEPS_ALERT_TLS_ENABLE", clientTlsEnabled);
@@ -211,7 +211,7 @@ int main(int argc, char *argv[]) {
     });
 
     // Expose RTSP stream URL to QML so QML MediaPlayer can use it
-    const QString rtspStreamUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.82:8554/cam1");
+    const QString rtspStreamUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.101:8554/cam1");
     engine.rootContext()->setContextProperty("rtspStreamUrl", rtspStreamUrl);
 
     // FFmpeg backend: MediaPlayer.playbackOptions.probeSize (bytes). Smaller = less pre-roll / latency;

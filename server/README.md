@@ -88,6 +88,7 @@ export SFEPS_APP_TLS_HANDSHAKE_TIMEOUT_MS=3000
 export SFEPS_VIDEO_HTTP_BASE_URL=http://127.0.0.1:8080/videos
 export SFEPS_FRAUD_IMAGE_HTTP_BASE_URL=http://127.0.0.1:8080/fraud-images
 export SFEPS_VIDEO_RETENTION_SEC=86400
+export SFEPS_VIDEO_MAX_STORAGE_BYTES=5368709120
 export SFEPS_PENDING_IMAGE_RETENTION_SEC=30
 export SFEPS_FRAUD_IMAGE_RETENTION_SEC=86400
 
@@ -204,11 +205,11 @@ Video Catalog:
   - `REC_SNAPSHOT_BEGIN|TOTAL=<n>`
   - `REC|<id>|<created_at>`
   - `REC_SNAPSHOT_END|TOTAL=<n>`
-  - `REC_STORAGE|USED_BYTES=<n>|TOTAL_BYTES=<n>|AVAILABLE_BYTES=<n>|FILE_COUNT=<n>`
+  - `REC_STORAGE|USED_BYTES=<n>|CAP_BYTES=<n>|FILE_COUNT=<n>`
 - 실시간 갱신:
   - `REC_ADD|<id>|<created_at>`
   - `REC_DEL|<id>`
-  - `REC_STORAGE|USED_BYTES=<n>|TOTAL_BYTES=<n>|AVAILABLE_BYTES=<n>|FILE_COUNT=<n>`
+  - `REC_STORAGE|USED_BYTES=<n>|CAP_BYTES=<n>|FILE_COUNT=<n>`
 - 상태 갱신:
   - `SYS_STATUS|CPU_TEMP_C=<float>|CPU_USAGE_PCT=<float>` (5초 주기 단독 전송)
 - 재생 요청: `PLAY_REC|<id>\n`
@@ -272,6 +273,7 @@ sudo systemctl enable --now sfeps-server.service
   `/home/iam/SFEPS/videos/<filename>`로 매핑되도록 정적 파일 서빙 구성이 필요합니다.
 - Qt seek/탐색을 위해 `/videos` 정적 서버는 HTTP Range 요청을 지원해야 합니다.
 - 영상은 `SFEPS_VIDEO_RETENTION_SEC`(기본 86400초, 1일) 지난 파일부터 자동 삭제됩니다.
+- `videos` 폴더 총 용량이 `SFEPS_VIDEO_MAX_STORAGE_BYTES`(기본 5368709120바이트, 5GB)를 넘으면 가장 오래된 영상부터 추가 삭제됩니다.
 - 운영에서 `http://<host>:8080/fraud-images/<filename>`가
   `/home/iam/SFEPS/event_images/fraud/<filename>`로 매핑되도록 정적 파일 서빙 구성이 필요합니다.
 - pending 이미지는 `SFEPS_PENDING_IMAGE_RETENTION_SEC`(기본 30초) 지난 파일부터 자동 삭제됩니다.

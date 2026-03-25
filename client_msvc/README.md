@@ -31,8 +31,8 @@ MSVC 환경에서 팀 공용으로 빌드/실행하는 방법은 `MSVC_BUILD_GUI
 - RTSP: 8554
 
 기본 주소(기본값):
-- RTSP 스트리밍: `rtsp://192.168.0.82:8554/cam1`
-- Auth/Fraud/Position 서버: `192.168.0.82`
+- RTSP 스트리밍: `rtsp://192.168.0.101:8554/cam1`
+- Auth/Fraud/Position 서버: `192.168.0.101`
 - 카메라 CGI 서버: `192.168.0.84`
 
 주요 대상 주소는 `run_client.ps1`에서 변경합니다.
@@ -82,8 +82,8 @@ cd C:\Users\2-16\Desktop\SFEPS\client_msvc\build-msvc\Release
 - `POS_SERVER_PORT`
 
 예시(기본값):
-- `RTSP_STREAM_URL=rtsp://192.168.0.82:8554/cam1`
-- `FRAUD_SERVER_HOST=192.168.0.82`
+- `RTSP_STREAM_URL=rtsp://192.168.0.101:8554/cam1`
+- `FRAUD_SERVER_HOST=192.168.0.101`
 - `FRAUD_SERVER_PORT=5557`
 - `POS_SERVER_PORT=5558`
 
