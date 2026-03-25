@@ -17,8 +17,8 @@ function Set-DefaultEnv([string]$name, [string]$value) {
 }
 
 # ── 서버 연결 ──────────────────────────────────────────────────────────────────
-Set-DefaultEnv "RTSP_STREAM_URL" "rtsp://192.168.0.101:8554/cam1"
-Set-DefaultEnv "FRAUD_SERVER_HOST" "192.168.0.101"
+Set-DefaultEnv "RTSP_STREAM_URL" "rtsp://192.168.0.82:8554/cam1"
+Set-DefaultEnv "FRAUD_SERVER_HOST" "192.168.0.82"
 Set-DefaultEnv "FRAUD_SERVER_PORT" "5557"
 Set-DefaultEnv "POS_SERVER_PORT" "5558"
 Set-DefaultEnv "AUTH_TLS_ENABLE" "0"          # TLS 사용 시 1

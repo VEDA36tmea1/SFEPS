@@ -592,7 +592,7 @@ bool MainWindow::openStream()
         .toUtf8();
     qputenv("OPENCV_FFMPEG_CAPTURE_OPTIONS", ffmpegOpts);
 
-    const QString rtspUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.101:8554/cam1");
+    const QString rtspUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.82:8554/cam1");
     const QString explicitGstPipeline = QProcessEnvironment::systemEnvironment().value("RTSP_GSTREAMER_PIPELINE").trimmed();
 
     if (!explicitGstPipeline.isEmpty()) {
