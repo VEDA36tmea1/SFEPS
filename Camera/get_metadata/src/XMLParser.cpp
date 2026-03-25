@@ -3,13 +3,23 @@
 #include "string"
 #include <iostream>
 #include <time.h>
+#include <algorithm>
 
-//const std::string findObject = "Head";
 const std::string findObject = "Human";
 constexpr bool k_enable_object_log = true;
 constexpr bool k_enable_meta_log = false;
 
 namespace {
+<<<<<<< HEAD
+
+std::size_t find_in_range(const std::string& raw,
+                          const char* needle,
+                          std::size_t start_pos,
+                          std::size_t end_pos) {
+    const std::size_t pos = raw.find(needle, start_pos);
+    if (pos == std::string::npos || pos >= end_pos) return std::string::npos;
+    return pos;
+=======
     std::size_t find_in_range(const std::string& raw,
                               const char* needle,
                               std::size_t start_pos,
@@ -51,7 +61,131 @@ namespace {
 
         return interArea / (box1Area + box2Area - interArea);
     }
+>>>>>>> c81c78fbec72f5c805fa82ed3d54c89adc4cd661
 }
+
+bool parse_float_attr(const std::string& raw,
+                      std::size_t attr_pos,
+                      std::size_t value_offset,
+                      float& out_value) {
+    if (attr_pos == std::string::npos) return false;
+    const std::size_t value_start = attr_pos + value_offset;
+    const std::size_t value_end = raw.find("\"", value_start);
+    if (value_end == std::string::npos) return false;
+    try {
+        out_value = std::stof(raw.substr(value_start, value_end - value_start));
+    } catch (...) { return false; }
+    return true;
+}
+
+float calculate_iou(float l1, float t1, float r1, float b1,
+                    float l2, float t2, float r2, float b2) {
+    float xA = std::max(l1, l2);
+    float yA = std::max(t1, t2);
+    float xB = std::min(r1, r2);
+    float yB = std::min(b1, b2);
+    float interArea = std::max(0.0f, xB - xA) * std::max(0.0f, yB - yA);
+    if (interArea == 0.0f) return 0.0f;
+    float box1Area = (r1 - l1) * (b1 - t1);
+    float box2Area = (r2 - l2) * (b2 - t2);
+    return interArea / (box1Area + box2Area - interArea);
+}
+
+// ── NMS: likelihood 높은 순으로 정렬 후 IoU > thresh 인 박스 제거 ──────────
+std::vector<ParsedMetadataObject> apply_nms(
+    std::vector<ParsedMetadataObject> objs,
+    float iou_thresh = 0.45f)
+{
+    if (objs.size() <= 1) return objs;
+
+    auto box_area = [](const ParsedMetadataObject& o) {
+        const float w = o.right - o.left;
+        const float h = o.bottom - o.top;
+        return (w > 0.0f && h > 0.0f) ? (w * h) : 0.0f;
+    };
+    std::sort(objs.begin(), objs.end(),
+        [&box_area](const ParsedMetadataObject& a, const ParsedMetadataObject& b) {
+            if (a.likelihood != b.likelihood)
+                return a.likelihood > b.likelihood;
+            return box_area(a) > box_area(b);
+        });
+
+    std::vector<bool> suppressed(objs.size(), false);
+    for (std::size_t i = 0; i < objs.size(); ++i) {
+        if (suppressed[i]) continue;
+        for (std::size_t j = i + 1; j < objs.size(); ++j) {
+            if (suppressed[j]) continue;
+            float iou = calculate_iou(
+                objs[i].left, objs[i].top, objs[i].right, objs[i].bottom,
+                objs[j].left, objs[j].top, objs[j].right, objs[j].bottom);
+            if (iou > iou_thresh)
+                suppressed[j] = true;
+        }
+    }
+
+    std::vector<ParsedMetadataObject> result;
+    result.reserve(objs.size());
+    for (std::size_t i = 0; i < objs.size(); ++i)
+        if (!suppressed[i]) result.push_back(objs[i]);
+    return result;
+}
+
+// inner 박스 면적 중 outer와 겹치는 비율이 thresh 이상이면(거의 안에 있음), inner 를 내부 중복으로 본다.
+float inner_overlap_ratio_in_outer(const ParsedMetadataObject& inner,
+                                   const ParsedMetadataObject& outer) {
+    const float il = inner.left, it = inner.top, ir = inner.right, ib = inner.bottom;
+    const float ol = outer.left, ot = outer.top, or_ = outer.right, ob = outer.bottom;
+    const float xA = std::max(il, ol);
+    const float yA = std::max(it, ot);
+    const float xB = std::min(ir, or_);
+    const float yB = std::min(ib, ob);
+    const float inter = std::max(0.0f, xB - xA) * std::max(0.0f, yB - yA);
+    const float inner_area = (ir - il) * (ib - it);
+    if (inner_area <= 0.0f) return 0.0f;
+    return inter / inner_area;
+}
+
+static float parsed_object_box_area(const ParsedMetadataObject& o) {
+    const float w = o.right - o.left;
+    const float h = o.bottom - o.top;
+    return (w > 0.0f && h > 0.0f) ? (w * h) : 0.0f;
+}
+
+// 면적 큰 박스를 먼저 유지. 더 작은 박스가 기존 박스 안에 거의 통째로 들어가면 타입 무관하게 제거
+// (ONVIF 가 머리만 잡아도 타입을 Human 으로 보내는 경우 대비)
+std::vector<ParsedMetadataObject> remove_enclosed_smaller_boxes(
+    std::vector<ParsedMetadataObject> objs,
+    float cover_ratio_thresh = 0.82f,
+    float max_inner_vs_outer_area = 0.98f)
+{
+    if (objs.size() <= 1) return objs;
+
+    std::sort(objs.begin(), objs.end(),
+        [](const ParsedMetadataObject& a, const ParsedMetadataObject& b) {
+            return parsed_object_box_area(a) > parsed_object_box_area(b);
+        });
+
+    std::vector<ParsedMetadataObject> kept;
+    kept.reserve(objs.size());
+    for (const auto& c : objs) {
+        const float ac = parsed_object_box_area(c);
+        bool enclosed_in_kept = false;
+        for (const auto& k : kept) {
+            const float ak = parsed_object_box_area(k);
+            if (ac >= ak * max_inner_vs_outer_area)
+                continue;
+            if (inner_overlap_ratio_in_outer(c, k) >= cover_ratio_thresh) {
+                enclosed_in_kept = true;
+                break;
+            }
+        }
+        if (!enclosed_in_kept)
+            kept.push_back(c);
+    }
+    return kept;
+}
+
+} // namespace
 
 std::string XMLParser::get_current_time_str() {
     time_t now = time(0);
@@ -71,9 +205,8 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
         if (utc_pos != std::string::npos) {
             size_t start = utc_pos + 9;
             size_t end = accumulated_xml.find("\"", start);
-            if (end != std::string::npos) {
+            if (end != std::string::npos)
                 tag_time = accumulated_xml.substr(start, end - start);
-            }
         }
 
         size_t search_pos = 0;
@@ -164,9 +297,14 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
                         if (dt > 0 && dt < 225000) {
                             float expected_x = track.last_x + (track.vx * dt);
                             float expected_y = track.last_y + (track.vy * dt);
+<<<<<<< HEAD
+                            expected_x = std::max(0.0f, std::min(expected_x, kParserClampWidth));
+                            expected_y = std::max(0.0f, std::min(expected_y, kParserClampHeight));
+=======
                             expected_x = std::max(0.0f, std::min(expected_x, SENSOR_WIDTH));
                             expected_y = std::max(0.0f, std::min(expected_y, SENSOR_HEIGHT));
 
+>>>>>>> c81c78fbec72f5c805fa82ed3d54c89adc4cd661
                             float pred_l = expected_x - (track.last_w / 2.0f);
                             float pred_r = expected_x + (track.last_w / 2.0f);
                             float pred_t = expected_y - (track.last_h / 2.0f);
@@ -189,8 +327,13 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
                         real_id = tracking_map[obj_id].original_id; 
                         tracking_map[obj_id].last_w = w;
                         tracking_map[obj_id].last_h = h;
+<<<<<<< HEAD
+                        std::cout << "🔗 [ID 복구] 카메라 ID: " << obj_id
+                                  << " -> 오리지널 ID: " << real_id
+=======
                         std::cout << "🔗 [ID 복구] 카메라 ID: " << obj_id << " -> 오리지널 ID: " << real_id 
 
+>>>>>>> c81c78fbec72f5c805fa82ed3d54c89adc4cd661
                                   << " (IoU 매칭률: " << (int)(max_iou * 100) << "%)" << std::endl;
                     } else {
                         tracking_map[obj_id] = {obj_id, x, y, w, h, 0.0f, 0.0f, last_timestamp};
@@ -216,9 +359,8 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
 
                 results.push_back({real_id, obj_type, x, y, likelihood, w, h});
 
-            
                 bool is_new_id = (log_timer_map.find(real_id) == log_timer_map.end());
-                if (k_enable_object_log && (is_new_id || (last_timestamp - log_timer_map[real_id] > LOG_THROTTLE))) {
+                if (k_enable_object_log && (is_new_id || (last_timestamp - log_timer_map[real_id] > kParserObjectLogIntervalRtp))) {
                     std::string prefix = is_new_id ? "✨ [NEW]" : "🎯 [OBJ]";
                     std::cout << prefix << " ID: " << real_id
                               << " | Type: " << obj_type
@@ -233,11 +375,10 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
         }
 
         for (auto it = tracking_map.begin(); it != tracking_map.end(); ) {
-            if (last_timestamp - it->second.last_rtp > 450000) {
+            if (last_timestamp - it->second.last_rtp > 450000)
                 it = tracking_map.erase(it);
-            } else {
+            else
                 ++it;
-            }
         }
 
         search_pos = 0;
@@ -285,17 +426,27 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
             }
 
             if (rule_name != "Unknown" && is_active) {
+<<<<<<< HEAD
+                unsigned int time_diff = last_timestamp - gate_last_pass_time[rule_name];
+                if (time_diff < kParserTailgateGapRtp && gate_last_pass_time[rule_name] != 0) {
+=======
                 unsigned int time_diff = last_timestamp - gate_last_pass_time[rule_name];       
                 if (time_diff < TAILGATE_LIMIT && gate_last_pass_time[rule_name] != 0) {
+>>>>>>> c81c78fbec72f5c805fa82ed3d54c89adc4cd661
                     float diff_sec = (float)time_diff / 90000.0f;
                     std::cout << "🚨 [TAILGATING] " << rule_name 
                               << " | Trigger ID: " << triggered_id
                               << " | RTP: " << last_timestamp 
                               << " | Gap: " << diff_sec << "s" << std::endl;
                 } else {
+<<<<<<< HEAD
+                    std::cout << "🎯 [EVENT] " << rule_name
+                              << " Active | ID: " << triggered_id
+=======
                     std::cout << "✅ [EVENT] " << rule_name 
                               << " Active | ID: " << triggered_id 
 
+>>>>>>> c81c78fbec72f5c805fa82ed3d54c89adc4cd661
                               << " | TagTime: " << tag_time << std::endl;
                 }
                 gate_last_pass_time[rule_name] = last_timestamp;
@@ -311,8 +462,8 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
 
 std::vector<ParsedMetadataObject> XMLParser::parseHumanObjectsForAnalytics(const std::string& xml,
                                                                            bool detect_all) const {
-    std::vector<ParsedMetadataObject> results;
-    results.reserve(8);
+    std::vector<ParsedMetadataObject> all_with_geometry;
+    all_with_geometry.reserve(8);
     std::size_t search_pos = 0;
 
     while (true) {
@@ -321,7 +472,7 @@ std::vector<ParsedMetadataObject> XMLParser::parseHumanObjectsForAnalytics(const
 
         const std::size_t next_obj = xml.find("<tt:Object", obj_start + 1);
         const std::size_t obj_end = (next_obj == std::string::npos) ? xml.size() : next_obj;
-        ParsedMetadataObject object = {"", "", -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f};
+        ParsedMetadataObject object = {"", "", -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f};
 
         const std::size_t id_pos = find_in_range(xml, "ObjectId=\"", obj_start, obj_end);
         if (id_pos != std::string::npos) {
@@ -337,6 +488,19 @@ std::vector<ParsedMetadataObject> XMLParser::parseHumanObjectsForAnalytics(const
             const std::size_t end = xml.find("</tt:Type>", start);
             if (end != std::string::npos && end < obj_end)
                 object.type = xml.substr(start, end - start);
+        }
+
+        const std::size_t likelihood_pos = find_in_range(xml, "<tt:Likelihood>", obj_start, obj_end);
+        if (likelihood_pos != std::string::npos) {
+            const std::size_t start = likelihood_pos + 15;
+            const std::size_t end = xml.find("</tt:Likelihood>", start);
+            if (end != std::string::npos && end < obj_end) {
+                try {
+                    object.likelihood = std::stof(xml.substr(start, end - start));
+                } catch (...) {
+                    object.likelihood = 1.0f;
+                }
+            }
         }
 
         const std::size_t cog_pos = find_in_range(xml, "CenterOfGravity", obj_start, obj_end);
@@ -358,10 +522,11 @@ std::vector<ParsedMetadataObject> XMLParser::parseHumanObjectsForAnalytics(const
         const bool has_bottom = parse_float_attr(xml, bottom_pos, 8, object.bottom);
 
         const bool type_ok = detect_all || (object.type == findObject);
-        if (!object.id.empty() && type_ok && has_x && has_y &&
-            has_left && has_right && has_top && has_bottom) {
-            results.push_back(object);
-            if (k_enable_meta_log) {
+        const bool geom_ok = has_x && has_y && has_left && has_right && has_top && has_bottom;
+        // 타입 필터 전에 전부 모아야 Human-only 모드에서도 (타입이 Human 인) 소박스가 전신 박스 판단에 참여함
+        if (!object.id.empty() && geom_ok) {
+            all_with_geometry.push_back(object);
+            if (k_enable_meta_log && type_ok) {
                 std::cout << "[META] id=" << object.id
                           << " type=" << object.type
                           << " x=" << object.x
@@ -377,5 +542,17 @@ std::vector<ParsedMetadataObject> XMLParser::parseHumanObjectsForAnalytics(const
         search_pos = obj_end;
     }
 
+    // 1) 더 큰 박스 안에 거의 통째로 들어간 작은 박스 제거(타입 무관)
+    // 2) 같은 스케일 중복은 NMS
+    constexpr float k_human_nms_iou = 0.35f;
+    auto no_nested = remove_enclosed_smaller_boxes(std::move(all_with_geometry));
+    auto nmsed = apply_nms(std::move(no_nested), k_human_nms_iou);
+
+    std::vector<ParsedMetadataObject> results;
+    results.reserve(nmsed.size());
+    for (const auto& o : nmsed) {
+        if (detect_all || o.type == findObject)
+            results.push_back(o);
+    }
     return results;
 }

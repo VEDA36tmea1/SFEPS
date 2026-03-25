@@ -13,9 +13,11 @@
 #include <opencv2/opencv.hpp>
 
 #include <atomic>
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <iomanip>
@@ -46,6 +48,15 @@
 
 static std::atomic<bool> g_running{true};
 static std::atomic<bool> g_detect_all{false};
+
+// Video capture latency reduction:
+// - Dedicated capture thread continuously reads RTSP frames.
+// - Main loop consumes only the latest frame (older frames are overwritten).
+static std::mutex g_cap_mutex;
+static std::condition_variable g_cap_cv;
+static cv::Mat g_cap_latest_frame;
+static uint64_t g_cap_seq = 0;
+static std::chrono::steady_clock::time_point g_cap_last_ts = std::chrono::steady_clock::now();
 
 // ── 파싱된 원시 bbox (카메라 ID 그대로) ─────────────────────────────
 static std::mutex g_raw_obj_mutex;
@@ -97,6 +108,140 @@ static bool g_remote_bbox_valid = false;
 static double g_remote_l = 0.0, g_remote_t = 0.0, g_remote_r = 0.0, g_remote_b = 0.0; // normalized [0,1]
 
 static void signal_handler(int) { g_running = false; }
+
+static void setup_low_latency_capture_env()
+{
+#ifdef _WIN32
+    // OpenCV FFmpeg options for low-latency RTSP receive.
+    // Format: key;value|key;value...
+    _putenv_s(
+        "OPENCV_FFMPEG_CAPTURE_OPTIONS",
+        "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0|reorder_queue_size;0|analyzeduration;0|probesize;32768");
+#else
+    setenv(
+        "OPENCV_FFMPEG_CAPTURE_OPTIONS",
+        "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0|reorder_queue_size;0|analyzeduration;0|probesize;32768",
+        1);
+#endif
+}
+
+static bool parse_rtsp_url(const std::string& url, std::string& out_host, int& out_port, std::string& out_path)
+{
+    // Expected: rtsp://[user:pass@]host[:port]/path
+    const std::string scheme = "rtsp://";
+    if (url.rfind(scheme, 0) != 0) return false;
+
+    std::string rest = url.substr(scheme.size());
+    std::size_t at = rest.find('@');
+    if (at != std::string::npos) rest = rest.substr(at + 1);
+
+    std::size_t slash = rest.find('/');
+    std::string host_port = (slash == std::string::npos) ? rest : rest.substr(0, slash);
+    out_path = (slash == std::string::npos) ? "/" : rest.substr(slash);
+    if (out_path.empty()) out_path = "/";
+
+    if (host_port.empty()) return false;
+
+    std::size_t colon = host_port.rfind(':');
+    if (colon == std::string::npos)
+    {
+        out_host = host_port;
+        out_port = 554;
+        return !out_host.empty();
+    }
+
+    out_host = host_port.substr(0, colon);
+    std::string port_str = host_port.substr(colon + 1);
+    if (out_host.empty() || port_str.empty()) return false;
+    try {
+        out_port = std::stoi(port_str);
+    } catch (...) {
+        return false;
+    }
+    return (out_port > 0 && out_port <= 65535);
+}
+
+static std::string build_gstreamer_rtsp_pipeline(bool use_tcp)
+{
+    std::string host;
+    int port = 554;
+    std::string path;
+    if (!parse_rtsp_url(RTSP_URL, host, port, path))
+        return "";
+
+    std::ostringstream oss;
+    oss << "rtspsrc location=\"" << RTSP_URL << "\" "
+        << "protocols=" << (use_tcp ? "tcp" : "udp") << " "
+        << "latency=0 drop-on-latency=true ! "
+        << "rtph264depay ! h264parse ! avdec_h264 ! "
+        << "videoconvert ! appsink sync=false max-buffers=1 drop=true";
+    return oss.str();
+}
+
+static void capture_thread_fn()
+{
+    setup_low_latency_capture_env();
+
+    cv::VideoCapture cap;
+    bool opened = false;
+
+    // Prefer GStreamer low-latency UDP first.
+    const std::string gst_udp = build_gstreamer_rtsp_pipeline(false);
+    if (!gst_udp.empty())
+    {
+        std::cerr << "[camera_RBF] open via GStreamer(UDP)\n";
+        opened = cap.open(gst_udp, cv::CAP_GSTREAMER);
+    }
+
+    if (!opened)
+    {
+        const std::string gst_tcp = build_gstreamer_rtsp_pipeline(true);
+        if (!gst_tcp.empty())
+        {
+            std::cerr << "[camera_RBF] open via GStreamer(TCP)\n";
+            opened = cap.open(gst_tcp, cv::CAP_GSTREAMER);
+        }
+    }
+
+    // Fallback: default backend (FFmpeg etc.)
+    if (!opened)
+    {
+        std::cerr << "[camera_RBF] GStreamer open failed, fallback to default backend\n";
+        opened = cap.open(RTSP_URL);
+    }
+
+    if (!opened || !cap.isOpened())
+    {
+        std::cerr << "[camera_RBF] RTSP open fail: " << RTSP_URL << "\n";
+        g_running = false;
+        g_cap_cv.notify_all();
+        return;
+    }
+
+    // Keep internal buffer as short as possible.
+    cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
+
+    while (g_running)
+    {
+        cv::Mat f;
+        if (!cap.read(f) || f.empty())
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            continue;
+        }
+
+        {
+            std::lock_guard<std::mutex> lk(g_cap_mutex);
+            g_cap_latest_frame = std::move(f);
+            g_cap_seq++;
+            g_cap_last_ts = std::chrono::steady_clock::now();
+        }
+        g_cap_cv.notify_one();
+    }
+
+    cap.release();
+    g_cap_cv.notify_all();
+}
 
 enum class RemoteTrackEvent
 {
@@ -524,6 +669,23 @@ struct DeepSortWorker {
         child_stdin_write = child_stdin_write_tmp;
         active = true;
         std::cerr << "[deepsort] worker started pid=" << pi.dwProcessId << "\n";
+
+        // Linux path already has early-exit check; do same on Windows.
+        // If worker exits immediately (import error, script path issue, etc.),
+        // disable it now and fallback to raw IDs without pipe-write errors.
+        DWORD wait_ret = WaitForSingleObject(pi.hProcess, 120);
+        if (wait_ret == WAIT_OBJECT_0)
+        {
+            DWORD exit_code = 0;
+            GetExitCodeProcess(pi.hProcess, &exit_code);
+            active = false;
+            std::cerr << "[deepsort] worker exited early. code=" << exit_code << "\n";
+            if (child_stdin_write) { CloseHandle(child_stdin_write); child_stdin_write = NULL; }
+            if (child_stdout_read) { CloseHandle(child_stdout_read); child_stdout_read = NULL; }
+            if (pi.hProcess) { CloseHandle(pi.hProcess); pi.hProcess = NULL; }
+            if (pi.hThread) { CloseHandle(pi.hThread); pi.hThread = NULL; }
+            return false;
+        }
 #else
         int pipe_in[2], pipe_out[2];
         if (::pipe(pipe_in) || ::pipe(pipe_out)) return false;
@@ -595,7 +757,7 @@ struct DeepSortWorker {
 
     // 메인루프에서 호출 — 논블로킹, 최신 결과만 반환
     std::vector<ParsedMetadataObject> get_latest() {
-        std::lock_guard<std::mutex> lk(result_mutex);
+        std::lock_guard<std::mutex> lk(this->result_mutex);
         return latest_result;
     }
 
@@ -634,7 +796,7 @@ private:
 
             auto tracks = send_to_worker(frame, objs);
 
-            std::lock_guard<std::mutex> lk(result_mutex);
+            std::lock_guard<std::mutex> lk(this->result_mutex);
             if (!tracks.empty())
                 latest_result = std::move(tracks);
         }
@@ -1162,6 +1324,7 @@ struct KalmanBbox2D
 
 int main(int argc, char** argv)
 {
+    enum class TrackerMode { DeepSort, Native };
 #ifdef _WIN32
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
@@ -1177,9 +1340,16 @@ int main(int argc, char** argv)
     bool draw_grid = true;
     double predict_ms = 300.0;
     int pwm_log_interval_ms = 2000; // 사용자 요청: 터미널 로그만 2초마다
+<<<<<<< HEAD
+    std::string remoteHost = "192.168.0.101";
+    int remotePort = 5565;
+    bool remoteEnable = true;
+    TrackerMode trackerMode = TrackerMode::DeepSort;
+=======
     std::string remote_id_host = "192.168.0.82";
     int remote_id_port = 5565;
     bool remote_id_enable = true;
+>>>>>>> c81c78fbec72f5c805fa82ed3d54c89adc4cd661
 
     for (int i = 1; i < argc; ++i)
     {
@@ -1191,9 +1361,15 @@ int main(int argc, char** argv)
         else if (arg == "--no-grid") draw_grid = false;
         else if (arg == "--predict-ms" && i + 1 < argc) predict_ms = std::atof(argv[++i]);
         else if (arg == "--send-interval-ms" && i + 1 < argc) pwm_log_interval_ms = std::max(100, std::atoi(argv[++i]));
-        else if (arg == "--remote-id-host" && i + 1 < argc) remote_id_host = argv[++i];
-        else if (arg == "--remote-id-port" && i + 1 < argc) remote_id_port = std::atoi(argv[++i]);
-        else if (arg == "--no-remote-id") remote_id_enable = false;
+        else if (arg == "--remote-id-host" && i + 1 < argc) remoteHost = argv[++i];
+        else if (arg == "--remote-id-port" && i + 1 < argc) remotePort = std::atoi(argv[++i]);
+        else if (arg == "--no-remote-id") remoteEnable = false;
+        else if (arg == "--tracker-mode" && i + 1 < argc)
+        {
+            std::string mode = argv[++i];
+            if (mode == "native") trackerMode = TrackerMode::Native;
+            else trackerMode = TrackerMode::DeepSort;
+        }
     }
 
     std::signal(SIGINT, signal_handler);
@@ -1201,9 +1377,16 @@ int main(int argc, char** argv)
     std::signal(SIGPIPE, signal_handler);
 #endif
 
-    // DeepSORT 워커 시작
-    if (!g_deepsort.start())
-        std::cerr << "[deepsort] 워커 시작 실패 — 카메라 ID 그대로 사용\n";
+    // DeepSORT 워커 시작 (native 모드면 생략)
+    if (trackerMode == TrackerMode::DeepSort)
+    {
+        if (!g_deepsort.start())
+            std::cerr << "[deepsort] 워커 시작 실패 — 카메라 ID 그대로 사용\n";
+    }
+    else
+    {
+        std::cerr << "[tracker] native mode enabled\n";
+    }
 
     // Calib points
     std::vector<CalibPoint> pts = load_calib_points();
@@ -1249,23 +1432,16 @@ int main(int argc, char** argv)
     client.sendHandshake();
     std::thread meta_thread(metadata_thread_fn, &client, &parser);
     std::thread remote_sel_thread;
-    if (remote_id_enable)
+    if (remoteEnable)
     {
         {
             std::lock_guard<std::mutex> lk(g_remote_msg_mutex);
-            g_remote_src_host = remote_id_host;
+            g_remote_src_host = remoteHost;
         }
-        remote_sel_thread = std::thread(remote_select_thread_fn, remote_id_host, remote_id_port);
+        remote_sel_thread = std::thread(remote_select_thread_fn, remoteHost, remotePort);
     }
 
-    cv::VideoCapture cap(RTSP_URL);
-    if (!cap.isOpened())
-    {
-        std::cerr << "[camera_RBF] RTSP open fail: " << RTSP_URL << "\n";
-        g_running = false;
-        meta_thread.join();
-        return -1;
-    }
+    std::thread cap_thread(capture_thread_fn);
 
     cv::namedWindow("camera_RBF", cv::WINDOW_NORMAL);
     cv::setMouseCallback("camera_RBF", on_mouse, &g_last_frame);
@@ -1278,12 +1454,31 @@ int main(int argc, char** argv)
 
     KalmanBbox2D kf;
     std::string prev_sel_id;
+    struct NativeTrack
+    {
+        int id{0};
+        cv::Rect2d box;
+        cv::Point2d vel{0.0, 0.0};
+        int miss{0};
+        int lock_det{-1};      // last matched detection index
+        int lock_left{0};      // keep association for a few frames under overlap
+    };
+    std::vector<NativeTrack> nativeTracks;
+    int nativeNextId = 1;
 
     while (g_running)
     {
         cv::Mat frame;
-        if (!cap.read(frame) || frame.empty())
-            break;
+        {
+            std::unique_lock<std::mutex> lk(g_cap_mutex);
+            g_cap_cv.wait_for(lk, std::chrono::milliseconds(100), [] {
+                return !g_running || !g_cap_latest_frame.empty();
+            });
+            if (!g_running) break;
+            if (g_cap_latest_frame.empty()) continue;
+            frame = g_cap_latest_frame.clone();
+        }
+        if (frame.empty()) continue;
 
         {
             std::lock_guard<std::mutex> lock(g_frame_mutex);
@@ -1293,19 +1488,17 @@ int main(int argc, char** argv)
         const int W = frame.cols;
         const int H = frame.rows;
 
-        // ── DeepSORT 비동기 업데이트 ────────────────────────────────
+        // ── Tracking 업데이트 (DeepSORT or Native) ─────────────────
         std::vector<ParsedMetadataObject> raw_objs;
         { std::lock_guard<std::mutex> lock(g_raw_obj_mutex); raw_objs = g_raw_objects; }
-
-        // 새 입력 push (논블로킹)
-        if (g_deepsort.active && !raw_objs.empty())
-            g_deepsort.push(frame, raw_objs);
-
-        // 최신 DeepSORT 결과 가져오기 (논블로킹)
+        if (trackerMode == TrackerMode::DeepSort)
         {
+            // 새 입력 push (논블로킹)
+            if (g_deepsort.active && !raw_objs.empty())
+                g_deepsort.push(frame, raw_objs);
+
+            // 최신 DeepSORT 결과 가져오기 (논블로킹)
             auto tracked = g_deepsort.get_latest();
-            // DeepSORT가 잠깐 비었을 때, 선택된 객체가 이전 DeepSORT 결과에도 없으면
-            // stale(오래된) bbox를 계속 그리지 않고 raw bbox를 바로 보여주도록 처리한다.
             std::string sel_id_now;
             bool sel_valid_now = false;
             {
@@ -1335,20 +1528,153 @@ int main(int argc, char** argv)
                         }
                     }
                 }
-
                 if ((g_deepsort_empty_count <= DEEPSORT_EMPTY_GRACE_FRAMES) &&
                     !g_deepsort_last_objects.empty() &&
                     (!sel_valid_now || sel_found_in_last))
-                {
-                    // 최근 DeepSORT 결과를 짧게 유지해서 bbox 떨림/플리커 감소
                     g_objects = g_deepsort_last_objects;
-                }
                 else
-                {
-                    // 너무 오래 비면 원시 bbox로 폴백
                     g_objects = raw_objs;
+            }
+        }
+        else
+        {
+            // Native C++ tracker: IoU + center distance greedy association.
+            struct Det { ParsedMetadataObject obj; cv::Rect2d box; cv::Point2d c; };
+            std::vector<Det> dets;
+            dets.reserve(raw_objs.size());
+            for (const auto& ro : raw_objs)
+            {
+                cv::Rect r;
+                if (!compute_rect_from_obj(ro, W, H, r)) continue;
+                Det d;
+                d.obj = ro;
+                d.box = cv::Rect2d(r.x, r.y, r.width, r.height);
+                d.c = cv::Point2d(d.box.x + d.box.width * 0.5, d.box.y + d.box.height * 0.5);
+                dets.push_back(std::move(d));
+            }
+
+            std::vector<int> detOwner(dets.size(), -1);
+            std::vector<bool> trackMatched(nativeTracks.size(), false);
+
+            auto iou = [](const cv::Rect2d& a, const cv::Rect2d& b) {
+                const double x1 = std::max(a.x, b.x), y1 = std::max(a.y, b.y);
+                const double x2 = std::min(a.x + a.width, b.x + b.width), y2 = std::min(a.y + a.height, b.y + b.height);
+                const double w = std::max(0.0, x2 - x1), h = std::max(0.0, y2 - y1);
+                const double inter = w * h;
+                if (inter <= 0.0) return 0.0;
+                const double uni = a.area() + b.area() - inter;
+                return (uni > 1e-9) ? (inter / uni) : 0.0;
+            };
+
+            std::vector<bool> detCrowded(dets.size(), false);
+            for (size_t i = 0; i < dets.size(); ++i)
+            {
+                for (size_t j = i + 1; j < dets.size(); ++j)
+                {
+                    if (iou(dets[i].box, dets[j].box) > 0.35)
+                    {
+                        detCrowded[i] = true;
+                        detCrowded[j] = true;
+                    }
                 }
             }
+
+            for (size_t ti = 0; ti < nativeTracks.size(); ++ti)
+            {
+                auto& tr = nativeTracks[ti];
+                cv::Rect2d pred = tr.box;
+                pred.x += tr.vel.x;
+                pred.y += tr.vel.y;
+                const cv::Point2d predC(pred.x + pred.width * 0.5, pred.y + pred.height * 0.5);
+
+                double bestScore = 0.0;
+                int bestDi = -1;
+                for (size_t di = 0; di < dets.size(); ++di)
+                {
+                    if (detOwner[di] != -1) continue;
+                    const double ov = iou(pred, dets[di].box);
+                    const double dist = cv::norm(predC - dets[di].c);
+                    const bool crowded = detCrowded[di];
+                    const double distTerm = std::exp(-dist / (crowded ? 80.0 : 120.0));
+                    const double score = 0.85 * ov + 0.15 * distTerm;
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        bestDi = static_cast<int>(di);
+                    }
+                }
+                if (bestDi >= 0)
+                {
+                    const bool crowded = detCrowded[bestDi];
+                    const double bestOv = iou(pred, dets[bestDi].box);
+                    const double bestDist = cv::norm(predC - dets[bestDi].c);
+                    // 겹침(crowded) 구간에서는 더 엄격한 게이트로 ID 스위치 억제
+                    const double thScore = crowded ? 0.26 : 0.18;
+                    const double thIou = crowded ? 0.20 : 0.10;
+                    const double thDist = crowded ? 95.0 : 180.0;
+                    bool accept = (bestScore >= thScore && bestOv >= thIou && bestDist <= thDist);
+
+                    // 직전 매칭 det를 짧게 lock하여 교차 구간에서 ID 뒤바뀜 억제
+                    if (!accept && tr.lock_left > 0 && tr.lock_det >= 0 &&
+                        tr.lock_det < static_cast<int>(dets.size()) &&
+                        detOwner[tr.lock_det] == -1)
+                    {
+                        const double lkOv = iou(pred, dets[tr.lock_det].box);
+                        const double lkDist = cv::norm(predC - dets[tr.lock_det].c);
+                        if (lkOv >= 0.12 && lkDist <= 110.0)
+                        {
+                            bestDi = tr.lock_det;
+                            accept = true;
+                        }
+                    }
+
+                    if (!accept)
+                    {
+                        tr.lock_left = std::max(0, tr.lock_left - 1);
+                        continue;
+                    }
+
+                    const cv::Point2d prevC(tr.box.x + tr.box.width * 0.5, tr.box.y + tr.box.height * 0.5);
+                    tr.vel = 0.7 * tr.vel + 0.3 * (dets[bestDi].c - prevC);
+                    tr.box = dets[bestDi].box;
+                    tr.miss = 0;
+                    tr.lock_det = bestDi;
+                    tr.lock_left = detCrowded[bestDi] ? 4 : std::max(0, tr.lock_left - 1);
+                    detOwner[bestDi] = static_cast<int>(ti);
+                    trackMatched[ti] = true;
+                }
+            }
+
+            for (size_t ti = 0; ti < nativeTracks.size(); ++ti)
+            {
+                if (!trackMatched[ti]) nativeTracks[ti].miss++;
+            }
+            nativeTracks.erase(
+                std::remove_if(nativeTracks.begin(), nativeTracks.end(), [](const NativeTrack& t) { return t.miss > 20; }),
+                nativeTracks.end());
+
+            for (size_t di = 0; di < dets.size(); ++di)
+            {
+                if (detOwner[di] != -1) continue;
+                NativeTrack t;
+                t.id = nativeNextId++;
+                t.box = dets[di].box;
+                t.lock_det = static_cast<int>(di);
+                nativeTracks.push_back(t);
+                detOwner[di] = static_cast<int>(nativeTracks.size() - 1);
+            }
+
+            std::vector<ParsedMetadataObject> trackedNative;
+            trackedNative.reserve(dets.size());
+            for (size_t di = 0; di < dets.size(); ++di)
+            {
+                if (detOwner[di] < 0 || detOwner[di] >= static_cast<int>(nativeTracks.size())) continue;
+                auto obj = dets[di].obj;
+                obj.id = "N" + std::to_string(nativeTracks[detOwner[di]].id);
+                trackedNative.push_back(std::move(obj));
+            }
+            std::lock_guard<std::mutex> lock(g_obj_mutex);
+            g_objects = std::move(trackedNative);
         }
 
         // copy objs
@@ -1384,12 +1710,43 @@ int main(int argc, char** argv)
                     double dx = raw_r.x     - sr.x;
                     double dy = raw_r.y     - sr.y;
                     double dist = std::sqrt(dx*dx + dy*dy);
-                    // 한 프레임에 100px 이상 점프하면 alpha를 강제로 낮춰 급변 완화
-                    double a = (dist > 100.0) ? 0.15 : BBOX_SMOOTH_ALPHA;
-                    sr.x += a * (raw_r.x     - sr.x);
-                    sr.y += a * (raw_r.y     - sr.y);
-                    sr.w += a * (raw_r.width  - sr.w);
-                    sr.h += a * (raw_r.height - sr.h);
+                    const double dw = raw_r.width  - sr.w;
+                    const double dh = raw_r.height - sr.h;
+                    const double size_rel_w = std::fabs(dw) / std::max(1.0, sr.w);
+                    const double size_rel_h = std::fabs(dh) / std::max(1.0, sr.h);
+                    const double curr_ar = sr.w / std::max(1.0, sr.h);
+                    const double raw_ar  = raw_r.width / std::max(1.0, (double)raw_r.height);
+                    // 정지 상태 adaptive smoothing:
+                    // 거의 멈춤(저속)일 땐 alpha를 줄여 bbox 떨림을 강하게 억제한다.
+                    double a = BBOX_SMOOTH_ALPHA;
+                    double a_size = BBOX_SMOOTH_ALPHA * 0.75;
+                    if (dist < 2.5) { a = 0.06; a_size = 0.02; }      // near-static: size almost locked
+                    else if (dist < 8.0) { a = 0.14; a_size = 0.07; } // low-speed
+                    else if (dist > 100.0) { a = 0.15; a_size = 0.10; } // outlier jump
+
+                    // deadband: 1px 이내 흔들림은 무시
+                    if (std::fabs(dx) < 1.0) dx = 0.0;
+                    if (std::fabs(dy) < 1.0) dy = 0.0;
+                    // size deadband: 3% 이내면 크기 갱신 무시(정지 객체 펌핑 방지)
+                    const bool size_jitter = (size_rel_w < 0.03 && size_rel_h < 0.03 && dist < 6.0);
+                    if (size_jitter) a_size = 0.0;
+
+                    // aspect ratio jump guard: 갑작스런 옆으로 늘어남/찝힘 억제
+                    if (std::fabs(raw_ar - curr_ar) > 0.18 && dist < 10.0)
+                        a_size = std::min(a_size, 0.03);
+
+                    sr.x += a * dx;
+                    sr.y += a * dy;
+                    const double prev_w = sr.w;
+                    const double prev_h = sr.h;
+                    sr.w += a_size * dw;
+                    sr.h += a_size * dh;
+
+                    // hard clamp per-frame size change to avoid breathing.
+                    const double max_step_w = std::max(2.0, prev_w * 0.04);
+                    const double max_step_h = std::max(2.0, prev_h * 0.04);
+                    sr.w = std::max(1.0, std::min(prev_w + max_step_w, std::max(prev_w - max_step_w, sr.w)));
+                    sr.h = std::max(1.0, std::min(prev_h + max_step_h, std::max(prev_h - max_step_h, sr.h)));
                 }
 
                 cv::Rect r(
@@ -1734,10 +2091,11 @@ int main(int argc, char** argv)
     }
 
     g_running = false;
+    g_cap_cv.notify_all();
     g_deepsort.stop();
+    if (cap_thread.joinable()) cap_thread.join();
     if (remote_sel_thread.joinable()) remote_sel_thread.join();
     if (meta_thread.joinable()) meta_thread.join();
-    cap.release();
     cv::destroyAllWindows();
 #ifdef _WIN32
     WSACleanup();

@@ -384,7 +384,9 @@ Window {
                             ColumnLayout {
                                 spacing: 0
                                 Text {
-                                    text: authManager.currentUserId || "Admin"
+                                    text: (authManager && authManager.currentUserId && authManager.currentUserId.length > 0)
+                                          ? authManager.currentUserId
+                                          : "Admin"
                                     color: "white"
                                     font.pixelSize: 12
                                     font.bold: true

@@ -37,6 +37,16 @@ add_executable(camera_RBF
 target_include_directories(camera_RBF PRIVATE ${COMMON_INCLUDE_DIR})
 target_link_libraries(camera_RBF PRIVATE ${OpenCV_LIBS})
 
+add_executable(dump_metadata_xml
+    src/dump_metadata_xml.cpp
+    ${COMMON_SRCS}
+)
+target_include_directories(dump_metadata_xml PRIVATE ${COMMON_INCLUDE_DIR})
+# 메타 XML 덤프만 — OpenCV 불필요
+if(WIN32)
+    target_link_libraries(dump_metadata_xml PRIVATE ws2_32)
+endif()
+
 if(WIN32)
     target_link_libraries(app PRIVATE ws2_32)
     target_link_libraries(camera_client PRIVATE ws2_32)

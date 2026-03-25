@@ -24,6 +24,7 @@ struct ParsedMetadataObject {
     float top;
     float right;
     float bottom;
+    float likelihood{1.0f};  // 추가
 };
 
 struct Trajectory {
@@ -43,17 +44,19 @@ private:
     std::map<std::string, unsigned int> gate_last_pass_time;
     std::map<std::string, Trajectory> tracking_map; 
 
-    const unsigned int LOG_THROTTLE = 90000; 
-    const unsigned int TAILGATE_LIMIT = 45000;
-    const float SENSOR_WIDTH = 3840.0f;  // 🌟 가벽(Clamping)용 4K 너비
-    const float SENSOR_HEIGHT = 2160.0f; // 🌟 가벽(Clamping)용 4K 높이
+    // 이름은 Config.h 의 LOG_THROTTLE / TAILGATE_LIMIT / SENSOR_* 매크로와 겹치면 안 됨(전처리기 파괴).
+    static constexpr unsigned int kParserObjectLogIntervalRtp = 90000;
+    static constexpr unsigned int kParserTailgateGapRtp = 45000;
+    static constexpr float kParserClampWidth = 3840.0f;
+    static constexpr float kParserClampHeight = 2160.0f;
 
     std::string get_current_time_str();
 
 public:
     std::vector<DetectedObject> parseAndProcess(std::string& accumulated_xml, unsigned int last_timestamp);
     // detect_all=true 이면 Human 이외 타입도 모두 반환 (좌표가 유효한 경우)
-    // detect_all=false 이면 type == "Human" 인 객체만 반환 (기본 동작)
+    // detect_all=false 이면 type == "Human" 인 객체만 반환 (기본 동작).
+    // 타입 필터 전에 모든 객체를 모아, 더 큰 박스 안에 거의 통째로 들어간 작은 박스를 타입 무관 제거 후 NMS.
     std::vector<ParsedMetadataObject> parseHumanObjectsForAnalytics(const std::string& xml,
                                                                     bool detect_all = false) const;
 };

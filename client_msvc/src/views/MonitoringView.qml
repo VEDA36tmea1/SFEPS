@@ -2,7 +2,6 @@ import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 import src 1.0
-import src.backend 1.0
 
 Page {
     id: rootPage
@@ -12,6 +11,16 @@ Page {
     }
 
     signal viewDetailRequest(string objectId, string cardAgeText, string ageGroup, bool isFraud, string imagePath)
+    Component.onCompleted: {
+        if (videoBackend) {
+            videoBackend.running = true
+        }
+    }
+    Component.onDestruction: {
+        if (videoBackend) {
+            videoBackend.running = false
+        }
+    }
 
     // Properties for live stats
     property int totalBoardingCount: 0
@@ -23,12 +32,15 @@ Page {
                                  ? Math.round((fraudBoardingCount / totalBoardingCount) * 1000) / 10
                                  : 0
     property var pendingDetections: []
+    // Keep primary overlay source as metadata tracker (videoBackend.detections).
+    // Enable only when position-port overlay should override as fallback.
+    property bool usePositionOverlayFallback: false
     property string currentTrackedId: ""
     property string visualTrackedId: ""
     property string streamStatusOverrideForTest: ""
     readonly property string effectiveStreamStatus: streamStatusOverrideForTest !== ""
                                                     ? streamStatusOverrideForTest
-                                                    : (videoDisplay ? videoDisplay.streamStatus : "STOPPED")
+                                                    : ((videoBackend && videoBackend.streamStatus) ? videoBackend.streamStatus : "STOPPED")
     readonly property bool trackingActive: visualTrackedId !== ""
 
     // Squish-readable event counter — incremented directly in appendMonitoringEvent.
@@ -160,13 +172,6 @@ Page {
         return false
     }
 
-    Component.onCompleted: {
-        if (!pendingTestEventDrainTimer.running) {
-            pendingTestEventDrainTimer.start()
-        }
-        Qt.callLater(_drainPendingTestMonitoringEvents)
-    }
-
     // Squish helper: force stream-state label rendering for UI verification.
     function setStreamStatusOverrideForTest(status) {
         streamStatusOverrideForTest = status ? String(status) : ""
@@ -222,17 +227,6 @@ Page {
     onLaserTrackingEnabledChanged: {
         if (!laserTrackingEnabled && videoDisplay) {
             videoDisplay.setSelectedDetection("")
-        }
-    }
-
-    Timer {
-        id: detectionFlushTimer
-        interval: 180
-        repeat: false
-        onTriggered: {
-            if (videoDisplay) {
-                videoDisplay.setDetections(pendingDetections)
-            }
         }
     }
 
@@ -317,25 +311,6 @@ Page {
                     }
                 }
 
-                Rectangle {
-                    id: videoMetaDelayBadge
-                    objectName: "videoMetaDelayBadge"
-                    Layout.preferredHeight: 24
-                    implicitWidth: videoMetaDelayLabel.implicitWidth + 24
-                    radius: 12
-                    color: AppTheme.surfaceCard
-                    border.width: 1
-                    border.color: (videoMetaDelay >= 0 && videoMetaDelay <= 120) ? AppTheme.statusOnline : AppTheme.accent
-
-                    Text {
-                        id: videoMetaDelayLabel
-                        anchors.centerIn: parent
-                        text: videoMetaDelay >= 0 ? ("VIDEO-META " + videoMetaDelay + "ms") : "VIDEO-META -"
-                        color: (videoMetaDelay >= 0 && videoMetaDelay <= 120) ? AppTheme.statusOnline : AppTheme.accent
-                        font.pixelSize: 10
-                        font.bold: true
-                    }
-                }
             }
 
             // Single Camera View (CAM-01)
@@ -361,6 +336,8 @@ Page {
                     brightness: brightnessSlider.value
                     contrast: contrastSlider.value
                     running: true
+                    onBrightnessChanged: if (videoBackend) videoBackend.brightness = brightness
+                    onContrastChanged: if (videoBackend) videoBackend.contrast = contrast
 
                     // Zoom Selection logic
                     property real startX: 0
@@ -436,8 +413,7 @@ Page {
                 }
 
                 // Expose the low-level video stream latency to the parent scope
-                property alias streamLatency: videoDisplay.streamLatency
-                property alias videoMetaDelay: videoDisplay.videoMetaDelay
+                property int streamLatency: (videoBackend && videoBackend.streamLatency !== undefined) ? videoBackend.streamLatency : 0
 
                 // Popup for Track controls when an object is selected
                 Popup {
@@ -1104,6 +1080,14 @@ Page {
                 }
             }
             Connections {
+                target: videoBackend
+                function onDetectionsChanged() {
+                    if (!videoDisplay || !videoBackend) return
+                    videoDisplay.setDetections(videoBackend.detections)
+                }
+            }
+
+            Connections {
                 target: positionManager
                 function onPositionsUpdated(list) {
                     if (!videoDisplay) return;
@@ -1193,8 +1177,8 @@ Page {
                     
 
                     pendingDetections = out;
-                    if (!detectionFlushTimer.running) {
-                        detectionFlushTimer.start();
+                    if (videoDisplay && usePositionOverlayFallback) {
+                        videoDisplay.setDetections(pendingDetections)
                     }
                 }
             }

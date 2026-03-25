@@ -126,7 +126,13 @@ def process(jpeg_bytes: bytes, raw_bboxes: list) -> str:
 
     # DeepSort 입력 포맷: [[left, top, w, h], confidence, class_id]
     detections = [([l, t, r - l, b - t], conf, 0) for (l, t, r, b, conf) in raw_bboxes]
-    tracks = tracker.update_tracks(detections, frame=frame)
+    try:
+        tracks = tracker.update_tracks(detections, frame=frame)
+    except Exception as e:
+        # Never let worker die from runtime tracking exceptions.
+        sys.stderr.write(f"[deepsort_worker] update_tracks error: {e}\n")
+        sys.stderr.flush()
+        return "0\n"
 
     current_confirmed_ids: set = {tr.track_id for tr in tracks if tr.is_confirmed()}
 
@@ -201,35 +207,45 @@ def process(jpeg_bytes: bytes, raw_bboxes: list) -> str:
 
 def main() -> None:
     while True:
-        hdr = sys.stdin.buffer.read(4)
-        if not hdr or len(hdr) < 4:
-            break
-        (jpeg_len,) = struct.unpack("<I", hdr)
-
-        if jpeg_len == 0:
-            sys.stdout.write("0\n")
-            sys.stdout.flush()
-            continue
-
-        jpeg = read_exact(jpeg_len)
-        if len(jpeg) != jpeg_len:
-            break
-
-        bbox_hdr = sys.stdin.buffer.read(4)
-        if not bbox_hdr or len(bbox_hdr) < 4:
-            break
-        (bbox_count,) = struct.unpack("<I", bbox_hdr)
-
-        raw_bboxes = []
-        for _ in range(bbox_count):
-            raw = sys.stdin.buffer.read(20)
-            if len(raw) < 20:
+        try:
+            hdr = sys.stdin.buffer.read(4)
+            if not hdr or len(hdr) < 4:
                 break
-            l, t, r, b, conf = struct.unpack("<fffff", raw)
-            raw_bboxes.append((l, t, r, b, conf))
+            (jpeg_len,) = struct.unpack("<I", hdr)
 
-        sys.stdout.write(process(jpeg, raw_bboxes))
-        sys.stdout.flush()
+            if jpeg_len == 0:
+                sys.stdout.write("0\n")
+                sys.stdout.flush()
+                continue
+
+            jpeg = read_exact(jpeg_len)
+            if len(jpeg) != jpeg_len:
+                break
+
+            bbox_hdr = sys.stdin.buffer.read(4)
+            if not bbox_hdr or len(bbox_hdr) < 4:
+                break
+            (bbox_count,) = struct.unpack("<I", bbox_hdr)
+
+            raw_bboxes = []
+            for _ in range(bbox_count):
+                raw = sys.stdin.buffer.read(20)
+                if len(raw) < 20:
+                    break
+                l, t, r, b, conf = struct.unpack("<fffff", raw)
+                raw_bboxes.append((l, t, r, b, conf))
+
+            sys.stdout.write(process(jpeg, raw_bboxes))
+            sys.stdout.flush()
+        except Exception as e:
+            # Keep worker alive and report one-line failure for this frame.
+            sys.stderr.write(f"[deepsort_worker] loop error: {e}\n")
+            sys.stderr.flush()
+            try:
+                sys.stdout.write("0\n")
+                sys.stdout.flush()
+            except Exception:
+                break
 
 
 if __name__ == "__main__":

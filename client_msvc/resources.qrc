@@ -11,6 +11,7 @@
         <!-- QML entrypoints (main.cpp: qrc:/src/Main.qml) -->
         <file>src/Main.qml</file>
         <file>src/AppTheme.qml</file>
+        <file>src/VideoDisplay.qml</file>
         <file>src/qmldir</file>
         <file>src/views/LoginView.qml</file>
         <file>src/views/MonitoringView.qml</file>
