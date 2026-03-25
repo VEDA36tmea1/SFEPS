@@ -74,6 +74,7 @@ void run_image_retention_cleanup_worker(std::atomic<bool>& running_flag,
             waited += chunk;
         }
     }
+    std::cout << "[main.cpp] [" << log_key << "] 종료." << std::endl;
 }
 } // namespace
 
@@ -118,6 +119,7 @@ void run_file_cleanup_worker(std::atomic<bool>& running_flag, const std::string&
             waited += chunk;
         }
     }
+    std::cout << "[main.cpp] [VIDEO_RETENTION_CLEANUP] 종료." << std::endl;
 }
 
 void run_fraud_image_cleanup_worker(std::atomic<bool>& running_flag,

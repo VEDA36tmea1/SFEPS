@@ -109,7 +109,6 @@ void run_audio_receiver_impl(std::atomic<bool>& running, const SecurityRuntimeOp
     close_listener_bundle(listeners);
     ring.stop();
     playback.stop();
-    std::cout << "[main.cpp] [Audio] 수신 스레드 종료." << std::endl;
 }
 
 }  // namespace app_services_impl

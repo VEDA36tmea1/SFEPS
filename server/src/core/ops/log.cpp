@@ -188,7 +188,6 @@ DBLogger::~DBLogger() {
     if (conn != nullptr) {
         mysql_close(conn);
         conn = nullptr;
-        std::cout << "[log.cpp] [System] DB 연결 종료." << std::endl;
     }
 }
 

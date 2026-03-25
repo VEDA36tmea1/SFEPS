@@ -81,7 +81,6 @@ void run_fraud_notifier_impl(std::atomic<bool>& running, const SecurityRuntimeOp
 
     close_listener_bundle(listeners);
     close_alert_client_connections();
-    std::cout << "[main.cpp] [Alert] 알림 스레드 종료." << std::endl;
 }
 
 }  // namespace app_services_impl
