@@ -23,7 +23,7 @@ Set-DefaultEnv "METADATA_RTSP_URL" $env:RTSP_STREAM_URL
 # 카메라가 trackID=v/m 이 아니면 0/1 등으로 지정
 Set-DefaultEnv "METADATA_VIDEO_TRACK_ID" "v"
 Set-DefaultEnv "METADATA_META_TRACK_ID" "m"
-Set-DefaultEnv "FRAUD_SERVER_HOST" "192.168.0.82"
+Set-DefaultEnv "FRAUD_SERVER_HOST" "192.168.0.101"
 Set-DefaultEnv "FRAUD_SERVER_PORT" "5557"
 Set-DefaultEnv "POS_SERVER_PORT" "5558"
 Set-DefaultEnv "AUTH_TLS_ENABLE" "0"          # TLS 사용 시 1
@@ -97,22 +97,17 @@ if (-not $exePath) {
     exit 1
 }
 
-# OpenCV/GStreamer/Qt 런타임 DLL 경로를 우선 추가
-$opencvBinCandidates = @(
-    "C:\Users\2-16\Desktop\SFEPS\opencv-gst\install\x64\vc17\bin",
-    "C:\Users\2-16\Downloads\opencv-gst\install\x64\vc17\bin"
-)
-$opencvBin = $null
-foreach ($cand in $opencvBinCandidates) {
-    if (Test-Path $cand) { $opencvBin = $cand; break }
-}
-$gstreamerBin = "C:\Program Files\gstreamer\1.0\msvc_x86_64\bin"
-$gstreamerPluginDir = "C:\Program Files\gstreamer\1.0\msvc_x86_64\lib\gstreamer-1.0"
-$qtBin = "C:\Qt\6.10.0\msvc2022_64\bin"
-if ($opencvBin) { $env:Path = "$opencvBin;$env:Path" }
+
+# --- 런타임 DLL 경로 직접 지정 (2-08 사용자 환경) ---
+$qtBin = "C:\\Qt\\6.10.2\\msvc2022_64\\bin"
+$opencvBin = "C:\\opencv\\build\\x64\\vc16\\bin"
+$gstreamerBin = "C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64\\bin"
+$gstreamerPluginDir = "C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64\\lib\\gstreamer-1.0"
+
+if (Test-Path $qtBin) { $env:Path = "$qtBin;$env:Path" }
+if (Test-Path $opencvBin) { $env:Path = "$opencvBin;$env:Path" }
 if (Test-Path $gstreamerBin) { $env:Path = "$gstreamerBin;$env:Path" }
 if (Test-Path $gstreamerPluginDir) { Set-DefaultEnv "GST_PLUGIN_PATH" $gstreamerPluginDir }
-if (Test-Path $qtBin) { $env:Path = "$qtBin;$env:Path" }
 
 Write-Host "[run_client.ps1] exe=$exePath opencvBin=$opencvBin backend=$($env:RTSP_BACKEND) AUTH_TLS_ENABLE=$($env:AUTH_TLS_ENABLE)"
 & $exePath
