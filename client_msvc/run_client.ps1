@@ -17,7 +17,12 @@ function Set-DefaultEnv([string]$name, [string]$value) {
 }
 
 # ── 서버 연결 ──────────────────────────────────────────────────────────────────
-Set-DefaultEnv "RTSP_STREAM_URL" "rtsp://192.168.0.101:8554/cam1"
+Set-DefaultEnv "RTSP_STREAM_URL" "rtsp://192.168.0.84/profile2/media.smp"
+# metadata 수신 RTSP (객체 박스용): 기본은 영상 URL과 동일
+Set-DefaultEnv "METADATA_RTSP_URL" $env:RTSP_STREAM_URL
+# 카메라가 trackID=v/m 이 아니면 0/1 등으로 지정
+Set-DefaultEnv "METADATA_VIDEO_TRACK_ID" "v"
+Set-DefaultEnv "METADATA_META_TRACK_ID" "m"
 Set-DefaultEnv "FRAUD_SERVER_HOST" "192.168.0.101"
 Set-DefaultEnv "FRAUD_SERVER_PORT" "5557"
 Set-DefaultEnv "POS_SERVER_PORT" "5558"
@@ -36,6 +41,10 @@ Set-DefaultEnv "RTSP_TARGET_FPS" "30"
 Set-DefaultEnv "RTSP_DROP_GRABS" "3"
 # ffmpeg 저지연 옵션 (필요 시 조정)
 Set-DefaultEnv "RTSP_FFMPEG_OPTIONS" "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0|probesize;32768|analyzeduration;0|reorder_queue_size;0"
+# OpenCV CAP_GSTREAMER 전용 파이프라인 (비어있으면 FFmpeg fallback)
+if ([string]::IsNullOrWhiteSpace($env:SFEPS_GSTREAMER_PIPELINE) -and $env:RTSP_BACKEND -eq "gstreamer") {
+    $env:SFEPS_GSTREAMER_PIPELINE = "rtspsrc location=$($env:RTSP_STREAM_URL) latency=0 protocols=tcp ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! appsink drop=true max-buffers=1 sync=false"
+}
 
 # ── TLS/CA (로그인 채널) ─────────────────────────────────────────────────────
 # TLS 사용 시 AUTH_TLS_ENABLE=1 로 변경하고, CA 파일 경로를 확인하세요.
@@ -66,24 +75,44 @@ Set-DefaultEnv "CAMERA_CGI_PASSWORD" "CCgbdCCgbd"      # 카메라 로그인 비
 Set-DefaultEnv "CAMERA_CGI_ALLOW_INSECURE_TLS" "1"
 
 # ── 실행 ───────────────────────────────────────────────────────────────────────
-$exePath = Join-Path $clientDir "build-msvc\Release\appHanwhaVisionSFEPS.exe"
-if (-not (Test-Path $exePath)) {
-    Write-Error "실행파일을 찾을 수 없습니다: $exePath"
-    Write-Host "MSVC 빌드 예시:"
-    Write-Host "  cmake -S . -B build-msvc -G ""Visual Studio 17 2022"" -A x64 -DOpenCV_DIR=""C:/Users/2-16/Downloads/opencv-gst/install"""
+# OpenCV 통합 빌드(build-opencv-on)를 우선 사용, 없으면 기존 build-msvc fallback
+$exeCandidates = @(
+    (Join-Path $clientDir "build-opencv-on\Release\appHanwhaVisionSFEPS.exe"),
+    (Join-Path $clientDir "build-msvc\Release\appHanwhaVisionSFEPS.exe")
+)
+$exePath = $null
+foreach ($cand in $exeCandidates) {
+    if (Test-Path $cand) { $exePath = $cand; break }
+}
+
+if (-not $exePath) {
+    Write-Error "실행파일을 찾을 수 없습니다 (build-opencv-on 또는 build-msvc)."
+    Write-Host "OpenCV 빌드 예시:"
+    Write-Host "  cmake -S . -B build-opencv-on -G ""Visual Studio 17 2022"" -A x64 -DOpenCV_DIR=""C:/Users/2-16/Desktop/SFEPS/opencv-gst/install"""
+    Write-Host "  cmake --build build-opencv-on --config Release"
+    Write-Host ""
+    Write-Host "기존 빌드 예시:"
+    Write-Host "  cmake -S . -B build-msvc -G ""Visual Studio 17 2022"" -A x64 -DSFEPS_WITH_OPENCV=OFF"
     Write-Host "  cmake --build build-msvc --config Release"
     exit 1
 }
 
 # OpenCV/GStreamer/Qt 런타임 DLL 경로를 우선 추가
-$opencvBin = "C:\Users\2-16\Downloads\opencv-gst\install\x64\vc17\bin"
+$opencvBinCandidates = @(
+    "C:\Users\2-16\Desktop\SFEPS\opencv-gst\install\x64\vc17\bin",
+    "C:\Users\2-16\Downloads\opencv-gst\install\x64\vc17\bin"
+)
+$opencvBin = $null
+foreach ($cand in $opencvBinCandidates) {
+    if (Test-Path $cand) { $opencvBin = $cand; break }
+}
 $gstreamerBin = "C:\Program Files\gstreamer\1.0\msvc_x86_64\bin"
 $gstreamerPluginDir = "C:\Program Files\gstreamer\1.0\msvc_x86_64\lib\gstreamer-1.0"
 $qtBin = "C:\Qt\6.10.0\msvc2022_64\bin"
-if (Test-Path $opencvBin) { $env:Path = "$opencvBin;$env:Path" }
+if ($opencvBin) { $env:Path = "$opencvBin;$env:Path" }
 if (Test-Path $gstreamerBin) { $env:Path = "$gstreamerBin;$env:Path" }
 if (Test-Path $gstreamerPluginDir) { Set-DefaultEnv "GST_PLUGIN_PATH" $gstreamerPluginDir }
 if (Test-Path $qtBin) { $env:Path = "$qtBin;$env:Path" }
 
-Write-Host "[run_client.ps1] AUTH_TLS_ENABLE=$($env:AUTH_TLS_ENABLE) AUTH_TLS_CA_FILE=$($env:AUTH_TLS_CA_FILE)"
+Write-Host "[run_client.ps1] exe=$exePath opencvBin=$opencvBin backend=$($env:RTSP_BACKEND) AUTH_TLS_ENABLE=$($env:AUTH_TLS_ENABLE)"
 & $exePath

@@ -12,6 +12,15 @@
 #include <atomic>
 #include <thread>
 
+class LiveFrameProvider;
+
+#ifdef SFEPS_HAVE_OPENCV
+#include "XMLParser.h"
+#include "native_metadata_tracker.h"
+#include "rbf_pwm_core.h"
+#include <vector>
+#endif
+
 class MainWindow : public QObject
 {
     Q_OBJECT
@@ -25,6 +34,12 @@ class MainWindow : public QObject
     Q_PROPERTY(QVariantList detections READ detections NOTIFY detectionsChanged)
     Q_PROPERTY(QString selectedDetection READ selectedDetection NOTIFY selectedDetectionChanged)
     Q_PROPERTY(QString externalTrackedId READ externalTrackedId WRITE setExternalTrackedId NOTIFY externalTrackedIdChanged)
+#ifdef SFEPS_HAVE_OPENCV
+    Q_PROPERTY(int previewRevision READ previewRevision NOTIFY previewRevisionChanged)
+    Q_PROPERTY(int frameWidth READ frameWidth NOTIFY previewRevisionChanged)
+    Q_PROPERTY(int frameHeight READ frameHeight NOTIFY previewRevisionChanged)
+    Q_PROPERTY(bool useLowLatencyOpenCv READ useLowLatencyOpenCv CONSTANT)
+#endif
 
 public:
     explicit MainWindow(QObject *parent = nullptr);
@@ -51,6 +66,22 @@ public:
     int streamLatency() const { return m_streamLatencyMs; }
     int videoMetaDelay() const { return m_videoMetaDelayMs; }
 
+#ifdef SFEPS_HAVE_OPENCV
+    void setLiveFrameProvider(LiveFrameProvider *p) { m_liveProvider = p; }
+    int previewRevision() const { return m_previewRevision; }
+    int frameWidth() const
+    {
+        const int w = m_frameW.load();
+        return w > 0 ? w : 1920;
+    }
+    int frameHeight() const
+    {
+        const int h = m_frameH.load();
+        return h > 0 ? h : 1080;
+    }
+    bool useLowLatencyOpenCv() const { return true; }
+#endif
+
 signals:
     void runningChanged();
     void brightnessChanged();
@@ -62,6 +93,10 @@ signals:
     void detectionsChanged();
     void selectedDetectionChanged();
     void externalTrackedIdChanged();
+#ifdef SFEPS_HAVE_OPENCV
+    void previewRevisionChanged();
+    void pwmSetRequested(int pan, int tilt);
+#endif
 
 private:
     void updateStreamStatus(const QString &status, bool connected);
@@ -72,6 +107,13 @@ private:
     void sendBrightnessCgi();
     void sendContrastCgi();
     void fetchCameraImageSettings();
+
+#ifdef SFEPS_HAVE_OPENCV
+    void opencvCaptureLoop();
+    void applyNativeDetections(std::vector<ParsedMetadataObject> humans, unsigned int rtpTs, qint64 wallMs,
+                               qint64 frameNo);
+    void onPwmTick();
+#endif
 
     mutable QMutex m_mutex;
     QTimer *m_updateTimer;
@@ -106,6 +148,32 @@ private:
     QNetworkAccessManager *m_cgiNetworkManager;
     QTimer *m_brightnessCgiDebounceTimer;
     QTimer *m_contrastCgiDebounceTimer;
+
+#ifdef SFEPS_HAVE_OPENCV
+    LiveFrameProvider *m_liveProvider = nullptr;
+    NativeMetadataTracker m_nativeTracker;
+    RbfTps2D m_rbfPan;
+    RbfTps2D m_rbfTilt;
+    bool m_rbfOk = false;
+    KalmanBbox2D m_kfPwm;
+    int m_prevPan = 1500;
+    int m_prevTilt = 1500;
+    QString m_prevSelPwm;
+    int m_panMin = 500;
+    int m_panMax = 2500;
+    int m_tiltMin = 500;
+    int m_tiltMax = 2500;
+    double m_pwmRatio = 0.35;
+    double m_pwmAlpha = 0.5;
+    double m_predictMs = 300.0;
+    int m_previewRevision = 0;
+    std::atomic_int m_frameW{0};
+    std::atomic_int m_frameH{0};
+    std::thread m_opencvThread;
+    std::atomic_bool m_opencvRunning{false};
+    QTimer *m_pwmTimer = nullptr;
+    qint64 m_lastPwmTickMs = 0;
+#endif
 
 private slots:
     void onUpdateTimerTimeout();

@@ -366,13 +366,39 @@ make run-rbf ARGS="--tracker-mode native --predict-ms 200"
 make run-rbf ARGS="--tracker-mode deepsort --predict-ms 200"
 ```
 
+#### 6.4 ONVIF 메타데이터 XML 확인 (`dump_metadata_xml`)
+
+`XMLParser`는 **XML 문자열**만 넘기면 단독으로 동작한다. 카메라에서 오는 원시 XML을 보려면 `dump_metadata_xml`을 쓰면 된다 (OpenCV 불필요).
+
+빌드:
+
+```powershell
+cd C:\Users\2-16\Desktop\SFEPS\Camera\get_metadata
+make dump_metadata_xml.exe
+```
+
+- **실시간**: RTSP 메타 트랙(channel 2)에서 RTP 타임스탬프가 바뀔 때마다 누적된 XML을 stdout에 출력하고, 이어서 `parseHumanObjectsForAnalytics(..., detect_all=true)` 결과를 출력한다.
+
+```powershell
+.\dump_metadata_xml.exe
+.\dump_metadata_xml.exe --max-frames 3
+```
+
+- **오프라인**: 저장해 둔 XML 파일로 동일 파서 결과 확인 (`--detect-all`이면 `Human` 외 타입도 포함).
+
+```powershell
+.\dump_metadata_xml.exe --file saved_meta.xml
+.\dump_metadata_xml.exe --file saved_meta.xml --detect-all
+```
+
+카메라는 보통 `<tt:Object>` 블록을 **여러 개**(예: Human 전신 + Head) 보내므로, 원시 XML에서 `ObjectId`, `<tt:Type>...</tt:Type>`를 직접 보면 구조를 확인할 수 있다.
 
 ---
 
 
 
 
-#### 6.4 native 모드 개선 포인트
+#### 6.5 native 모드 개선 포인트
 
 - IoU + 중심거리 기반 매칭
 - 겹침(crowded) 구간에서 게이트 강화로 ID 스위치 억제

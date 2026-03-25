@@ -32,6 +32,9 @@ Page {
                                  ? Math.round((fraudBoardingCount / totalBoardingCount) * 1000) / 10
                                  : 0
     property var pendingDetections: []
+    // Keep primary overlay source as metadata tracker (videoBackend.detections).
+    // Enable only when position-port overlay should override as fallback.
+    property bool usePositionOverlayFallback: false
     property string currentTrackedId: ""
     property string visualTrackedId: ""
     property string streamStatusOverrideForTest: ""
@@ -1174,7 +1177,7 @@ Page {
                     
 
                     pendingDetections = out;
-                    if (videoDisplay) {
+                    if (videoDisplay && usePositionOverlayFallback) {
                         videoDisplay.setDetections(pendingDetections)
                     }
                 }

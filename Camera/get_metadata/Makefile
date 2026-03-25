@@ -1,6 +1,12 @@
 # 컴파일러 설정(기본: Linux/MinGW)
 CXX = g++
 
+ifeq ($(OS),Windows_NT)
+DUMP_TARGET = dump_metadata_xml.exe
+else
+DUMP_TARGET = dump_metadata_xml
+endif
+
 # 플랫폼별 링커/플래그
 ifeq ($(OS),Windows_NT)
 # On Windows: MSVC(cl) + OpenCV(vc17) 사용
@@ -21,7 +27,7 @@ CXXFLAGS = /std:c++17 /EHsc /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS /Iinc /I"$(OPEN
 LDFLAGS = /link /LIBPATH:"$(OPENCV_LIB_DIR)"
 LDLIBS = ws2_32.lib opencv_world4130.lib
 ALL_TARGETS = $(TARGET) $(CAM_TARGET) $(RBF_TARGET)
-CLEAN_CMD = cmd /C del /Q $(TARGET) $(CAM_TARGET) $(RBF_TARGET) app camera_client camera_RBF 2>nul
+CLEAN_CMD = cmd /C del /Q $(TARGET) $(CAM_TARGET) $(RBF_TARGET) $(DUMP_TARGET) app camera_client camera_RBF dump_metadata_xml 2>nul
 else
 TARGET     = app
 CAM_TARGET = camera_client
@@ -31,7 +37,7 @@ LDFLAGS =
 CXXFLAGS = -std=c++17 -Wall -I./inc
 OPENCV_FLAGS = `pkg-config --cflags --libs opencv4`
 ALL_TARGETS = $(TARGET) $(CAM_TARGET) $(RBF_TARGET)
-CLEAN_CMD = rm -f $(TARGET) $(CAM_TARGET)
+CLEAN_CMD = rm -f $(TARGET) $(CAM_TARGET) $(RBF_TARGET) $(DUMP_TARGET)
 endif
 
 # 2. 기본 앱용 소스 (기존 tailgating 분석 등)
@@ -49,6 +55,10 @@ RBF_SRCS = src/camera_RBF.cpp \
            src/RTSPClient.cpp \
            src/XMLParser.cpp
 
+# 5. 메타데이터 XML 덤프/오프라인 파싱 (OpenCV 불필요)
+DUMP_SRCS = src/dump_metadata_xml.cpp \
+            src/RTSPClient.cpp \
+            src/XMLParser.cpp
 
 
 # 빌드 규칙
@@ -75,6 +85,13 @@ else
 	$(CXX) $(CXXFLAGS) $(RBF_SRCS) -o $(RBF_TARGET) $(OPENCV_FLAGS) $(LDLIBS) -lpthread
 endif
 
+$(DUMP_TARGET): $(DUMP_SRCS)
+ifeq ($(OS),Windows_NT)
+	$(CXX) /std:c++17 /EHsc /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS /Iinc $(DUMP_SRCS) /Fe:$(DUMP_TARGET) /link ws2_32.lib
+else
+	$(CXX) -std=c++17 -Wall -I./inc $(DUMP_SRCS) -o $(DUMP_TARGET)
+endif
+
 
 
 clean:
@@ -89,8 +106,17 @@ else
 	./$(RBF_TARGET) $(ARGS)
 endif
 
+# $(MAKE) 재귀 호출은 GnuWin32 등에서 make 경로에 공백이 있으면 cmd가 'C:/Program'만 실행해 실패한다.
 run-rbf-native: $(RBF_TARGET)
-	$(MAKE) run-rbf ARGS="--tracker-mode native"
+ifeq ($(OS),Windows_NT)
+	cmd /C "set PATH=$(OPENCV_BIN_DIR);$(GSTREAMER_BIN_DIR);%PATH% && set GST_PLUGIN_PATH=$(GSTREAMER_PLUGIN_DIR) && .\$(RBF_TARGET) --tracker-mode native"
+else
+	./$(RBF_TARGET) --tracker-mode native
+endif
 
 run-rbf-deepsort: $(RBF_TARGET)
-	$(MAKE) run-rbf ARGS="--tracker-mode deepsort"
+ifeq ($(OS),Windows_NT)
+	cmd /C "set PATH=$(OPENCV_BIN_DIR);$(GSTREAMER_BIN_DIR);%PATH% && set GST_PLUGIN_PATH=$(GSTREAMER_PLUGIN_DIR) && .\$(RBF_TARGET) --tracker-mode deepsort"
+else
+	./$(RBF_TARGET) --tracker-mode deepsort
+endif

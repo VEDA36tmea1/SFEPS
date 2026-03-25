@@ -11,11 +11,15 @@
 #include <QDateTime>
 #include <QProcessEnvironment>
 #include <QString>
+#include <QVariant>
 #include "authmanager.h"
 #include "mainwindow.h"
 #include "voicemanager.h"
 #include "fraudmanager.h"
 #include "positionmanager.h"
+#ifdef SFEPS_HAVE_OPENCV
+#include "live_frame_provider.h"
+#endif
 
 void myMessageOutput(QtMsgType type, const QMessageLogContext &context, const QString &msg)
 {
@@ -61,9 +65,19 @@ int main(int argc, char *argv[]) {
     PositionManager positionManager;
     engine.rootContext()->setContextProperty("positionManager", &positionManager);
 
-  // Video backend: ONVIF metadata parse + status/CGI control (no frame decoding)
+  // Video backend: ONVIF metadata + optional OpenCV RTSP preview + native track + RBF/PWM
   MainWindow videoBackend;
   engine.rootContext()->setContextProperty("videoBackend", &videoBackend);
+#ifdef SFEPS_HAVE_OPENCV
+  auto *liveFrameProvider = new LiveFrameProvider();
+  engine.addImageProvider(QStringLiteral("live"), liveFrameProvider);
+  videoBackend.setLiveFrameProvider(liveFrameProvider);
+  QObject::connect(&videoBackend, &MainWindow::pwmSetRequested, &positionManager,
+                   [&positionManager](int pan, int tilt) {
+                       positionManager.sendPositionCommand(
+                           QStringLiteral("SET_PWM,PAN=%1,TILT=%2").arg(pan).arg(tilt));
+                   });
+#endif
 
   // 알림 서버 호스트: 환경변수 FRAUD_SERVER_HOST가 설정되어 있으면 그 값을 사용하고,
   // 설정되어 있지 않으면 기존 하드코드된 주소를 기본값으로 사용합니다.
@@ -199,6 +213,23 @@ int main(int argc, char *argv[]) {
     // Expose RTSP stream URL to QML so QML MediaPlayer can use it
     const QString rtspStreamUrl = QProcessEnvironment::systemEnvironment().value("RTSP_STREAM_URL", "rtsp://192.168.0.101:8554/cam1");
     engine.rootContext()->setContextProperty("rtspStreamUrl", rtspStreamUrl);
+
+    // FFmpeg backend: MediaPlayer.playbackOptions.probeSize (bytes). Smaller = less pre-roll / latency;
+    // too small may fail to open some streams. Default 65536. Set RTSP_MEDIA_PROBE_SIZE=-1 for Qt default.
+    qint64 rtspMediaProbeSize = 65536;
+    const QString probeEnv = env.value(QStringLiteral("RTSP_MEDIA_PROBE_SIZE")).trimmed();
+    if (!probeEnv.isEmpty()) {
+        bool ok = false;
+        const qint64 v = probeEnv.toLongLong(&ok);
+        if (ok) {
+            if (v == -1)
+                rtspMediaProbeSize = -1; // Qt/FFmpeg backend default probesize
+            else if (v > 0)
+                rtspMediaProbeSize = v;
+        }
+    }
+    engine.rootContext()->setContextProperty(QStringLiteral("rtspMediaProbeSize"), QVariant::fromValue(rtspMediaProbeSize));
+    qDebug() << "[Main] RTSP_MEDIA_PROBE_SIZE (bytes):" << rtspMediaProbeSize;
 
     // Auto-subscribe helper for testing: if SFEPS_AUTO_SUB_POS_ID env var is set,
     // send a SUB_POS|<id> once after connecting.

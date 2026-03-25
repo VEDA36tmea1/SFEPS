@@ -1,2 +1,3 @@
 module src
 singleton AppTheme 1.0 AppTheme.qml
+VideoDisplay 1.0 VideoDisplay.qml
