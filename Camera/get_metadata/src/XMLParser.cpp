@@ -10,7 +10,6 @@ constexpr bool k_enable_object_log = true;
 constexpr bool k_enable_meta_log = false;
 
 namespace {
-<<<<<<< HEAD
 
 std::size_t find_in_range(const std::string& raw,
                           const char* needle,
@@ -19,49 +18,6 @@ std::size_t find_in_range(const std::string& raw,
     const std::size_t pos = raw.find(needle, start_pos);
     if (pos == std::string::npos || pos >= end_pos) return std::string::npos;
     return pos;
-=======
-    std::size_t find_in_range(const std::string& raw,
-                              const char* needle,
-                              std::size_t start_pos,
-                              std::size_t end_pos) {
-        const std::size_t pos = raw.find(needle, start_pos);
-        if (pos == std::string::npos || pos >= end_pos) return std::string::npos; 
-        return pos;
-    }
-
-    bool parse_float_attr(const std::string& raw,
-                          std::size_t attr_pos,
-                          std::size_t value_offset,
-                          float& out_value) {
-        if (attr_pos == std::string::npos) return false;
-
-        const std::size_t value_start = attr_pos + value_offset;
-        const std::size_t value_end = raw.find("\"", value_start);
-        if (value_end == std::string::npos) return false;
-
-        try {
-            out_value = std::stof(raw.substr(value_start, value_end - value_start));
-        } catch (...) {
-            return false;
-        }
-        return true;
-    }
-
-    float calculate_iou(float l1, float t1, float r1, float b1,
-                        float l2, float t2, float r2, float b2) {
-        float xA = std::max(l1, l2);
-        float yA = std::max(t1, t2);
-        float xB = std::min(r1, r2);
-        float yB = std::min(b1, b2);
-        float interArea = std::max(0.0f, xB - xA) * std::max(0.0f, yB - yA);
-        if (interArea == 0.0f) return 0.0f;
-
-        float box1Area = (r1 - l1) * (b1 - t1);
-        float box2Area = (r2 - l2) * (b2 - t2);
-
-        return interArea / (box1Area + box2Area - interArea);
-    }
->>>>>>> c81c78fbec72f5c805fa82ed3d54c89adc4cd661
 }
 
 bool parse_float_attr(const std::string& raw,
@@ -297,14 +253,8 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
                         if (dt > 0 && dt < 225000) {
                             float expected_x = track.last_x + (track.vx * dt);
                             float expected_y = track.last_y + (track.vy * dt);
-<<<<<<< HEAD
                             expected_x = std::max(0.0f, std::min(expected_x, kParserClampWidth));
                             expected_y = std::max(0.0f, std::min(expected_y, kParserClampHeight));
-=======
-                            expected_x = std::max(0.0f, std::min(expected_x, SENSOR_WIDTH));
-                            expected_y = std::max(0.0f, std::min(expected_y, SENSOR_HEIGHT));
-
->>>>>>> c81c78fbec72f5c805fa82ed3d54c89adc4cd661
                             float pred_l = expected_x - (track.last_w / 2.0f);
                             float pred_r = expected_x + (track.last_w / 2.0f);
                             float pred_t = expected_y - (track.last_h / 2.0f);
@@ -327,13 +277,8 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
                         real_id = tracking_map[obj_id].original_id; 
                         tracking_map[obj_id].last_w = w;
                         tracking_map[obj_id].last_h = h;
-<<<<<<< HEAD
                         std::cout << "🔗 [ID 복구] 카메라 ID: " << obj_id
                                   << " -> 오리지널 ID: " << real_id
-=======
-                        std::cout << "🔗 [ID 복구] 카메라 ID: " << obj_id << " -> 오리지널 ID: " << real_id 
-
->>>>>>> c81c78fbec72f5c805fa82ed3d54c89adc4cd661
                                   << " (IoU 매칭률: " << (int)(max_iou * 100) << "%)" << std::endl;
                     } else {
                         tracking_map[obj_id] = {obj_id, x, y, w, h, 0.0f, 0.0f, last_timestamp};
@@ -426,27 +371,16 @@ std::vector<DetectedObject> XMLParser::parseAndProcess(std::string& accumulated_
             }
 
             if (rule_name != "Unknown" && is_active) {
-<<<<<<< HEAD
                 unsigned int time_diff = last_timestamp - gate_last_pass_time[rule_name];
                 if (time_diff < kParserTailgateGapRtp && gate_last_pass_time[rule_name] != 0) {
-=======
-                unsigned int time_diff = last_timestamp - gate_last_pass_time[rule_name];       
-                if (time_diff < TAILGATE_LIMIT && gate_last_pass_time[rule_name] != 0) {
->>>>>>> c81c78fbec72f5c805fa82ed3d54c89adc4cd661
                     float diff_sec = (float)time_diff / 90000.0f;
                     std::cout << "🚨 [TAILGATING] " << rule_name 
                               << " | Trigger ID: " << triggered_id
                               << " | RTP: " << last_timestamp 
                               << " | Gap: " << diff_sec << "s" << std::endl;
                 } else {
-<<<<<<< HEAD
                     std::cout << "🎯 [EVENT] " << rule_name
                               << " Active | ID: " << triggered_id
-=======
-                    std::cout << "✅ [EVENT] " << rule_name 
-                              << " Active | ID: " << triggered_id 
-
->>>>>>> c81c78fbec72f5c805fa82ed3d54c89adc4cd661
                               << " | TagTime: " << tag_time << std::endl;
                 }
                 gate_last_pass_time[rule_name] = last_timestamp;
