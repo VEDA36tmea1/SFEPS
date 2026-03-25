@@ -73,8 +73,10 @@ SecurityRuntimeOptions load_security_runtime_options() {
     const std::string fraud_image_http_base_url =
         load_env_string("SFEPS_FRAUD_IMAGE_HTTP_BASE_URL");
     if (!fraud_image_http_base_url.empty()) {
-        cfg.fraud_image_http_base_url = trim_copy(fraud_image_http_base_url);
+    cfg.fraud_image_http_base_url = trim_copy(fraud_image_http_base_url);
     }
+    cfg.video_retention_sec =
+        load_env_size_t("SFEPS_VIDEO_RETENTION_SEC", 86400, 1, kConfigLogPrefix);
     cfg.pending_image_retention_sec =
         load_env_size_t("SFEPS_PENDING_IMAGE_RETENTION_SEC", 30, 1, kConfigLogPrefix);
     cfg.fraud_image_retention_sec =
@@ -195,6 +197,12 @@ void log_allowlist_mode(const char* env_name, const std::unordered_set<std::stri
     if (allowlist.empty()) {
         std::cout << "[main.cpp] [Security] " << env_name
                   << " is empty: fail-closed (all connections denied)." << std::endl;
+        return;
+    }
+
+    if (allowlist.find("*") != allowlist.end()) {
+        std::cout << "[main.cpp] [Security] " << env_name
+                  << " allow-all mode enabled." << std::endl;
         return;
     }
 

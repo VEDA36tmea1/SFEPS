@@ -111,6 +111,7 @@ int main() {
               << ", socket_read_timeout_ms=" << sec_cfg.socket_read_timeout_ms << std::endl;
     std::cout << "[main.cpp] [Security] fraud_image_http_base_url="
               << sec_cfg.fraud_image_http_base_url
+              << ", video_retention_sec=" << sec_cfg.video_retention_sec
               << ", pending_image_retention_sec=" << sec_cfg.pending_image_retention_sec
               << ", fraud_image_retention_sec=" << sec_cfg.fraud_image_retention_sec << std::endl;
 
@@ -199,7 +200,8 @@ int main() {
     }
 
     std::thread t_file_cleanup(run_file_cleanup_worker, std::ref(g_running),
-                               std::string(VIDEO_SAVE_DIR), 300);
+                               std::string(VIDEO_SAVE_DIR),
+                               static_cast<long>(sec_cfg.video_retention_sec));
     std::thread t_pending_image_cleanup(run_pending_image_cleanup_worker, std::ref(g_running),
                                         std::string(pending_image_directory_path()),
                                         static_cast<long>(sec_cfg.pending_image_retention_sec));

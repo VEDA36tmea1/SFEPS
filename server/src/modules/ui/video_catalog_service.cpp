@@ -3,10 +3,14 @@
 #include <poll.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cerrno>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <vector>
 
 #include <mysql/mysql.h>
@@ -47,6 +51,25 @@ struct VideoStorageStats {
     std::uintmax_t available_bytes = 0;
     std::size_t file_count = 0;
 };
+
+struct CpuUsageCounters {
+    unsigned long long total = 0;
+    unsigned long long idle = 0;
+};
+
+struct SystemStatusSampler {
+    bool cpu_baseline_ready = false;
+    CpuUsageCounters previous_cpu_counters {};
+};
+
+struct SystemStatusSnapshot {
+    double cpu_temp_c = 0.0;
+    double cpu_usage_pct = 0.0;
+};
+
+constexpr const char* kCpuTemperaturePath = "/sys/class/thermal/thermal_zone0/temp";
+constexpr const char* kProcStatPath = "/proc/stat";
+constexpr auto kSystemStatusInterval = std::chrono::seconds(5);
 
 bool load_initial_catalog_records(const RuntimeConfig& cfg,
                                   std::vector<VideoCatalogRecordInfo>& out_records) {
@@ -149,6 +172,118 @@ std::string format_error_line(const char* prefix,
            app_services_shared::sanitize_error_field(message) + "\n";
 }
 
+std::string format_one_decimal(double value) {
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer), "%.1f", value);
+    return buffer;
+}
+
+bool read_cpu_temperature_celsius(double& out_temp_c, std::string& out_error) {
+    std::ifstream input(kCpuTemperaturePath);
+    if (!input) {
+        out_error = std::string("failed to open ") + kCpuTemperaturePath;
+        return false;
+    }
+
+    long long milli_celsius = 0;
+    input >> milli_celsius;
+    if (!input) {
+        out_error = std::string("failed to parse temperature from ") + kCpuTemperaturePath;
+        return false;
+    }
+
+    out_temp_c = static_cast<double>(milli_celsius) / 1000.0;
+    return true;
+}
+
+bool read_cpu_usage_counters(CpuUsageCounters& out_counters, std::string& out_error) {
+    std::ifstream input(kProcStatPath);
+    if (!input) {
+        out_error = std::string("failed to open ") + kProcStatPath;
+        return false;
+    }
+
+    std::string line;
+    if (!std::getline(input, line)) {
+        out_error = std::string("failed to read first line from ") + kProcStatPath;
+        return false;
+    }
+
+    std::istringstream iss(line);
+    std::string cpu_label;
+    unsigned long long user = 0;
+    unsigned long long nice = 0;
+    unsigned long long system = 0;
+    unsigned long long idle = 0;
+    unsigned long long iowait = 0;
+    unsigned long long irq = 0;
+    unsigned long long softirq = 0;
+    unsigned long long steal = 0;
+    if (!(iss >> cpu_label >> user >> nice >> system >> idle >> iowait >> irq >> softirq >>
+          steal) ||
+        cpu_label != "cpu") {
+        out_error = std::string("failed to parse CPU counters from ") + kProcStatPath;
+        return false;
+    }
+
+    out_counters.idle = idle + iowait;
+    out_counters.total = user + nice + system + idle + iowait + irq + softirq + steal;
+    return true;
+}
+
+bool reset_system_status_baseline(SystemStatusSampler& sampler, std::string& out_error) {
+    CpuUsageCounters counters;
+    if (!read_cpu_usage_counters(counters, out_error)) {
+        sampler.cpu_baseline_ready = false;
+        return false;
+    }
+
+    sampler.previous_cpu_counters = counters;
+    sampler.cpu_baseline_ready = true;
+    return true;
+}
+
+bool sample_system_status_for_periodic(SystemStatusSampler& sampler,
+                                       SystemStatusSnapshot& out_status,
+                                       std::string& out_error) {
+    if (!read_cpu_temperature_celsius(out_status.cpu_temp_c, out_error)) {
+        return false;
+    }
+
+    CpuUsageCounters current_counters;
+    if (!read_cpu_usage_counters(current_counters, out_error)) {
+        return false;
+    }
+
+    if (!sampler.cpu_baseline_ready) {
+        sampler.previous_cpu_counters = current_counters;
+        sampler.cpu_baseline_ready = true;
+        out_error = "CPU baseline was not initialized";
+        return false;
+    }
+
+    const unsigned long long delta_total =
+        current_counters.total - sampler.previous_cpu_counters.total;
+    const unsigned long long delta_idle =
+        current_counters.idle - sampler.previous_cpu_counters.idle;
+    sampler.previous_cpu_counters = current_counters;
+
+    if (delta_total == 0) {
+        out_error = "CPU counters did not advance";
+        return false;
+    }
+
+    const double busy_ticks = static_cast<double>(delta_total - std::min(delta_idle, delta_total));
+    out_status.cpu_usage_pct =
+        std::clamp((busy_ticks * 100.0) / static_cast<double>(delta_total), 0.0, 100.0);
+    return true;
+}
+
+std::string format_system_status_line(const SystemStatusSnapshot& status) {
+    return "SYS_STATUS|CPU_TEMP_C=" + format_one_decimal(status.cpu_temp_c) +
+           "|CPU_USAGE_PCT=" + format_one_decimal(status.cpu_usage_pct) + "\n";
+}
+
 VideoStorageStats collect_storage_stats_from_records(
     const std::vector<VideoCatalogRecordInfo>& records) {
     namespace fs = std::filesystem;
@@ -232,10 +367,10 @@ bool send_snapshot_to_client(ClientState& client) {
     client.last_seen_seq = snapshot_seq;
     std::cout << "[main.cpp] [VideoCatalog] snapshot 전송 완료: ip=" << client.conn.ip
               << ", fd=" << client.conn.fd << ", total=" << records.size()
-              << ", snapshot_seq=" << client.last_seen_seq
-              << ", used_bytes=" << storage_stats.used_bytes
-              << ", total_bytes=" << storage_stats.total_bytes
-              << ", available_bytes=" << storage_stats.available_bytes
+                      << ", snapshot_seq=" << client.last_seen_seq
+                      << ", used_bytes=" << storage_stats.used_bytes
+                      << ", total_bytes=" << storage_stats.total_bytes
+                      << ", available_bytes=" << storage_stats.available_bytes
               << ", file_count=" << storage_stats.file_count << std::endl;
     return true;
 }
@@ -407,6 +542,41 @@ bool sync_client_events(ClientState& client) {
     return true;
 }
 
+bool broadcast_system_status(std::vector<ClientState>& clients,
+                             SystemStatusSampler& system_status_sampler,
+                             std::vector<std::size_t>& remove_indices) {
+    if (clients.empty()) return true;
+
+    SystemStatusSnapshot status_snapshot;
+    std::string status_error;
+    if (!sample_system_status_for_periodic(system_status_sampler, status_snapshot, status_error)) {
+        std::cerr << "[main.cpp] [VideoCatalog] SYS_STATUS 주기 샘플링 실패: error="
+                  << status_error << std::endl;
+        return true;
+    }
+
+    const std::string line = format_system_status_line(status_snapshot);
+    std::size_t success_count = 0;
+    for (std::size_t i = 0; i < clients.size(); ++i) {
+        if (!app_services_transport::client_send_line(clients[i].conn, line)) {
+            std::cerr << "[main.cpp] [VideoCatalog] SYS_STATUS 주기 전송 실패: ip="
+                      << clients[i].conn.ip << ", fd=" << clients[i].conn.fd << std::endl;
+            remove_indices.push_back(i);
+            continue;
+        }
+        ++success_count;
+    }
+
+    if (success_count > 0) {
+        std::cout << "[main.cpp] [VideoCatalog] SYS_STATUS 주기 전송: clients="
+                  << success_count
+                  << ", cpu_temp_c=" << format_one_decimal(status_snapshot.cpu_temp_c)
+                  << ", cpu_usage_pct=" << format_one_decimal(status_snapshot.cpu_usage_pct)
+                  << std::endl;
+    }
+    return true;
+}
+
 }  // namespace
 
 void run_video_catalog_service_impl(std::atomic<bool>& running,
@@ -414,6 +584,12 @@ void run_video_catalog_service_impl(std::atomic<bool>& running,
                                     const SecurityRuntimeOptions& sec_cfg) {
     using namespace app_services_transport;
     const auto& shared_alert_video_allow_ips = sec_cfg.alert_allow_ips;
+    SystemStatusSampler system_status_sampler;
+    std::string baseline_error;
+    if (!reset_system_status_baseline(system_status_sampler, baseline_error)) {
+        std::cerr << "[main.cpp] [VideoCatalog] SYS_STATUS baseline 초기화 실패: "
+                  << baseline_error << std::endl;
+    }
 
     std::vector<VideoCatalogRecordInfo> initial_records;
     if (!load_initial_catalog_records(cfg, initial_records)) {
@@ -438,6 +614,7 @@ void run_video_catalog_service_impl(std::atomic<bool>& running,
     }
 
     std::vector<ClientState> clients;
+    auto next_system_status_broadcast_at = std::chrono::steady_clock::time_point::max();
     while (running.load()) {
         std::vector<pollfd> pfds;
         std::vector<PollTarget> targets;
@@ -488,6 +665,15 @@ void run_video_catalog_service_impl(std::atomic<bool>& running,
                     }
 
                     apply_read_timeout(accepted, sec_cfg.socket_read_timeout_ms);
+                    const bool was_empty = clients.empty();
+                    if (was_empty) {
+                        std::string reset_error;
+                        if (!reset_system_status_baseline(system_status_sampler, reset_error)) {
+                            std::cerr
+                                << "[main.cpp] [VideoCatalog] SYS_STATUS baseline 재설정 실패: "
+                                << reset_error << std::endl;
+                        }
+                    }
                     ClientState client;
                     client.conn = std::move(accepted);
                     if (!send_snapshot_to_client(client)) {
@@ -499,6 +685,10 @@ void run_video_catalog_service_impl(std::atomic<bool>& running,
                               << client.conn.ip << ", fd=" << client.conn.fd
                               << ", snapshot_seq=" << client.last_seen_seq << std::endl;
                     clients.push_back(std::move(client));
+                    if (was_empty) {
+                        next_system_status_broadcast_at =
+                            std::chrono::steady_clock::now() + kSystemStatusInterval;
+                    }
                     continue;
                 }
 
@@ -531,6 +721,33 @@ void run_video_catalog_service_impl(std::atomic<bool>& running,
             close_client(clients[index].conn);
             clients.erase(clients.begin() + static_cast<std::ptrdiff_t>(index));
         }
+
+        if (clients.empty()) {
+            next_system_status_broadcast_at = std::chrono::steady_clock::time_point::max();
+            continue;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (next_system_status_broadcast_at == std::chrono::steady_clock::time_point::max()) {
+            next_system_status_broadcast_at = now + kSystemStatusInterval;
+        }
+        if (now < next_system_status_broadcast_at) {
+            continue;
+        }
+
+        std::vector<std::size_t> status_remove_indices;
+        (void)broadcast_system_status(clients, system_status_sampler, status_remove_indices);
+        std::sort(status_remove_indices.begin(), status_remove_indices.end());
+        status_remove_indices.erase(std::unique(status_remove_indices.begin(),
+                                                status_remove_indices.end()),
+                                    status_remove_indices.end());
+        std::reverse(status_remove_indices.begin(), status_remove_indices.end());
+        for (std::size_t index : status_remove_indices) {
+            if (index >= clients.size()) continue;
+            close_client(clients[index].conn);
+            clients.erase(clients.begin() + static_cast<std::ptrdiff_t>(index));
+        }
+        next_system_status_broadcast_at = now + kSystemStatusInterval;
     }
 
     for (auto& client : clients) {

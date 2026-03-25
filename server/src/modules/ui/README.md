@@ -30,6 +30,8 @@
   - `REC_ADD|<id>|<created_at>`
   - `REC_DEL|<id>`
   - `REC_STORAGE|USED_BYTES=<n>|TOTAL_BYTES=<n>|AVAILABLE_BYTES=<n>|FILE_COUNT=<n>`
+- 상태 갱신:
+  - `SYS_STATUS|CPU_TEMP_C=<float>|CPU_USAGE_PCT=<float>` (5초 주기 단독 전송)
 - 클라이언트 재생 요청:
   - `PLAY_REC|<id>`
 - 서버 재생 응답:
@@ -40,6 +42,7 @@
   - 새 세그먼트 저장 완료 시 `REC_ADD` 이벤트를 푸시
   - cleanup 삭제 시 `REC_DEL` 이벤트를 푸시
   - 스냅샷/실시간 갱신 시점마다 `videos` 폴더 사용량과 파일시스템 용량을 `REC_STORAGE`로 전송
+  - 라즈베리파이 CPU 온도/전체 CPU 사용률을 `SYS_STATUS`로 5초 주기로 전송
   - `SFEPS_VIDEO_HTTP_BASE_URL`을 이용해 `PLAY_URL` 생성
   - 최대 동시 연결 수(`SFEPS_VIDEO_MAX_CLIENTS`)를 제한
 
