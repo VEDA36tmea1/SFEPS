@@ -77,6 +77,8 @@ SecurityRuntimeOptions load_security_runtime_options() {
     }
     cfg.video_retention_sec =
         load_env_size_t("SFEPS_VIDEO_RETENTION_SEC", 86400, 1, kConfigLogPrefix);
+    cfg.video_max_storage_bytes =
+        load_env_size_t("SFEPS_VIDEO_MAX_STORAGE_BYTES", 5368709120ULL, 1, kConfigLogPrefix);
     cfg.pending_image_retention_sec =
         load_env_size_t("SFEPS_PENDING_IMAGE_RETENTION_SEC", 30, 1, kConfigLogPrefix);
     cfg.fraud_image_retention_sec =

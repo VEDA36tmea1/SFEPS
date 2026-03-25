@@ -1,9 +1,11 @@
 #include "cleanup.h"
+#include <algorithm>
 #include <cctype>
-#include <iostream>
-#include <filesystem>
-#include <thread>
 #include <chrono>
+#include <filesystem>
+#include <iostream>
+#include <thread>
+#include <vector>
 
 #include "video_catalog_events.h"
 
@@ -15,6 +17,12 @@ constexpr const char* kJpgSuffix = ".jpg";
 constexpr const char* kJpegSuffix = ".jpeg";
 constexpr long kCleanupIntervalSec = 10;
 constexpr auto kCleanupSleepStep = std::chrono::milliseconds(200);
+
+struct VideoFileEntry {
+    fs::path path;
+    fs::file_time_type last_write_time;
+    std::uintmax_t size_bytes = 0;
+};
 
 inline bool is_rec_mp4(const std::string& filename) {
     if (filename.rfind(kRecPrefix, 0) != 0) return false;
@@ -33,6 +41,66 @@ inline bool is_jpeg_image(const std::string& filename) {
     if (lower.size() > 4 && lower.compare(lower.size() - 4, 4, kJpgSuffix) == 0) return true;
     if (lower.size() > 5 && lower.compare(lower.size() - 5, 5, kJpegSuffix) == 0) return true;
     return false;
+}
+
+std::uintmax_t collect_video_files(const std::string& save_dir, std::vector<VideoFileEntry>& out_files) {
+    out_files.clear();
+    std::uintmax_t total_bytes = 0;
+
+    for (const auto& entry : fs::directory_iterator(save_dir)) {
+        if (!entry.is_regular_file()) continue;
+        const std::string filename = entry.path().filename().string();
+        if (!is_rec_mp4(filename)) continue;
+
+        std::error_code ec;
+        const auto size = entry.file_size(ec);
+        if (ec) continue;
+
+        out_files.push_back(VideoFileEntry{entry.path(), fs::last_write_time(entry), size});
+        total_bytes += size;
+    }
+
+    std::sort(out_files.begin(), out_files.end(),
+              [](const VideoFileEntry& lhs, const VideoFileEntry& rhs) {
+                  return lhs.last_write_time < rhs.last_write_time;
+              });
+    return total_bytes;
+}
+
+bool remove_video_file(const VideoFileEntry& file,
+                       const char* reason,
+                       long age_sec,
+                       long retention_sec,
+                       std::uintmax_t current_total_bytes,
+                       std::uintmax_t max_storage_bytes,
+                       std::uintmax_t& total_bytes,
+                       std::size_t& deleted_count) {
+    std::error_code ec;
+    const bool removed = fs::remove(file.path, ec);
+    if (!removed || ec) return false;
+
+    publish_video_catalog_record_deleted_by_filename(file.path.string());
+    if (total_bytes >= file.size_bytes) {
+        total_bytes -= file.size_bytes;
+    } else {
+        total_bytes = 0;
+    }
+    ++deleted_count;
+
+    std::cout << "[main.cpp] [VIDEO_RETENTION_CLEANUP] reason=" << reason
+              << ", removed=" << file.path
+              << ", size_bytes=" << file.size_bytes
+              << ", total_before_bytes=" << current_total_bytes
+              << ", total_after_bytes=" << total_bytes;
+    if (age_sec >= 0) {
+        std::cout << ", age_sec=" << age_sec
+                  << ", retention_sec=" << retention_sec;
+    }
+    if (max_storage_bytes > 0) {
+        std::cout << ", max_storage_bytes=" << max_storage_bytes;
+    }
+    std::cout << std::endl;
+    return true;
 }
 
 void run_image_retention_cleanup_worker(std::atomic<bool>& running_flag,
@@ -78,32 +146,50 @@ void run_image_retention_cleanup_worker(std::atomic<bool>& running_flag,
 }
 } // namespace
 
-void run_file_cleanup_worker(std::atomic<bool>& running_flag, const std::string& save_dir, long retention_sec) {
+void run_file_cleanup_worker(std::atomic<bool>& running_flag,
+                             const std::string& save_dir,
+                             long retention_sec,
+                             std::uintmax_t max_storage_bytes) {
     auto interval = std::chrono::seconds(kCleanupIntervalSec);
     while (running_flag) {
         try {
             if (fs::exists(save_dir)) {
                 auto now = fs::file_time_type::clock::now();
-                
-                // 디렉토리 반복 (Iterator)
-                for (const auto& entry : fs::directory_iterator(save_dir)) {
-                    if (entry.is_regular_file()) {
-                        std::string filename = entry.path().filename().string();
+                std::vector<VideoFileEntry> files;
+                std::uintmax_t total_bytes = collect_video_files(save_dir, files);
+                const std::uintmax_t initial_total_bytes = total_bytes;
+                std::size_t deleted_count = 0;
 
-                        if (!is_rec_mp4(filename)) continue;
-                            
-                        // 생성 시간 체크
-                        auto ftime = fs::last_write_time(entry);
-                        auto age = std::chrono::duration_cast<std::chrono::seconds>(now - ftime).count();
-                        
-                        if (age >= retention_sec) {
-                            const fs::path removed_path = entry.path();
-                            if (fs::remove(removed_path)) {
-                                publish_video_catalog_record_deleted_by_filename(
-                                    removed_path.string());
-                            }
-                        }
+                for (const auto& file : files) {
+                    const auto age =
+                        std::chrono::duration_cast<std::chrono::seconds>(now - file.last_write_time)
+                            .count();
+                    if (age < retention_sec) continue;
+
+                    const auto total_before_delete = total_bytes;
+                    remove_video_file(file, "retention", age, retention_sec, total_before_delete,
+                                      max_storage_bytes, total_bytes, deleted_count);
+                }
+
+                if (max_storage_bytes > 0 && total_bytes > max_storage_bytes) {
+                    for (const auto& file : files) {
+                        if (total_bytes <= max_storage_bytes) break;
+                        if (!fs::exists(file.path)) continue;
+
+                        const auto total_before_delete = total_bytes;
+                        remove_video_file(file, "storage_limit", -1, retention_sec,
+                                          total_before_delete, max_storage_bytes, total_bytes,
+                                          deleted_count);
                     }
+                }
+
+                if (deleted_count > 0) {
+                    std::cout << "[main.cpp] [VIDEO_RETENTION_CLEANUP] deleted_count="
+                              << deleted_count
+                              << ", total_before_bytes=" << initial_total_bytes
+                              << ", total_after_bytes=" << total_bytes
+                              << ", retention_sec=" << retention_sec
+                              << ", max_storage_bytes=" << max_storage_bytes << std::endl;
                 }
             }
         } catch (const std::exception&) {
