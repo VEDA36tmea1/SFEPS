@@ -553,7 +553,7 @@ void MainWindow::opencvCaptureLoop()
               "0|probesize;32768");
 #endif
     const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    const QString url = env.value(QStringLiteral("RTSP_STREAM_URL"), QStringLiteral("rtsp://192.168.0.101:8554/cam1"));
+    const QString url = env.value(QStringLiteral("RTSP_STREAM_URL"), QStringLiteral("rtsp://192.168.0.82:8554/cam1"));
     const QString gstPipe = env.value(QStringLiteral("SFEPS_GSTREAMER_PIPELINE")).trimmed();
 
     cv::VideoCapture cap;

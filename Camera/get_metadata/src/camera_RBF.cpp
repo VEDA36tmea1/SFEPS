@@ -1341,7 +1341,7 @@ int main(int argc, char** argv)
     double predict_ms = 300.0;
     int pwm_log_interval_ms = 2000; // 사용자 요청: 터미널 로그만 2초마다
 <<<<<<< HEAD
-    std::string remoteHost = "192.168.0.101";
+    std::string remoteHost = "192.168.0.82";
     int remotePort = 5565;
     bool remoteEnable = true;
     TrackerMode trackerMode = TrackerMode::DeepSort;
