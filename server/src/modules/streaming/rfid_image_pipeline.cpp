@@ -11,6 +11,7 @@
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 #include <unordered_set>
 #include <unordered_map>
 #include <vector>
@@ -30,6 +31,8 @@ constexpr const char* kEventImagePendingDir = "/home/iam/SFEPS/event_images/pend
 constexpr const char* kEventImageFraudDir = "/home/iam/SFEPS/event_images/fraud";
 constexpr const char* kEventImageFailedDir = "/home/iam/SFEPS/event_images/failed";
 constexpr const char* kCameraTriggerSocketPath = "/tmp/sfeps_camera_trigger.sock";
+constexpr auto kPendingImageReadyWait = std::chrono::milliseconds(750);
+constexpr auto kPendingImageReadyPoll = std::chrono::milliseconds(50);
 
 struct EventImageRegistry {
     std::mutex mutex;
@@ -132,6 +135,15 @@ bool is_existing_regular_file(const fs::path& path) {
     return fs::exists(path, ec) && !ec && fs::is_regular_file(path, ec) && !ec;
 }
 
+bool wait_for_regular_file(const fs::path& path) {
+    const auto deadline = std::chrono::steady_clock::now() + kPendingImageReadyWait;
+    while (true) {
+        if (is_existing_regular_file(path)) return true;
+        if (std::chrono::steady_clock::now() >= deadline) return false;
+        std::this_thread::sleep_for(kPendingImageReadyPoll);
+    }
+}
+
 bool is_jpeg_image_path(const fs::path& path) {
     const std::string ext = path.extension().string();
     std::string lower;
@@ -156,6 +168,17 @@ bool is_pending_path_safe(const fs::path& path) {
         if (*b != *t) return false;
     }
     return b == base.end();
+}
+
+void erase_registry_path_if_matches(const std::string& object_id, const fs::path& expected_path) {
+    if (object_id.empty() || expected_path.empty()) return;
+
+    auto& registry = event_image_registry();
+    std::lock_guard<std::mutex> lock(registry.mutex);
+    const auto it = registry.pending_by_object_id.find(object_id);
+    if (it == registry.pending_by_object_id.end()) return;
+    if (it->second != expected_path) return;
+    registry.pending_by_object_id.erase(it);
 }
 
 bool request_camera_capture(const std::string& req_id,
@@ -319,8 +342,15 @@ bool finalize_outline_image_for_object(
         const auto it = registry.pending_by_object_id.find(payload.object_id);
         if (it != registry.pending_by_object_id.end()) {
             registry_path = it->second;
-            registry.pending_by_object_id.erase(it);
             had_registry_path = true;
+        }
+    }
+
+    if (had_registry_path && !is_existing_regular_file(registry_path)) {
+        const bool ready = wait_for_regular_file(registry_path);
+        if (ready) {
+            std::cout << "[main.cpp] [RFID_IMAGE_WAIT_READY] object_id=" << payload.object_id
+                      << ", path=" << registry_path << std::endl;
         }
     }
 
@@ -342,6 +372,8 @@ bool finalize_outline_image_for_object(
                   << ", had_registry=" << (had_registry_path ? "1" : "0") << std::endl;
         return false;
     }
+
+    erase_registry_path_if_matches(payload.object_id, registry_path);
 
     if (used_fallback) {
         std::cout << "[main.cpp] [RFID_IMAGE_FALLBACK_HIT] object_id=" << payload.object_id

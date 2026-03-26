@@ -48,7 +48,6 @@ struct PollTarget {
 struct VideoStorageStats {
     std::uintmax_t used_bytes = 0;
     std::uintmax_t cap_bytes = 0;
-    std::size_t file_count = 0;
 };
 
 struct CpuUsageCounters {
@@ -302,7 +301,6 @@ VideoStorageStats collect_storage_stats_from_records(
         if (ec) continue;
 
         stats.used_bytes += file_size;
-        ++stats.file_count;
     }
     return stats;
 }
@@ -316,8 +314,7 @@ VideoStorageStats collect_storage_stats_from_registry(std::uintmax_t cap_bytes) 
 std::string format_storage_line(const VideoStorageStats& stats) {
     return "REC_STORAGE|USED_BYTES=" +
            std::to_string(static_cast<unsigned long long>(stats.used_bytes)) +
-           "|CAP_BYTES=" + std::to_string(static_cast<unsigned long long>(stats.cap_bytes)) +
-           "|FILE_COUNT=" + std::to_string(stats.file_count) + "\n";
+           "|CAP_BYTES=" + std::to_string(static_cast<unsigned long long>(stats.cap_bytes)) + "\n";
 }
 
 bool send_snapshot_to_client(ClientState& client, const SecurityRuntimeOptions& sec_cfg) {
@@ -328,8 +325,7 @@ bool send_snapshot_to_client(ClientState& client, const SecurityRuntimeOptions& 
 
     std::cout << "[main.cpp] [VideoCatalog] snapshot 전송 시작: ip=" << client.conn.ip
               << ", fd=" << client.conn.fd << ", total=" << records.size()
-              << ", used_bytes=" << storage_stats.used_bytes
-              << ", file_count=" << storage_stats.file_count << std::endl;
+              << ", used_bytes=" << storage_stats.used_bytes << std::endl;
 
     if (!app_services_transport::client_send_line(
             client.conn, format_snapshot_begin_line(records.size()))) {
@@ -362,8 +358,7 @@ bool send_snapshot_to_client(ClientState& client, const SecurityRuntimeOptions& 
               << ", fd=" << client.conn.fd << ", total=" << records.size()
                       << ", snapshot_seq=" << client.last_seen_seq
                       << ", used_bytes=" << storage_stats.used_bytes
-                      << ", cap_bytes=" << storage_stats.cap_bytes
-              << ", file_count=" << storage_stats.file_count << std::endl;
+                      << ", cap_bytes=" << storage_stats.cap_bytes << std::endl;
     return true;
 }
 
@@ -527,8 +522,7 @@ bool sync_client_events(ClientState& client, const SecurityRuntimeOptions& sec_c
         std::cout << "[main.cpp] [VideoCatalog] REC_STORAGE 전송: ip=" << client.conn.ip
                   << ", fd=" << client.conn.fd
                   << ", used_bytes=" << storage_stats.used_bytes
-                  << ", cap_bytes=" << storage_stats.cap_bytes
-                  << ", file_count=" << storage_stats.file_count << std::endl;
+                  << ", cap_bytes=" << storage_stats.cap_bytes << std::endl;
     }
 
     return true;

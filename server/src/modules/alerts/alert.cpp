@@ -169,9 +169,6 @@ void send_alert_to_clients(const std::string& msg) {
     std::lock_guard<std::mutex> lock(g_alert_clients_mutex);
     const size_t total_clients_before = g_plain_clients.size() + g_tls_clients.size();
 
-    std::cout << "[alert.cpp] [Alert] 전송 시작: 클라이언트 수=" << total_clients_before
-              << ", 길이=" << msg.size() << std::endl;
-
     if (total_clients_before == 0) {
         return;
     }
