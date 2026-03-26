@@ -26,11 +26,20 @@
 #include <array>
 #include <sstream>
 #include <utility>
+#ifndef _WIN32
 #include <poll.h>
+#else
+#include <windows.h>
+#include <errno.h>
+#endif
+
+// POSIX 헤더들은 Windows(MSVC)에서 사용할 수 없어서 가드 처리한다.
+#ifndef _WIN32
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#endif
 
 #include <atomic>
 #include <csignal>
@@ -199,7 +208,16 @@ static std::chrono::steady_clock::time_point g_pose_prev_ok_time;
 static bool read_line_fd_timeout(int fd, std::string& out, int timeout_ms)
 {
     out.clear();
-    char c;
+    char c{};
+
+#ifdef _WIN32
+    // Windows에서는 PoseWorker를 스텁 처리하여 pose 요청이 비활성화된다.
+    // 여기 함수는 호출되지 않으므로 컴파일만 통과하도록 실패로 처리한다.
+    (void)fd;
+    (void)out;
+    (void)timeout_ms;
+    return false;
+#else
     while (true)
     {
         pollfd pfd;
@@ -222,8 +240,23 @@ static bool read_line_fd_timeout(int fd, std::string& out, int timeout_ms)
             break; // safety
     }
     return true;
+#endif
 }
 
+// Windows에서는 fork/pipe/waitpid 기반 pose worker를 안정적으로 돌리기 어려워 스텁 처리한다.
+#ifdef _WIN32
+struct PoseWorker
+{
+    bool active{false};
+    bool start() { return false; }
+    void stop() { active = false; }
+    bool estimate(const cv::Mat&, PoseResult& res)
+    {
+        res.ok = false;
+        return false;
+    }
+};
+#else
 struct PoseWorker
 {
     pid_t pid{-1};
@@ -404,6 +437,8 @@ struct PoseWorker
         return true;
     }
 };
+
+#endif // _WIN32 pose stub
 
 static PoseWorker g_pose_worker;
 

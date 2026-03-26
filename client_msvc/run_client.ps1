@@ -23,8 +23,10 @@ Set-DefaultEnv "METADATA_RTSP_URL" $env:RTSP_STREAM_URL
 # 카메라가 trackID=v/m 이 아니면 0/1 등으로 지정
 Set-DefaultEnv "METADATA_VIDEO_TRACK_ID" "v"
 Set-DefaultEnv "METADATA_META_TRACK_ID" "m"
-Set-DefaultEnv "FRAUD_SERVER_HOST" "192.168.0.82"
+Set-DefaultEnv "FRAUD_SERVER_HOST" "192.168.0.101"
 Set-DefaultEnv "FRAUD_SERVER_PORT" "5557"
+# Auth 서버 호스트 (AuthManager 기본값이 192.168.0.82라서 로그가 82로 보일 수 있음)
+[Environment]::SetEnvironmentVariable("AUTH_SERVER_HOST", "192.168.0.101", "Process")
 Set-DefaultEnv "POS_SERVER_PORT" "5558"
 Set-DefaultEnv "AUTH_TLS_ENABLE" "0"          # TLS 사용 시 1
 

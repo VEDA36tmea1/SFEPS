@@ -6,6 +6,7 @@
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -77,6 +78,13 @@ std::string make_setup_url(const std::string &base_url, const std::string &track
     if (track_suffix.empty()) return base_url;
     if (base_url.back() == '/') return base_url + track_suffix;
     return base_url + "/" + track_suffix;
+}
+
+std::string first_line_of(const std::string &resp)
+{
+    const size_t eol = resp.find('\n');
+    if (eol == std::string::npos) return resp;
+    return resp.substr(0, eol);
 }
 
 } // namespace
@@ -169,7 +177,7 @@ void RTSPClient::sendHandshake()
     std::string resp = send_req("OPTIONS", rtsp_url);
     if (!is_2xx(resp)) std::cerr << "[RTSPClient] OPTIONS failed\n" << resp << std::endl;
     resp = send_req("DESCRIBE", rtsp_url, "Accept: application/sdp\r\n");
-    if (!is_2xx(resp)) std::cerr << "[RTSPClient] DESCRIBE failed\n" << resp << std::endl;
+    if (!is_2xx(resp)) std::cerr << "[RTSPClient] DESCRIBE failed url=" << rtsp_url << "\n" << resp << std::endl;
 
     auto try_setup = [&](const std::vector<std::string> &candidates, int interleavedBase, bool needSession) {
         for (const auto &t : candidates) {
@@ -183,21 +191,30 @@ void RTSPClient::sendHandshake()
                 std::cerr << "[RTSPClient] SETUP OK track=" << t << " sid=" << session_id << std::endl;
                 return true;
             }
+            std::string fl = first_line_of(r);
+            std::string r_dbg = r;
+            for (char& ch : r_dbg)
+            {
+                if (ch == '\r' || ch == '\n') ch = ' ';
+            }
+            if (fl.empty())
+                fl = r_dbg.substr(0, 200);
+            std::cerr << "[RTSPClient] SETUP failed track=" << t
+                      << " resp_first=\"" << fl << "\""
+                      << " url=" << make_setup_url(rtsp_url, t)
+                      << std::endl;
         }
         return false;
     };
 
-    std::vector<std::string> videoCandidates{"trackID=" + video_track, "trackID=v", "trackID=0"};
-    std::sort(videoCandidates.begin(), videoCandidates.end());
-    videoCandidates.erase(std::unique(videoCandidates.begin(), videoCandidates.end()), videoCandidates.end());
-    if (!try_setup(videoCandidates, 0, false)) {
-        std::cerr << "[RTSPClient] video SETUP failed -> metadata parsing disabled" << std::endl;
-        return;
-    }
+    // STM-ibvs 스타일: video는 무조건 trackID=v 한 번만 시도
+    std::vector<std::string> videoCandidates{"trackID=" + video_track};
+    const bool video_ok = try_setup(videoCandidates, 0, false);
+    if (!video_ok)
+        std::cerr << "[RTSPClient] video SETUP failed -> trying metadata setup anyway" << std::endl;
 
-    std::vector<std::string> metaCandidates{"trackID=" + meta_track, "trackID=m", "trackID=1"};
-    std::sort(metaCandidates.begin(), metaCandidates.end());
-    metaCandidates.erase(std::unique(metaCandidates.begin(), metaCandidates.end()), metaCandidates.end());
+    // STM-ibvs 스타일: meta는 무조건 trackID=m 한 번만 시도
+    std::vector<std::string> metaCandidates{"trackID=" + meta_track};
     if (!try_setup(metaCandidates, 2, true)) {
         std::cerr << "[RTSPClient] metadata SETUP failed -> detections will be empty" << std::endl;
         return;
