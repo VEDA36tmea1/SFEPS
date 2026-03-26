@@ -6,6 +6,10 @@ void run_audio_receiver(std::atomic<bool>& running, const SecurityRuntimeOptions
     app_services_impl::run_audio_receiver_impl(running, sec_cfg);
 }
 
+void play_local_rfid_tag_tone() {
+    app_services_impl::play_local_rfid_tag_tone_impl();
+}
+
 void run_fraud_notifier(std::atomic<bool>& running, const SecurityRuntimeOptions& sec_cfg) {
     app_services_impl::run_fraud_notifier_impl(running, sec_cfg);
 }

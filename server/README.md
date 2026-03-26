@@ -205,11 +205,11 @@ Video Catalog:
   - `REC_SNAPSHOT_BEGIN|TOTAL=<n>`
   - `REC|<id>|<created_at>`
   - `REC_SNAPSHOT_END|TOTAL=<n>`
-  - `REC_STORAGE|USED_BYTES=<n>|CAP_BYTES=<n>|FILE_COUNT=<n>`
+  - `REC_STORAGE|USED_BYTES=<n>|CAP_BYTES=<n>`
 - 실시간 갱신:
   - `REC_ADD|<id>|<created_at>`
   - `REC_DEL|<id>`
-  - `REC_STORAGE|USED_BYTES=<n>|CAP_BYTES=<n>|FILE_COUNT=<n>`
+  - `REC_STORAGE|USED_BYTES=<n>|CAP_BYTES=<n>`
 - 상태 갱신:
   - `SYS_STATUS|CPU_TEMP_C=<float>|CPU_USAGE_PCT=<float>` (5초 주기 단독 전송)
 - 재생 요청: `PLAY_REC|<id>\n`

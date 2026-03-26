@@ -86,20 +86,11 @@ bool remove_video_file(const VideoFileEntry& file,
         total_bytes = 0;
     }
     ++deleted_count;
-
-    std::cout << "[main.cpp] [VIDEO_RETENTION_CLEANUP] reason=" << reason
-              << ", removed=" << file.path
-              << ", size_bytes=" << file.size_bytes
-              << ", total_before_bytes=" << current_total_bytes
-              << ", total_after_bytes=" << total_bytes;
-    if (age_sec >= 0) {
-        std::cout << ", age_sec=" << age_sec
-                  << ", retention_sec=" << retention_sec;
-    }
-    if (max_storage_bytes > 0) {
-        std::cout << ", max_storage_bytes=" << max_storage_bytes;
-    }
-    std::cout << std::endl;
+    (void)reason;
+    (void)age_sec;
+    (void)retention_sec;
+    (void)current_total_bytes;
+    (void)max_storage_bytes;
     return true;
 }
 
@@ -183,14 +174,7 @@ void run_file_cleanup_worker(std::atomic<bool>& running_flag,
                     }
                 }
 
-                if (deleted_count > 0) {
-                    std::cout << "[main.cpp] [VIDEO_RETENTION_CLEANUP] deleted_count="
-                              << deleted_count
-                              << ", total_before_bytes=" << initial_total_bytes
-                              << ", total_after_bytes=" << total_bytes
-                              << ", retention_sec=" << retention_sec
-                              << ", max_storage_bytes=" << max_storage_bytes << std::endl;
-                }
+                (void)initial_total_bytes;
             }
         } catch (const std::exception&) {
         }

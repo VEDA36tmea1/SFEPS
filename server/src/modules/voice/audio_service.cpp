@@ -2,9 +2,12 @@
 
 #include <poll.h>
 
+#include <cmath>
 #include <cerrno>
+#include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <mutex>
 #include <vector>
 
 #include "audio_common.h"
@@ -14,6 +17,48 @@
 #include "transport_utils.h"
 
 namespace app_services_impl {
+namespace {
+
+std::mutex g_local_audio_ring_mutex;
+AudioRingBuffer* g_local_audio_ring = nullptr;
+std::atomic<int> g_active_audio_input_clients {0};
+
+std::vector<int16_t> make_rfid_tag_tone() {
+    constexpr double kPi = 3.14159265358979323846;
+    constexpr int kToneFreqHz = 2400;
+    constexpr int kToneMs = 120;
+    constexpr int kSilenceMs = 45;
+    constexpr int kRepeatCount = 1;
+    constexpr double kAmplitude = 0.22;
+    constexpr int kRampMs = 8;
+
+    const int tone_samples = (AUDIO_SAMPLE_RATE * kToneMs) / 1000;
+    const int silence_samples = (AUDIO_SAMPLE_RATE * kSilenceMs) / 1000;
+    const int ramp_samples = std::max(1, (AUDIO_SAMPLE_RATE * kRampMs) / 1000);
+    std::vector<int16_t> pcm;
+    pcm.reserve((tone_samples + silence_samples) * kRepeatCount);
+
+    for (int repeat = 0; repeat < kRepeatCount; ++repeat) {
+        for (int i = 0; i < tone_samples; ++i) {
+            double gain = 1.0;
+            if (i < ramp_samples) {
+                gain = static_cast<double>(i) / ramp_samples;
+            } else if (i >= tone_samples - ramp_samples) {
+                gain = static_cast<double>(tone_samples - i) / ramp_samples;
+            }
+            const double t = static_cast<double>(i) / AUDIO_SAMPLE_RATE;
+            const double sample =
+                std::sin(2.0 * kPi * kToneFreqHz * t) * kAmplitude * gain * 32767.0;
+            pcm.push_back(static_cast<int16_t>(sample));
+        }
+        for (int i = 0; i < silence_samples; ++i) {
+            pcm.push_back(0);
+        }
+    }
+    return pcm;
+}
+
+}  // namespace
 
 void run_audio_receiver_impl(std::atomic<bool>& running, const SecurityRuntimeOptions& sec_cfg) {
     using namespace app_services_shared;
@@ -29,6 +74,10 @@ void run_audio_receiver_impl(std::atomic<bool>& running, const SecurityRuntimeOp
         std::cerr << "[Audio] Failed to start AudioPlayback" << std::endl;
         return;
     }
+    {
+        std::lock_guard<std::mutex> lock(g_local_audio_ring_mutex);
+        g_local_audio_ring = &ring;
+    }
 
     ListenerBundle listeners;
     if (!start_listener_bundle(listeners,
@@ -39,6 +88,10 @@ void run_audio_receiver_impl(std::atomic<bool>& running, const SecurityRuntimeOp
                                "AudioTLS",
                                true,
                                true)) {
+        {
+            std::lock_guard<std::mutex> lock(g_local_audio_ring_mutex);
+            g_local_audio_ring = nullptr;
+        }
         ring.stop();
         playback.stop();
         running = false;
@@ -70,6 +123,8 @@ void run_audio_receiver_impl(std::atomic<bool>& running, const SecurityRuntimeOp
                 if (!running.load()) break;
                 continue;
             }
+
+            g_active_audio_input_clients.fetch_add(1, std::memory_order_relaxed);
 
             apply_read_timeout(client, sec_cfg.socket_read_timeout_ms);
 
@@ -103,12 +158,34 @@ void run_audio_receiver_impl(std::atomic<bool>& running, const SecurityRuntimeOp
             }
 
             close_client(client);
+            g_active_audio_input_clients.fetch_sub(1, std::memory_order_relaxed);
         }
     }
 
     close_listener_bundle(listeners);
+    {
+        std::lock_guard<std::mutex> lock(g_local_audio_ring_mutex);
+        g_local_audio_ring = nullptr;
+    }
     ring.stop();
     playback.stop();
+}
+
+void play_local_rfid_tag_tone_impl() {
+    if (g_active_audio_input_clients.load(std::memory_order_relaxed) > 0) {
+        return;
+    }
+
+    AudioRingBuffer* ring = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_local_audio_ring_mutex);
+        ring = g_local_audio_ring;
+    }
+    if (ring == nullptr) return;
+
+    static const std::vector<int16_t> tone_pcm = make_rfid_tag_tone();
+    ring->push(reinterpret_cast<const char*>(tone_pcm.data()),
+               tone_pcm.size() * sizeof(int16_t));
 }
 
 }  // namespace app_services_impl

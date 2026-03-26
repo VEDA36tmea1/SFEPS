@@ -141,6 +141,10 @@ int main() {
         });
     analytics.setOutlineDecisionCallback(
         [&sec_cfg](const AnalyticsProcessor::OutlineDecisionPayload& payload) {
+            if (payload.card_age_text == "0") {
+                return;
+            }
+
             FinalizedFraudImageInfo fraud_image_info;
             if (!finalize_outline_image_for_object(payload, &fraud_image_info)) {
                 return;
