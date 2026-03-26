@@ -32,6 +32,7 @@ set(SFEPS_CLIENT_SOURCES
     src/voicemanager.cpp src/voicemanager.h
     src/fraudmanager.cpp src/fraudmanager.h
     src/positionmanager.cpp src/positionmanager.h
+    src/pwmtransmitter.cpp src/pwmtransmitter.h
     src/videoarchivemanager.cpp src/videoarchivemanager.h
     src/recordinglistmodel.cpp src/recordinglistmodel.h
     src/live_frame_provider.cpp src/live_frame_provider.h

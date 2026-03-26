@@ -105,6 +105,16 @@ static int g_last_target_u = -1;
 static int g_last_target_v = -1;
 static bool g_last_pwm_valid = false;
 
+// QT 모드: 클릭 이벤트 무시, TRACK_START|id 수신 후에만 추적 시작
+// 연결된 Qt 클라이언트 소켓으로 PWM_OUT 역방향 전송
+static bool g_qt_mode = false;
+#ifdef _WIN32
+static SOCKET g_remote_client_fd = INVALID_SOCKET;
+#else
+static int g_remote_client_fd = -1;
+#endif
+static std::mutex g_remote_client_fd_mutex;
+
 static std::mutex g_click_mutex;
 static bool g_click_pending = false;
 static std::string g_click_pending_id;
@@ -433,6 +443,11 @@ static void remote_select_thread_fn(std::string host, int port)
             continue;
         }
         std::cerr << "[remote_select] connected " << host << ":" << port << "\n";
+        // QT 모드: 연결된 소켓 fd를 역방향 PWM 전송에 사용
+        {
+            std::lock_guard<std::mutex> lk(g_remote_client_fd_mutex);
+            g_remote_client_fd = fd;
+        }
 
         std::string buf;
         char tmp[512];
@@ -444,7 +459,7 @@ static void remote_select_thread_fn(std::string host, int port)
             ssize_t n = ::recv(fd, tmp, sizeof(tmp), 0);
 #endif
             if (n <= 0) break;
-            buf.append(tmp, tmp + n);
+            buf.append(tmp, static_cast<std::size_t>(n));
             while (true)
             {
                 std::size_t eol = buf.find_first_of("\r\n");
@@ -510,6 +525,15 @@ static void remote_select_thread_fn(std::string host, int port)
                     std::cerr << "[remote_select] TRACK_END id=" << rid << "\n";
                 }
             }
+        }
+        // 연결 해제: fd 클리어
+        {
+            std::lock_guard<std::mutex> lk(g_remote_client_fd_mutex);
+#ifdef _WIN32
+            g_remote_client_fd = INVALID_SOCKET;
+#else
+            g_remote_client_fd = -1;
+#endif
         }
 #ifdef _WIN32
         ::closesocket(fd);
@@ -1011,6 +1035,8 @@ static void metadata_thread_fn(RTSPClient* client, XMLParser* parser)
 static void on_mouse(int event, int x, int y, int /*flags*/, void* userdata)
 {
     if (event != cv::EVENT_LBUTTONDOWN) return;
+    // QT 모드: 마우스 클릭으로 추적 선택하지 않음 (Track 버튼으로만 선택)
+    if (g_qt_mode) return;
 
     cv::Mat* frame_ptr = static_cast<cv::Mat*>(userdata);
     cv::Mat frame_copy;
@@ -1334,6 +1360,7 @@ int main(int argc, char** argv)
     {
         std::string arg = argv[i];
         if (arg == "--detect-all") g_detect_all = true;
+        else if (arg == "--qt-mode") g_qt_mode = true;
         else if (arg == "--ratio" && i + 1 < argc) ratio = std::atof(argv[++i]);
         else if (arg == "--alpha" && i + 1 < argc) alpha = std::atof(argv[++i]);
         else if (arg == "--send-every" && i + 1 < argc) send_every_n = std::max(1, std::atoi(argv[++i]));
@@ -2012,6 +2039,20 @@ int main(int argc, char** argv)
         if (sel_ok && frame_id % send_every_n == 0)
         {
             std::cout << "SET_PWM,PAN=" << pan << ",TILT=" << tilt << std::endl;
+            // QT 모드: 연결된 Qt 클라이언트 소켓으로 PWM 값 역방향 전송
+            if (g_qt_mode)
+            {
+                std::string pwm_msg = "PWM_OUT,PAN=" + std::to_string(pan)
+                                      + ",TILT=" + std::to_string(tilt) + "\n";
+                std::lock_guard<std::mutex> lk(g_remote_client_fd_mutex);
+#ifdef _WIN32
+                if (g_remote_client_fd != INVALID_SOCKET)
+                    ::send(g_remote_client_fd, pwm_msg.c_str(), (int)pwm_msg.size(), 0);
+#else
+                if (g_remote_client_fd >= 0)
+                    ::send(g_remote_client_fd, pwm_msg.c_str(), pwm_msg.size(), MSG_NOSIGNAL);
+#endif
+            }
             const bool can_log_by_time =
                 (std::chrono::duration_cast<std::chrono::milliseconds>(t_now_send - t_last_pwm_log).count() >= pwm_log_interval_ms);
             if (can_log_by_time)
