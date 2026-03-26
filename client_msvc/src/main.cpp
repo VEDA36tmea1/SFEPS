@@ -17,6 +17,8 @@
 #include "voicemanager.h"
 #include "fraudmanager.h"
 #include "positionmanager.h"
+#include "videoarchivemanager.h"
+#include "recordinglistmodel.h"
 #ifdef SFEPS_HAVE_OPENCV
 #include "live_frame_provider.h"
 #endif
@@ -64,6 +66,14 @@ int main(int argc, char *argv[]) {
     // PositionManager를 컨텍스트 속성으로 등록 (포지션/트래킹 전용)
     PositionManager positionManager;
     engine.rootContext()->setContextProperty("positionManager", &positionManager);
+
+    // VideoArchiveManager: 녹화 파일 카탈로그 및 재생 관리
+    VideoArchiveManager videoArchiveManager;
+    engine.rootContext()->setContextProperty("videoArchiveManager", &videoArchiveManager);
+
+    // RecordingListModel: QML ListView에서 사용하는 녹화 목록 모델
+    RecordingListModel recordingListModel;
+    engine.rootContext()->setContextProperty("recordingListModel", &recordingListModel);
 
   // Video backend: ONVIF metadata + optional OpenCV RTSP preview + native track + RBF/PWM
   MainWindow videoBackend;

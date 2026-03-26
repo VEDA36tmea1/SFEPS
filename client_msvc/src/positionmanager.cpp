@@ -302,19 +302,22 @@ void PositionManager::sendPositionCommand(const QString &msg)
         qWarning() << "[PositionManager] failed to write pos command:" << msg;
     } else {
         // Avoid synchronous flush to prevent blocking the UI thread
-        // Update client-side current subscription when SUB_POS/UNSUB_POS used
-        if (msg.startsWith("SUB_POS|")) {
-            QString id = msg.mid(QString("SUB_POS|").length()).trimmed();
+        // Update client-side current subscription state
+        if (msg.startsWith("TRACK_START|") || msg.startsWith("SUB_POS|")) {
+            QString id = msg.startsWith("TRACK_START|")
+                         ? msg.mid(QString("TRACK_START|").length()).trimmed()
+                         : msg.mid(QString("SUB_POS|").length()).trimmed();
             if (!id.isEmpty()) {
-                // Reset cached entries so a new subscription starts with fresh data only.
                 m_pendingMap.clear();
                 m_pendingOrder.clear();
                 m_lastSeen.clear();
                 m_suspected.clear();
                 setCurrentSubscribedId(id);
             }
-        } else if (msg.startsWith("UNSUB_POS|")) {
-            QString id = msg.mid(QString("UNSUB_POS|").length()).trimmed();
+        } else if (msg.startsWith("TRACK_END|") || msg.startsWith("UNSUB_POS|")) {
+            QString id = msg.startsWith("TRACK_END|")
+                         ? msg.mid(QString("TRACK_END|").length()).trimmed()
+                         : msg.mid(QString("UNSUB_POS|").length()).trimmed();
             if (!id.isEmpty() && id == m_currentSubscribedId) {
                 setCurrentSubscribedId(QString());
                 m_pendingMap.clear();
@@ -334,7 +337,7 @@ void PositionManager::unsubscribeCurrent()
         qDebug() << "[PositionManager] unsubscribeCurrent: no current subscription";
         return;
     }
-    QString cmd = QString("UNSUB_POS|%1").arg(m_currentSubscribedId);
+    QString cmd = QString("TRACK_END|%1").arg(m_currentSubscribedId);
     sendPositionCommand(cmd);
 }
 
