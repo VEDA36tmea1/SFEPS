@@ -116,8 +116,14 @@ if (-not $exePath) {
 
 # OpenCV/GStreamer/Qt 런타임 DLL 경로를 우선 추가
 $opencvBinCandidates = @(
+    # 표준 위치 (최우선)
     "C:\Users\2-16\Desktop\SFEPS\opencv-gst\install\x64\vc17\bin",
-    "C:\Users\2-16\Downloads\opencv-gst\install\x64\vc17\bin"
+    # 중첩 폴더 구조인 경우 fallback
+    "C:\Users\2-16\Desktop\SFEPS\opencv-gst\opencv-gst\install\x64\vc17\bin",
+    # 다른 개발자 경로 후보
+    "C:\Users\2-16\Downloads\opencv-gst\install\x64\vc17\bin",
+    "C:\opencv\build\x64\vc17\bin",
+    "C:\opencv-gst\install\x64\vc17\bin"
 )
 $opencvBin = $null
 foreach ($cand in $opencvBinCandidates) {

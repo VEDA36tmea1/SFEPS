@@ -42,6 +42,24 @@ set(SFEPS_CLIENT_SOURCES
 )
 
 if(SFEPS_WITH_OPENCV)
+    # OpenCV_DIR 미지정 시 프로젝트 루트(SFEPS/) 기준으로 자동 탐색
+    # → 개발자마다 별도로 -DOpenCV_DIR=... 을 지정할 필요 없음
+    if(NOT OpenCV_DIR OR OpenCV_DIR STREQUAL "OpenCV_DIR-NOTFOUND")
+        set(_opencv_search_paths
+            "${CMAKE_SOURCE_DIR}/../opencv-gst/install"
+            "${CMAKE_SOURCE_DIR}/../opencv-gst/opencv-gst/install"
+            "${CMAKE_SOURCE_DIR}/../opencv/build"
+            "${CMAKE_SOURCE_DIR}/../opencv-build"
+        )
+        foreach(_p ${_opencv_search_paths})
+            if(EXISTS "${_p}/OpenCVConfig.cmake")
+                set(OpenCV_DIR "${_p}" CACHE PATH "Auto-detected OpenCV install dir" FORCE)
+                message(STATUS "[SFEPS] OpenCV_DIR auto-detected: ${OpenCV_DIR}")
+                break()
+            endif()
+        endforeach()
+    endif()
+
     find_package(OpenCV REQUIRED COMPONENTS core imgproc videoio)
     list(APPEND SFEPS_CLIENT_SOURCES
         # camera_RBF.cpp: CAMERA_RBF_QT_MODE 정의 시 main()/GUI/소켓 제거
