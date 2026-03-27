@@ -205,6 +205,9 @@ Window {
                                         Layout.fillWidth: true
                                         placeholderText: "Enter your ID"
                                         color: "white"
+                                        placeholderTextColor: "#99FFFFFF"
+                                        palette.text: "white"
+                                        palette.placeholderText: "#99FFFFFF"
                                         background: Item {}
                                         font.pixelSize: 13
                                         focus: true
@@ -255,6 +258,9 @@ Window {
                                         placeholderText: "••••••••"
                                         echoMode: showPass.checked ? TextInput.Normal : TextInput.Password
                                         color: "white"
+                                        placeholderTextColor: "#99FFFFFF"
+                                        palette.text: "white"
+                                        palette.placeholderText: "#99FFFFFF"
                                         background: Item {}
                                         font.pixelSize: 13
                                         KeyNavigation.tab: loginBtn

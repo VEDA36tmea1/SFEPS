@@ -19,25 +19,51 @@ Window {
     property string forcedLogoutMessage: "서버와의 네트워크 연결이 끊어져 강제 로그아웃됩니다."
     property int forcedLogoutSecondsRemaining: 3
     readonly property int notificationCount: notificationModel.count
+    Component.onCompleted: {
+        unreadCount = 0
+        notificationModel.clear()
+        if (monitoringView && monitoringView.resetSessionStats) {
+            monitoringView.resetSessionStats()
+        }
+        if (analyticsView && analyticsView.resetSessionStats) {
+            analyticsView.resetSessionStats()
+        }
+    }
 
-    function appendNotificationEvent(objectId, cardAgeText, ageGroup, isFraud) {
+    function _formatNotificationTimestamp(tag) {
+        var raw = tag !== undefined ? String(tag).trim() : ""
+        if (raw.length === 0) {
+            return Qt.formatDateTime(new Date(), "HH:mm:ss")
+        }
+        var parsed = new Date(raw)
+        if (isNaN(parsed.getTime())) {
+            return Qt.formatDateTime(new Date(), "HH:mm:ss")
+        }
+        return Qt.formatDateTime(parsed, "HH:mm:ss")
+    }
+
+    function appendNotificationEvent(objectId, cardAgeText, age, isFraud, tag, imagePath) {
         notificationModel.insert(0, {
             objectId: objectId,
             cardAgeText: cardAgeText,
-            ageGroup: ageGroup,
+            age: age,
             isFraud: isFraud,
-            timestamp: Qt.formatDateTime(new Date(), "HH:mm:ss")
+            tag: tag !== undefined ? String(tag) : "",
+            imagePath: imagePath !== undefined ? String(imagePath) : "",
+            timestamp: _formatNotificationTimestamp(tag)
         })
         unreadCount++
     }
 
     // Squish helper: inject a UI event without backend socket dependency.
-    function injectTestNotification(objectId, cardAgeText, ageGroup, isFraud) {
+    function injectTestNotification(objectId, cardAgeText, age, isFraud) {
         appendNotificationEvent(
             objectId || "TEST-OBJ-001",
             cardAgeText || "adult",
-            ageGroup || "30s",
-            isFraud !== false
+            age || "30",
+            isFraud !== false,
+            "",
+            ""
         )
     }
 
@@ -55,14 +81,15 @@ Window {
         currentNotificationIndex = idx
         detailPopup.objectId = item.objectId
         detailPopup.cardAgeText = item.cardAgeText
-        detailPopup.ageGroup = item.ageGroup
+        detailPopup.age = item.age
         detailPopup.isFraud = !!item.isFraud
+        detailPopup.imagePath = item.imagePath !== undefined ? item.imagePath : ""
         detailPopup.open()
         return true
     }
 
     // Squish helper: inject into MonitoringView via stable root object.
-    function injectTestMonitoringEventFromMain(objectId, cardAgeText, ageGroup, isFraud) {
+    function injectTestMonitoringEventFromMain(objectId, cardAgeText, age, isFraud) {
         if (!monitoringView || !monitoringView.injectTestMonitoringEvent) {
             return false
         }
@@ -70,7 +97,7 @@ Window {
         return !!monitoringView.injectTestMonitoringEvent(
             objectId || "TEST-OBJ-001",
             cardAgeText || "adult",
-            ageGroup || "30s",
+            age || "30",
             isFraud !== false
         )
     }
@@ -126,7 +153,7 @@ Window {
 
         property alias objectId: detailView.objectId
         property alias cardAgeText: detailView.cardAgeText
-        property alias ageGroup: detailView.ageGroup
+        property alias age: detailView.age
         property alias isFraud: detailView.isFraud
         property alias imagePath: detailView.imagePath
 
@@ -740,19 +767,26 @@ Window {
                         id: monitoringView
                         objectName: "monitoringView"
                         laserTrackingEnabled: rootWindow.laserTrackingEnabled
-                        onViewDetailRequest: (objectId, cardAgeText, ageGroup, isFraud, imagePath) => {
+                        onViewDetailRequest: (objectId, cardAgeText, age, isFraud, imagePath) => {
                             detailPopup.objectId = objectId
                             detailPopup.cardAgeText = cardAgeText
-                            detailPopup.ageGroup = ageGroup
+                            detailPopup.age = age
                             detailPopup.isFraud = isFraud
                             detailPopup.imagePath = imagePath
                             detailPopup.open()
                         }
                     }
                     AnalyticsView {
+                        id: analyticsView
                         monitoringTotalBoardingCount: monitoringView.totalBoardingCount
                         monitoringFraudBoardingCount: monitoringView.fraudBoardingCount
                         monitoringStreamLatency: monitoringView.streamLatency
+                        monitoringAgeCount18: monitoringView.boardingAgeCount18
+                        monitoringAgeCount25: monitoringView.boardingAgeCount25
+                        monitoringAgeCount35: monitoringView.boardingAgeCount35
+                        monitoringAgeCount45: monitoringView.boardingAgeCount45
+                        monitoringAgeCount60: monitoringView.boardingAgeCount60
+                        monitoringAgeCountPlus: monitoringView.boardingAgeCountPlus
                     }
                     SettingsView {
                         laserTrackingEnabled: rootWindow.laserTrackingEnabled
@@ -767,8 +801,8 @@ Window {
     // --- Fraud Detection Notification ---
     Connections {
         target: fraudManager
-        function onFraudDetected(objectId, cardAgeText, ageGroup, isFraud) {
-            appendNotificationEvent(objectId, cardAgeText, ageGroup, isFraud)
+        function onFraudDetected(objectId, cardAgeText, age, isFraud, tag, imagePath) {
+            appendNotificationEvent(objectId, cardAgeText, age, isFraud, tag, imagePath)
         }
     }
 

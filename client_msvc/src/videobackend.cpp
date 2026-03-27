@@ -413,7 +413,7 @@ void MainWindow::startMetadataWorker()
                     if (metaLatencyMs >= 0 && m_streamLatencyMs != metaLatencyMs) {
                         m_streamLatencyMs = metaLatencyMs;
                         emit streamLatencyChanged();
-                        qInfo() << "[StreamLatency][tag-time]" << m_streamLatencyMs << "ms";
+                        // qInfo() << "[StreamLatency][tag-time]" << m_streamLatencyMs << "ms";
                     }
                     applyNativeDetections(std::move(*payload), rtpSnap, QDateTime::currentMSecsSinceEpoch(), frameNo);
                 }, Qt::QueuedConnection);
@@ -453,7 +453,7 @@ void MainWindow::startMetadataWorker()
                     if (metaLatencyMs >= 0 && m_streamLatencyMs != metaLatencyMs) {
                         m_streamLatencyMs = metaLatencyMs;
                         emit streamLatencyChanged();
-                        qInfo() << "[StreamLatency][tag-time]" << m_streamLatencyMs << "ms";
+                        // qInfo() << "[StreamLatency][tag-time]" << m_streamLatencyMs << "ms";
                     }
                     this->setDetections(dets);
                 }, Qt::QueuedConnection);

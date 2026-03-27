@@ -53,7 +53,7 @@ bool parseFraudMessage(const QString &msg,
     }
 
     const QStringList parts = msg.split('|', Qt::KeepEmptyParts);
-    if (parts.size() < 5) {
+    if (parts.size() < 6) {
         qWarning() << "[FraudManager] Ignore malformed message (field missing):" << msg;
         return false;
     }
@@ -81,13 +81,17 @@ bool parseFraudMessage(const QString &msg,
         age[0] = age[0].toUpper();
     }
 
-    // Extract TAG from the message (TAG=<iso8601>)
-    tag.clear();
-    for (int i = 5; i < parts.size(); ++i) {
-        if (parts[i].startsWith("TAG=")) {
-            tag = parts[i].mid(4).trimmed();
-            break;
-        }
+    // New alert format:
+    // FRAUD|<object_id>|<card_age_text>|<age>|<Y|N>|TAG=<iso8601>
+    const QString tagPart = parts[5].trimmed();
+    if (!tagPart.startsWith("TAG=")) {
+        qWarning() << "[FraudManager] Ignore malformed message (missing TAG field):" << msg;
+        return false;
+    }
+    tag = tagPart.mid(4).trimmed();
+    if (tag.isEmpty()) {
+        qWarning() << "[FraudManager] Ignore malformed message (empty TAG value):" << msg;
+        return false;
     }
 
     return true;

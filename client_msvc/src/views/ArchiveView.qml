@@ -144,7 +144,7 @@ Rectangle {
                         }
                         onClicked: {
                             archiveErrorMessage = ""
-                            videoArchiveManager.requestPlayUrl(model.id)
+                            videoArchiveManager.requestPlayUrl(id)
                         }
                     }
                 }
@@ -173,6 +173,10 @@ Rectangle {
 
         MediaPlayer {
             id: mediaPlayer
+            onErrorOccurred: function(error, errorString) {
+                archiveErrorMessage = "PLAYER_ERROR: " + errorString
+                console.warn("MediaPlayer error:", error, errorString, "source:", mediaPlayer.source)
+            }
         }
 
         Popup {
