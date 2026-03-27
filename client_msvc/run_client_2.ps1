@@ -59,6 +59,7 @@ Set-DefaultEnv "AUTH_TLS_CA_FILE" $caPath
 # 선택: 통합 TLS 토글(프로젝트의 다른 경로에서 참조 가능)
 Set-DefaultEnv "SFEPS_CLIENT_TLS_ENABLE" $env:AUTH_TLS_ENABLE
 Set-DefaultEnv "SFEPS_CLIENT_CA_FILE" $env:AUTH_TLS_CA_FILE
+Set-DefaultEnv "QT_FFMPEG_PROTOCOL_WHITELIST" "file,crypto,data,http,https,tcp,tls,rtp,rtsp,udp"
 
 if (-not (Test-Path $caPath)) {
     Write-Warning "TLS CA 파일을 찾을 수 없습니다: $caPath"
@@ -77,9 +78,9 @@ Set-DefaultEnv "CAMERA_CGI_ALLOW_INSECURE_TLS" "1"
 
 # ── 실행 ───────────────────────────────────────────────────────────────────────
 $exeCandidates = @(
+    (Join-Path $clientDir "build-msvc\Release\appHanwhaVisionSFEPS.exe"),
     (Join-Path $clientDir "build-opencv-on-msvc\Release\appHanwhaVisionSFEPS.exe"),
-    (Join-Path $clientDir "build-opencv-on\Release\appHanwhaVisionSFEPS.exe"),
-    (Join-Path $clientDir "build-msvc\Release\appHanwhaVisionSFEPS.exe")
+    (Join-Path $clientDir "build-opencv-on\Release\appHanwhaVisionSFEPS.exe")
 )
 $exePath = $null
 foreach ($cand in $exeCandidates) {
@@ -97,9 +98,15 @@ $opencvBin = "C:\\Users\\2-08\\Desktop\\SFEPS\\opencv-gst\\opencv-gst\\install\\
 $gstreamerBin = "C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64\\bin"
 $gstreamerPluginDir = "C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64\\lib\\gstreamer-1.0"
 
-if (Test-Path $qtBin) { $env:Path = "$qtBin;$env:Path" }
-if (Test-Path $opencvBin) { $env:Path = "$opencvBin;$env:Path" }
-if (Test-Path $gstreamerBin) { $env:Path = "$gstreamerBin;$env:Path" }
+# Qt를 최우선으로 두어 Qt Multimedia가 Qt 번들 FFmpeg DLL을 먼저 로드하도록 보장
+# (OpenCV 번들 FFmpeg가 먼저 잡히면 HTTP 프로토콜 미지원 이슈가 발생할 수 있음)
+$runtimePrefix = @()
+if (Test-Path $qtBin) { $runtimePrefix += $qtBin }
+if (Test-Path $gstreamerBin) { $runtimePrefix += $gstreamerBin }
+if (Test-Path $opencvBin) { $runtimePrefix += $opencvBin }
+if ($runtimePrefix.Count -gt 0) {
+    $env:Path = (($runtimePrefix -join ";") + ";" + $env:Path)
+}
 if (Test-Path $gstreamerPluginDir) { Set-DefaultEnv "GST_PLUGIN_PATH" $gstreamerPluginDir }
 
 Write-Host "[run_client_2.ps1] exe=$exePath opencvBin=$opencvBin backend=$($env:RTSP_BACKEND) AUTH_TLS_ENABLE=$($env:AUTH_TLS_ENABLE)"

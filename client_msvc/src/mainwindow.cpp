@@ -353,7 +353,7 @@ void MainWindow::processFrame(const cv::Mat &frame, qint64 ts)
         if (measured != m_streamLatencyMs) {
             m_streamLatencyMs = measured;
             emit streamLatencyChanged();
-            qInfo() << "[StreamLatency][frame-ts]" << m_streamLatencyMs << "ms";
+            // qInfo() << "[StreamLatency][frame-ts]" << m_streamLatencyMs << "ms";
         }
     }
 
@@ -822,7 +822,7 @@ void MainWindow::startMetadataWorker()
                     if (metaLatencyMs >= 0 && m_streamLatencyMs != metaLatencyMs) {
                         m_streamLatencyMs = metaLatencyMs;
                         emit streamLatencyChanged();
-                        qInfo() << "[StreamLatency][tag-time]" << m_streamLatencyMs << "ms";
+                        // qInfo() << "[StreamLatency][tag-time]" << m_streamLatencyMs << "ms";
                     }
                     this->setDetections(dets);
                 }, Qt::QueuedConnection);

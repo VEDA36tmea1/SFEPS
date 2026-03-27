@@ -11,11 +11,11 @@ Item {
 
     property string objectId: "3679"
     property string cardAgeText: "Adult"
-    property string ageGroup: "Senior"
+    property string age: "Senior"
     property bool isFraud: true
     property string imagePath: ""
     property string cardAgeDisplay: cardAgeText && cardAgeText.trim() !== "" ? cardAgeText.toUpperCase() : "-"
-    property string estimatedAgeDisplay: ageGroup && ageGroup.trim() !== "" ? ageGroup.toUpperCase() : "-"
+    property string estimatedAgeDisplay: age && age.trim() !== "" ? age.toUpperCase() : "-"
     property string fraudDisplay: isFraud ? "FARE EVASION (Y)" : "NORMAL BOARDING (N)"
 
     RowLayout {

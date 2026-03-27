@@ -54,7 +54,7 @@ bool parseFraudMessage(const QString &msg,
     }
 
     const QStringList parts = msg.split('|', Qt::KeepEmptyParts);
-    if (parts.size() < 5) {
+    if (parts.size() < 6) {
         qWarning() << "[FraudManager] Ignore malformed message (field missing):" << msg;
         return false;
     }

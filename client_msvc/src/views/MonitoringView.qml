@@ -10,7 +10,25 @@ Page {
         color: AppTheme.background
     }
 
-    signal viewDetailRequest(string objectId, string cardAgeText, string ageGroup, bool isFraud, string imagePath)
+    signal viewDetailRequest(string objectId, string cardAgeText, string age, bool isFraud, string imagePath)
+    function resetSessionStats() {
+        totalBoardingCount = 0
+        fraudBoardingCount = 0
+        boardingDecisionByObject = ({})
+        boardingAgeByObject = ({})
+        boardingAgeCount18 = 0
+        boardingAgeCount25 = 0
+        boardingAgeCount35 = 0
+        boardingAgeCount45 = 0
+        boardingAgeCount60 = 0
+        boardingAgeCountPlus = 0
+        squishEventCount = 0
+        pendingTestMonitoringEvents = []
+        if (monitoringEventModel) {
+            monitoringEventModel.clear()
+        }
+    }
+
     Component.onCompleted: {
         if (videoBackend) {
             videoBackend.running = true
@@ -27,6 +45,13 @@ Page {
     property int fraudBoardingCount: 0
     // Object-level aggregation for virtual-line decision events.
     property var boardingDecisionByObject: ({})
+    property var boardingAgeByObject: ({})
+    property int boardingAgeCount18: 0
+    property int boardingAgeCount25: 0
+    property int boardingAgeCount35: 0
+    property int boardingAgeCount45: 0
+    property int boardingAgeCount60: 0
+    property int boardingAgeCountPlus: 0
     property bool laserTrackingEnabled: true
     property real detectionRate: totalBoardingCount > 0
                                  ? Math.round((fraudBoardingCount / totalBoardingCount) * 1000) / 10
@@ -51,13 +76,13 @@ Page {
     property int squishEventCount: 0
     property var pendingTestMonitoringEvents: []
 
-    function _appendMonitoringEventNow(objectId, cardAgeText, ageGroup, isFraud, tag="", imagePath="") {
+    function _appendMonitoringEventNow(objectId, cardAgeText, age, isFraud, tag="", imagePath="") {
         if (!monitoringEventModel) {
             return false
         }
         var normalizedObjectId = String(objectId)
         var normalizedCardAgeText = cardAgeText !== undefined ? String(cardAgeText) : ""
-        var normalizedAgeGroup = ageGroup !== undefined ? String(ageGroup) : ""
+        var normalizedAge = age !== undefined ? String(age) : ""
         var fraud = !!isFraud
         var normalizedTag = tag !== undefined ? String(tag) : ""
         var normalizedImagePath = imagePath !== undefined ? String(imagePath) : ""
@@ -79,16 +104,24 @@ Page {
         }
         boardingDecisionByObject[key] = fraud
 
+        // Keep demographics monotonic per session:
+        // count each object once when we first get a usable age.
+        if (_hasUsableAge(normalizedAge) && !Object.prototype.hasOwnProperty.call(boardingAgeByObject, key)) {
+            var nextBucket = _resolveAgeBucket(normalizedAge)
+            _applyAgeBucketDelta(nextBucket, +1)
+            boardingAgeByObject[key] = nextBucket
+        }
+
         monitoringEventModel.insert(0, {
             eventId: normalizedObjectId,
             eventType: "FARE EVASION DETECTED",
             title: "Object " + normalizedObjectId + " - " + normalizedCardAgeText.toUpperCase() + " CARD",
-            camera: "Age Group: " + normalizedAgeGroup.toUpperCase() + " (Fraud: " + (fraud ? "Y" : "N") + ")",
+            camera: "Age: " + normalizedAge.toUpperCase() + " (Fraud: " + (fraud ? "Y" : "N") + ")",
             timestamp: Qt.formatDateTime(new Date(), "HH:mm:ss"),
             confidence: "",
             objectId: normalizedObjectId,
             cardAgeText: normalizedCardAgeText,
-            ageGroup: normalizedAgeGroup,
+            age: normalizedAge,
             isFraud: fraud,
             tag: normalizedTag,
             imagePath: normalizedImagePath
@@ -97,13 +130,60 @@ Page {
         return true
     }
 
+    function _resolveAgeBucket(age) {
+        var raw = age !== undefined ? String(age).trim().toLowerCase() : ""
+        var m = raw.match(/\d+/)
+        if (m && m.length > 0) {
+            var n = parseInt(m[0], 10)
+            if (!isNaN(n)) {
+                if (n < 18) return "18"
+                if (n <= 25) return "25"
+                if (n <= 35) return "35"
+                if (n <= 45) return "45"
+                if (n <= 60) return "60"
+                return "plus"
+            }
+        }
+
+        // Backward compatibility for decade-like labels (e.g. 20s, 30대).
+        if (raw.indexOf("10") !== -1) return "18"
+        if (raw.indexOf("20") !== -1) return "25"
+        if (raw.indexOf("30") !== -1) return "35"
+        if (raw.indexOf("40") !== -1) return "45"
+        if (raw.indexOf("50") !== -1 || raw.indexOf("60") !== -1) return "60"
+        return "plus"
+    }
+
+    function _applyAgeBucketDelta(bucket, delta) {
+        if (!bucket || delta === 0) return
+        if (bucket === "18") boardingAgeCount18 = Math.max(0, boardingAgeCount18 + delta)
+        else if (bucket === "25") boardingAgeCount25 = Math.max(0, boardingAgeCount25 + delta)
+        else if (bucket === "35") boardingAgeCount35 = Math.max(0, boardingAgeCount35 + delta)
+        else if (bucket === "45") boardingAgeCount45 = Math.max(0, boardingAgeCount45 + delta)
+        else if (bucket === "60") boardingAgeCount60 = Math.max(0, boardingAgeCount60 + delta)
+        else boardingAgeCountPlus = Math.max(0, boardingAgeCountPlus + delta)
+    }
+
+    function _hasUsableAge(age) {
+        var raw = age !== undefined ? String(age).trim().toLowerCase() : ""
+        if (raw === "") return false
+        if (raw.match(/\d+/)) return true
+        // Backward compatibility labels such as 20s / 30대
+        return raw.indexOf("10") !== -1
+            || raw.indexOf("20") !== -1
+            || raw.indexOf("30") !== -1
+            || raw.indexOf("40") !== -1
+            || raw.indexOf("50") !== -1
+            || raw.indexOf("60") !== -1
+    }
+
     function _drainPendingTestMonitoringEvents() {
         if (!monitoringEventModel || pendingTestMonitoringEvents.length === 0) {
             return
         }
         while (pendingTestMonitoringEvents.length > 0) {
             var ev = pendingTestMonitoringEvents.shift()
-            _appendMonitoringEventNow(ev.objectId, ev.cardAgeText, ev.ageGroup, ev.isFraud, ev.tag, ev.imagePath)
+            _appendMonitoringEventNow(ev.objectId, ev.cardAgeText, ev.age, ev.isFraud, ev.tag, ev.imagePath)
         }
     }
 
@@ -120,13 +200,13 @@ Page {
         }
     }
 
-    function appendMonitoringEvent(objectId, cardAgeText, ageGroup, isFraud, tag="", imagePath="") {
+    function appendMonitoringEvent(objectId, cardAgeText, age, isFraud, tag="", imagePath="") {
         if (!monitoringEventModel) {
             squishEventCount++  // model 미준비여도 Squish 폴링용 카운터 즉시 증가
             pendingTestMonitoringEvents.push({
                 objectId: objectId,
                 cardAgeText: cardAgeText,
-                ageGroup: ageGroup,
+                age: age,
                 isFraud: isFraud,
                 tag: tag,
                 imagePath: imagePath
@@ -137,15 +217,15 @@ Page {
             return true
         }
         _drainPendingTestMonitoringEvents()
-        return _appendMonitoringEventNow(objectId, cardAgeText, ageGroup, isFraud, tag, imagePath)
+        return _appendMonitoringEventNow(objectId, cardAgeText, age, isFraud, tag, imagePath)
     }
 
     // Squish helper: inject monitoring events without backend socket dependency.
-    function injectTestMonitoringEvent(objectId, cardAgeText, ageGroup, isFraud) {
+    function injectTestMonitoringEvent(objectId, cardAgeText, age, isFraud) {
         return appendMonitoringEvent(
             objectId || "TEST-OBJ-001",
             cardAgeText || "adult",
-            ageGroup || "30s",
+            age || "30",
             isFraud !== false
         )
     }
@@ -183,6 +263,14 @@ Page {
         streamStatusOverrideForTest = ""
     }
 
+    // Always receive FRAUD events at page scope for session counters.
+    Connections {
+        target: fraudManager
+        function onFraudDetected(objectId, cardAgeText, age, isFraud, tag, imagePath) {
+            appendMonitoringEvent(objectId, cardAgeText, age, isFraud, tag, imagePath)
+        }
+    }
+
     // Squish helper: emit viewDetailRequest for the item at targetIndex, bypassing
     // delegate visibility / ListView recycling timing issues entirely.
     function openMonitoringDetailByIndex(targetIndex) {
@@ -198,8 +286,9 @@ Page {
         viewDetailRequest(
             item.objectId    !== undefined ? item.objectId    : "",
             item.cardAgeText !== undefined ? item.cardAgeText : "",
-            item.ageGroup    !== undefined ? item.ageGroup    : "",
-            !!item.isFraud
+            item.age         !== undefined ? item.age         : "",
+            !!item.isFraud,
+            item.imagePath   !== undefined ? item.imagePath   : ""
         )
         return true
     }
@@ -862,6 +951,9 @@ Page {
                             Layout.fillWidth: true
                             placeholderText: "Filter events..."
                             color: "white"
+                            placeholderTextColor: "#99FFFFFF"
+                            palette.text: "white"
+                            palette.placeholderText: "#99FFFFFF"
                             font.pixelSize: 12
                             background: null
                         }
@@ -878,13 +970,6 @@ Page {
                     spacing: 8
                     model: ListModel {
                         id: monitoringEventModel
-                    }
-
-                    Connections {
-                        target: fraudManager
-                        function onFraudDetected(objectId, cardAgeText, ageGroup, isFraud, tag, imagePath) {
-                            appendMonitoringEvent(objectId, cardAgeText, ageGroup, isFraud, tag, imagePath)
-                        }
                     }
 
                     // Handle image downloads that arrive after FRAUD message
@@ -985,7 +1070,7 @@ Page {
                                         horizontalAlignment: Text.AlignHCenter
                                         verticalAlignment: Text.AlignVCenter
                                     }
-                                    onClicked: viewDetailRequest(objectId, cardAgeText, ageGroup, isFraud, imagePath)
+                                    onClicked: viewDetailRequest(objectId, cardAgeText, age, isFraud, imagePath)
                                 }
 
                                 Button {
@@ -1109,7 +1194,8 @@ Page {
                                 if (fv2 === "Y" || fv2 === "1" || fv2 === "TRUE") aFlag = true;
                             }
                             var dtype2 = (it.type !== undefined) ? it.type : (it.TYPE !== undefined ? it.TYPE : "");
-                            out.push({ id: String(it.id), x: it.x, y: it.y, w: it.w, h: it.h, alert: aFlag, type: dtype2 });
+                            var age2 = (it.age !== undefined) ? it.age : (it.AGE !== undefined ? it.AGE : "");
+                            out.push({ id: String(it.id), x: it.x, y: it.y, w: it.w, h: it.h, alert: aFlag, type: dtype2, age: age2 });
                             if (out.length >= maxRender) break;
                             continue;
                         }
@@ -1141,7 +1227,8 @@ Page {
                                 if (fv === "Y" || fv === "1" || fv === "TRUE") alertFlag = true;
                             }
                             var dtype = (it.type !== undefined) ? it.type : (it.TYPE !== undefined ? it.TYPE : "");
-                            out.push({ id: id, x: nx, y: ny, w: nw, h: nh, alert: alertFlag, type: dtype });
+                            var ageRaw = (it.age !== undefined) ? it.age : (it.AGE !== undefined ? it.AGE : "");
+                            out.push({ id: id, x: nx, y: ny, w: nw, h: nh, alert: alertFlag, type: dtype, age: ageRaw });
                             if (out.length >= maxRender) break;
                         } else {
                             // unknown format, skip
@@ -1153,31 +1240,34 @@ Page {
                     for (var fi = 0; fi < out.length; ++fi) {
                         if (out[fi] && out[fi].alert) fraudCount++;
                     }
-                    // Use position-port data to update CUMULATIVE counts (unique boarding objects)
-                    // For each incoming detection, if we haven't seen this objectId before,
-                    // count it as a new boarding. If we've seen it before but fraud-flag
-                    // changed, update fraudBoardingCount accordingly. This preserves
-                    // appendMonitoringEvent() semantics which also updates boardingDecisionByObject.
+                    // Keep cumulative counters updated from position stream as well.
                     for (var j = 0; j < out.length; ++j) {
-                        var itm = out[j];
-                        if (!itm) continue;
-                        var oid = itm.id !== undefined ? String(itm.id) : "";
-                        if (oid === "") continue;
-                        var isAlert = !!itm.alert;
-                        var hasPrev = Object.prototype.hasOwnProperty.call(boardingDecisionByObject, oid);
-                        if (!hasPrev) {
-                            boardingDecisionByObject[oid] = isAlert;
-                            totalBoardingCount++;
-                            if (isAlert) fraudBoardingCount++;
+                        var itm = out[j]
+                        if (!itm) continue
+                        var oid = itm.id !== undefined ? String(itm.id) : ""
+                        if (oid === "") continue
+
+                        var isAlert = !!itm.alert
+                        var hadDecision = Object.prototype.hasOwnProperty.call(boardingDecisionByObject, oid)
+                        if (!hadDecision) {
+                            boardingDecisionByObject[oid] = isAlert
+                            totalBoardingCount++
+                            if (isAlert) fraudBoardingCount++
                         } else if (boardingDecisionByObject[oid] !== isAlert) {
                             if (boardingDecisionByObject[oid]) {
-                                fraudBoardingCount = Math.max(0, fraudBoardingCount - 1);
+                                fraudBoardingCount = Math.max(0, fraudBoardingCount - 1)
                             }
-                            if (isAlert) fraudBoardingCount++;
-                            boardingDecisionByObject[oid] = isAlert;
+                            if (isAlert) fraudBoardingCount++
+                            boardingDecisionByObject[oid] = isAlert
+                        }
+
+                        // Position stream may not provide age; skip demographics update in that case.
+                        if (_hasUsableAge(itm.age) && !Object.prototype.hasOwnProperty.call(boardingAgeByObject, oid)) {
+                            var nextBucket = _resolveAgeBucket(itm.age)
+                            _applyAgeBucketDelta(nextBucket, +1)
+                            boardingAgeByObject[oid] = nextBucket
                         }
                     }
-                    
 
                     pendingDetections = out;
                     if (videoDisplay && usePositionOverlayFallback) {
