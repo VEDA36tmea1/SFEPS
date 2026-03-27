@@ -269,9 +269,8 @@ struct IdStabilizer::Impl {
             det.left, det.top, det.right, det.bottom);
 
         // 거리 유사도: sigma = bbox 대각선 (정규화/픽셀 모두 대응)
-        // 정규화 좌표면 sigma ~ 0.15, 픽셀이면 sigma ~ 200px
         float diag = std::sqrt(track.width * track.width + track.height * track.height);
-        float sigma = std::max(diag * 1.5f, 0.05f);  // 최소 0.05 (정규화 기준)
+        float sigma = std::max(diag * 1.5f, 0.05f);
         float dist_sim = distance_similarity(pred_cx, pred_cy, det.cx, det.cy, sigma);
 
         // 외형 유사도
@@ -279,7 +278,7 @@ struct IdStabilizer::Impl {
         if (cfg.appearance_weight > 0 && track.appearance.valid && det.appearance.valid)
             app_sim = std::max(0.0f, track.appearance.cosine_similarity(det.appearance));
 
-        // 가중합 — 외형이 없으면 IoU와 거리만으로
+        // 가중합
         float w_iou  = cfg.iou_weight;
         float w_dist = cfg.distance_weight;
         float w_app  = (track.appearance.valid && det.appearance.valid) ? cfg.appearance_weight : 0.0f;
@@ -288,14 +287,17 @@ struct IdStabilizer::Impl {
 
         float score = (w_iou * iou + w_dist * dist_sim + w_app * app_sim) / w_sum;
 
-        // IoU가 0이어도 거리가 가까우면 매칭 (움직임 핵심)
-        // 예: IoU=0, dist_sim=0.8 → score = 0.3*0 + 0.7*0.8 / 1.0 = 0.56
-        // 이동이 커서 bbox가 안 겹쳐도 가까우면 살아남음
+        // ── 연속성 보너스: 이전 프레임에서 같은 camera_id와 매칭됐으면 점수 부스트 ──
+        // 겹침 구간에서 두 트랙의 점수가 비슷할 때, 기존 매칭을 유지하는 관성 역할.
+        // 이게 없으면 0.7초 겹침 동안 매 프레임 매칭이 흔들려서 ID가 뒤바뀜.
+        if (!track.last_camera_id.empty() && track.last_camera_id == det.camera_id) {
+            score = std::min(1.0f, score + 0.15f);  // 15% 보너스
+        }
 
         // 소실 트랙은 시간 기반 감쇠
         if (track.state == Track::LOST || track.state == Track::GALLERY) {
             float age_sec = (float)track.missed_frames * 0.033f;
-            score *= std::exp(-0.05f * age_sec);  // 감쇠를 느리게 (0.1 → 0.05)
+            score *= std::exp(-0.05f * age_sec);
         }
         return score;
     }
