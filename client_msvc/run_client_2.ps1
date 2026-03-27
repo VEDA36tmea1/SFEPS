@@ -73,9 +73,10 @@ if (-not (Test-Path $caPath)) {
 [Environment]::SetEnvironmentVariable("SFEPS_PWM_PORT", "15566",        "Process")  # 로컬 터널 포트 (Cursor가 5566 점유 중)
 
 # ── 카메라 CGI 밝기/대조 제어 ──────────────────────────────────────────────────
-Set-DefaultEnv "CAMERA_CGI_USER" "admin"      # 카메라 로그인 아이디
-Set-DefaultEnv "CAMERA_CGI_PASSWORD" "CCgbdCCgbd"      # 카메라 로그인 비밀번호
-Set-DefaultEnv "CAMERA_CGI_ALLOW_INSECURE_TLS" "1"
+# 기존 프로세스/시스템 환경변수 값이 남아 있어도 항상 의도한 계정으로 덮어씀
+[Environment]::SetEnvironmentVariable("CAMERA_CGI_USER", "admin", "Process")          # 카메라 로그인 아이디
+[Environment]::SetEnvironmentVariable("CAMERA_CGI_PASSWORD", "CCgbdCCgbd", "Process") # 카메라 로그인 비밀번호
+[Environment]::SetEnvironmentVariable("CAMERA_CGI_ALLOW_INSECURE_TLS", "1", "Process")
 
 # ── 실행 ───────────────────────────────────────────────────────────────────────
 $exeCandidates = @(

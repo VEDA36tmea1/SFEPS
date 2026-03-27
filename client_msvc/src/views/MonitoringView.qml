@@ -27,12 +27,16 @@ Page {
         if (monitoringEventModel) {
             monitoringEventModel.clear()
         }
+        if (filteredMonitoringEventModel) {
+            filteredMonitoringEventModel.clear()
+        }
     }
 
     Component.onCompleted: {
         if (videoBackend) {
             videoBackend.running = true
         }
+        _rebuildEventLogFilteredModel()
     }
     Component.onDestruction: {
         if (videoBackend) {
@@ -75,6 +79,73 @@ Page {
     // ListView 내부 proxy 를 거치지 않아 caching 문제에서 자유롭다.
     property int squishEventCount: 0
     property var pendingTestMonitoringEvents: []
+
+    // Event Log filtering
+    property string eventFilterText: ""
+    ListModel {
+        id: monitoringEventModel
+    }
+    ListModel {
+        id: filteredMonitoringEventModel
+    }
+    Timer {
+        id: eventFilterRebuildTimer
+        interval: 150
+        repeat: false
+        running: false
+        onTriggered: _rebuildEventLogFilteredModel()
+    }
+
+    function _eventLogMatchesNeedle(item, needle) {
+        if (!needle || needle === "") return true
+        if (!item) return false
+
+        var oid = item.objectId !== undefined ? String(item.objectId).toLowerCase() : ""
+        if (oid.indexOf(needle) !== -1) return true
+
+        // Fallback matches: eventId/title/camera text에도 같이 걸리도록(사용성 향상)
+        var eventId = item.eventId !== undefined ? String(item.eventId).toLowerCase() : ""
+        if (eventId.indexOf(needle) !== -1) return true
+
+        var title = item.title !== undefined ? String(item.title).toLowerCase() : ""
+        if (title.indexOf(needle) !== -1) return true
+
+        var camera = item.camera !== undefined ? String(item.camera).toLowerCase() : ""
+        if (camera.indexOf(needle) !== -1) return true
+
+        return false
+    }
+
+    function _rebuildEventLogFilteredModel() {
+        if (!monitoringEventModel || !filteredMonitoringEventModel) return
+
+        var needle = String(eventFilterText !== undefined ? eventFilterText : "")
+        needle = needle.trim().toLowerCase()
+
+        filteredMonitoringEventModel.clear()
+        for (var i = 0; i < monitoringEventModel.count; ++i) {
+            var item = monitoringEventModel.get(i)
+            if (!item) continue
+
+            if (!_eventLogMatchesNeedle(item, needle)) continue
+
+            filteredMonitoringEventModel.append({
+                sourceIndex: i,
+                eventId: item.eventId,
+                eventType: item.eventType,
+                title: item.title,
+                camera: item.camera,
+                timestamp: item.timestamp,
+                confidence: item.confidence,
+                objectId: item.objectId,
+                cardAgeText: item.cardAgeText,
+                age: item.age,
+                isFraud: item.isFraud,
+                tag: item.tag,
+                imagePath: item.imagePath
+            })
+        }
+    }
 
     function _appendMonitoringEventNow(objectId, cardAgeText, age, isFraud, tag="", imagePath="") {
         if (!monitoringEventModel) {
@@ -127,6 +198,7 @@ Page {
             imagePath: normalizedImagePath
         })
         squishEventCount++  // Squish 폴링 전용 카운터
+        _rebuildEventLogFilteredModel()
         return true
     }
 
@@ -948,14 +1020,20 @@ Page {
                             opacity: 0.7
                         }
                         TextField {
+                            id: eventFilterTextField
                             Layout.fillWidth: true
-                            placeholderText: "Filter events..."
+                            placeholderText: "Filter by Card ID..."
                             color: "white"
                             placeholderTextColor: "#99FFFFFF"
                             palette.text: "white"
                             palette.placeholderText: "#99FFFFFF"
                             font.pixelSize: 12
                             background: null
+                            onTextChanged: {
+                                eventFilterText = text
+                                eventFilterRebuildTimer.stop()
+                                eventFilterRebuildTimer.start()
+                            }
                         }
                     }
                 }
@@ -968,9 +1046,7 @@ Page {
                     Layout.fillHeight: true
                     clip: true
                     spacing: 8
-                    model: ListModel {
-                        id: monitoringEventModel
-                    }
+                    model: filteredMonitoringEventModel
 
                     // Handle image downloads that arrive after FRAUD message
                     Connections {
@@ -984,6 +1060,7 @@ Page {
                                     console.debug("[MonitoringView] Updated event image:", objectId, tag, "->", localFilePath)
                                 }
                             }
+                            _rebuildEventLogFilteredModel()
                         }
                     }
 
@@ -1090,7 +1167,10 @@ Page {
                                         horizontalAlignment: Text.AlignHCenter
                                         verticalAlignment: Text.AlignVCenter
                                     }
-                                    onClicked: monitoringEventModel.remove(index)
+                                    onClicked: {
+                                        monitoringEventModel.remove(sourceIndex)
+                                        _rebuildEventLogFilteredModel()
+                                    }
                                 }
                             }
 
@@ -1129,7 +1209,7 @@ Page {
                     ColumnLayout {
                         spacing: 0
                         Text {
-                            text: "FARE EVASION RATE"
+                            text: "Fare Evasion Rate"
                             color: "#888"
                             font.bold: true
                             font.pixelSize: 10
