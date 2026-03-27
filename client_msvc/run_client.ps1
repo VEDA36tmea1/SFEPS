@@ -28,6 +28,9 @@ Set-DefaultEnv "FRAUD_SERVER_PORT" "5557"
 # Auth 서버 호스트 (AuthManager 기본값이 192.168.0.82라서 로그가 82로 보일 수 있음)
 [Environment]::SetEnvironmentVariable("AUTH_SERVER_HOST", "192.168.0.101", "Process")
 Set-DefaultEnv "POS_SERVER_PORT" "5558"
+# 비디오 아카이브 카탈로그 서버 (VideoArchiveManager - ArchiveView의 녹화 목록/재생)
+Set-DefaultEnv "VIDEO_CATALOG_HOST"       "192.168.0.101"
+Set-DefaultEnv "SFEPS_VIDEO_CATALOG_PORT" "5559"
 Set-DefaultEnv "AUTH_TLS_ENABLE" "0"          # TLS 사용 시 1
 
 # ── 저지연 스트리밍 옵션(직접 RTSP) ────────────────────────────────────────────

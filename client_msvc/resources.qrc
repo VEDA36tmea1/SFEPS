@@ -8,6 +8,10 @@
         <!-- Controls style config (non-native: Basic) -->
         <file>qtquickcontrols2.conf</file>
 
+        <!-- QML 모듈 선언 (import src 1.0 / import src.views 1.0 에 필요) -->
+        <file>src/qmldir</file>
+        <file>src/views/qmldir</file>
+
         <!-- QML entrypoints (main.cpp: qrc:/src/Main.qml) -->
         <file>src/Main.qml</file>
         <file>src/AppTheme.qml</file>
