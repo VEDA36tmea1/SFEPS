@@ -757,12 +757,6 @@ void AnalyticsProcessor::onRfidRead(const std::string& card_age_text_raw) {
         pruneExpiredStateLocked(now);
 
         if (pending_queue.empty()) {
-            static std::uint64_t no_pending_count = 0;
-            ++no_pending_count;
-            if (should_sample(no_pending_count, drop_log_interval)) {
-                std::cout << "[analytics.cpp] [Matcher] RFID 읽기 무시: pending object 없음"
-                          << std::endl;
-            }
             return;
         }
 

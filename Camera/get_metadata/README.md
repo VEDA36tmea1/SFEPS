@@ -408,3 +408,133 @@ make dump_metadata_xml.exe
   - size deadband 및 aspect-ratio jump guard
   - bbox width/height 펌핑(늘어남/찝힘) 억제
 
+
+### 7. IdStabilizer (re_id) — 후처리 ID 복원 모듈 (2026-03-26)
+
+파일: `inc/re_id.h`, `src/re_id.cpp`
+
+#### 7.1 배경
+
+ONVIF AI 카메라는 사람을 탐지할 때 `ObjectId`를 부여하지만, 가림(occlusion)이나 화면 이탈 후 재진입 시 새로운 ID를 발급한다. 카메라 내부 탐지 로직은 수정 불가하므로, 메타데이터를 받아 C++ 후처리로 ID를 복원하는 외부 모듈을 설계했다.
+
+기존 `XMLParser::parseAndProcess()`의 `tracking_map`(IoU + 속도 예측, 5초 타임아웃)을 대체/보강하며, `camera_client`와 `camera_RBF` 양쪽에 적용된다.
+
+#### 7.2 알고리즘
+
+```
+XMLParser::parseHumanObjectsForAnalytics()
+    ↓ (ParsedMetadataObject → DetectedInput 변환)
+IdStabilizer::update()
+  ├─ 칼만 필터(alpha-beta)로 각 트랙의 다음 위치 예측
+  ├─ 예측 위치 기준 IoU(0.25) + 가우시안 거리(0.55) + 외형(0.20) 가중합
+  ├─ 헝가리안 알고리즘으로 전체 최적 1:1 매칭
+  ├─ 미매칭 탐지 → 갤러리에서 기존 트랙 복구 시도
+  └─ 완전 신규 → 새 stable_id 발급 (S_001, S_002, ...)
+    ↓
+StableObject (안정 ID + EMA 스무딩된 bbox)
+```
+
+##### 칼만 필터
+
+- `alpha_pos=0.7`: 위치 보정 게인 (높을수록 측정값 신뢰)
+- `beta_vel=0.3`: 속도 학습 게인 (높을수록 방향 전환에 빠르게 반응)
+- outlier 게이팅: bbox 대각선 × 4 까지 허용, 초과 시 위치 리셋 + 방향 힌트 보존
+- 속도 상한: 좌표계에 적응 (정규화 ~2.0/s, 픽셀 ~3000px/s)
+
+##### 거리 유사도
+
+- 가우시안 감쇠: `exp(-dist² / 2σ²)`, `σ = bbox 대각선 × 1.5`
+- 기존 선형(`1 - dist/max`)은 사람이 조금만 걸어도 유사도가 0으로 떨어지는 문제가 있어 교체
+- IoU가 0이어도 거리가 가까우면 매칭 유지 (움직이는 사람 핵심)
+
+##### 헝가리안 알고리즘 (Kuhn-Munkres)
+
+- 기존 greedy 매칭은 2명이 겹칠 때 잘못된 1:1 대응 발생 가능
+- O(n³) 최적 매칭으로 교체, n이 보통 5~15명이라 실시간 부담 없음 (<1ms)
+
+##### 갤러리 메커니즘
+
+- `active_timeout_ms=3000`: 3초간 안 보이면 LOST → GALLERY로 이동
+- `gallery_timeout_ms=30000`: 최대 30초간 보관
+- 재등장 시 위치 유사도로 기존 stable_id 복원
+- 기존 `tracking_map`의 5초 타임아웃(450000 RTP ticks) 대비 6배 긴 유지
+
+##### EMA bbox 스무딩
+
+- 속도에 비례하여 alpha 자동 조절 (정지: 떨림 제거, 이동: 즉시 추종)
+- 점프 임계값 초과 시 alpha=0.9로 즉시 따라감
+
+#### 7.3 적용 방식
+
+##### camera_client.cpp
+
+- `metadata_thread_fn`에서 `parseHumanObjectsForAnalytics()` 직후 `g_stabilizer.update()` 호출
+- 결과를 `g_stable_objects`에 저장, 메인 루프에서 이를 순회하며 bbox 표시
+- `on_mouse`에서 `stable_id` 기준으로 선택
+
+##### camera_RBF.cpp
+
+- 메인 루프에서 DeepSORT 결과(`objs`)를 가져온 직후 `g_stabilizer.update()` 호출
+- `objs` 로컬 변수의 `id` 필드를 `stable_id`로 덮어씀
+- 이후 코드(EMA 스무딩, 선택, PWM 계산, 원격 TRACK_POS 매칭)는 수정 없이 동작
+
+#### 7.4 화면 표시
+
+| 요소 | 색상 | 의미 |
+|---|---|---|
+| `S_001(42)` 라벨 | — | 안정 ID(카메라 원본 ID) |
+| 노란색 bbox | `(0,255,255)` | 정상 추적 중 |
+| 주황색 bbox | `(0,165,255)` | 가림/이탈 후 ID 복구됨 |
+
+#### 7.5 콘솔 로그
+
+```
+✨ [NEW] 안정 ID: S_001 | 카메라 ID: 42
+✨ [NEW] 안정 ID: S_002 | 카메라 ID: 55
+🔗 [ID 복구] 99 → 안정 ID: S_001 (갤러리에서 복구)
+```
+
+#### 7.6 설정 (IdStabilizerConfig)
+
+| 파라미터 | 기본값 | 설명 |
+|---|---|---|
+| `iou_weight` | 0.25 | IoU 유사도 가중치 |
+| `distance_weight` | 0.55 | 가우시안 거리 유사도 가중치 |
+| `appearance_weight` | 0.20 | 외형 특징 가중치 (없으면 자동 비활성) |
+| `min_match_score` | 0.15 | 매칭 최소 점수 |
+| `kalman_alpha_pos` | 0.70 | 칼만 위치 보정 게인 |
+| `kalman_beta_vel` | 0.30 | 칼만 속도 학습 게인 |
+| `active_timeout_ms` | 3000 | 소실 전환 시간 (ms) |
+| `gallery_timeout_ms` | 30000 | 갤러리 보관 시간 (ms) |
+| `bbox_ema_alpha` | 0.50 | bbox 스무딩 계수 |
+| `bbox_jump_threshold` | 200.0 | 스무딩 점프 임계값 |
+
+커스터마이징:
+
+```cpp
+static IdStabilizer g_stabilizer{[](){
+    IdStabilizerConfig c;
+    c.min_match_score    = 0.20f;
+    c.active_timeout_ms  = 5000;
+    c.gallery_timeout_ms = 60000;
+    return c;
+}()};
+```
+
+#### 7.7 Makefile 변경
+
+`CAM_SRCS`와 `RBF_SRCS`에 `src/re_id.cpp` 추가:
+
+```make
+CAM_SRCS = src/camera_client.cpp \
+           src/RTSPClient.cpp \
+           src/XMLParser.cpp \
+           src/re_id.cpp
+
+RBF_SRCS = src/camera_RBF.cpp \
+           src/RTSPClient.cpp \
+           src/XMLParser.cpp \
+           src/re_id.cpp
+```
+
+`app` 타겟(main.cpp)은 re_id 미사용, 변경 없음.

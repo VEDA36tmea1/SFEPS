@@ -47,10 +47,21 @@ float calculate_iou(float l1, float t1, float r1, float b1,
     return interArea / (box1Area + box2Area - interArea);
 }
 
-// ── NMS: likelihood 높은 순으로 정렬 후 IoU > thresh 인 박스 제거 ──────────
+// ── 크기 인식형 NMS ────────────────────────────────────────────────────────
+// 기존 NMS 문제: 서로 다른 사람이 겹쳐 있어도 IoU > thresh 면 하나를 제거함.
+//
+// 개선 포인트:
+//   IoU가 높더라도 두 박스 면적이 비슷하면(= 다른 사람) 억제하지 않는다.
+//   j 박스 면적이 i 박스 면적의 size_suppress_ratio 미만일 때만(= 서브박스/헤드)
+//   억제하여, 헤드+전신 중복은 걸러내되 비슷한 크기의 두 사람은 남긴다.
+//
+// size_suppress_ratio 기준:
+//   헤드 vs 전신: 면적비 ≈ 0.10 ~ 0.35  → 0.60 미만 → 억제 ✓
+//   서로 다른 사람: 면적비 ≈ 0.65 ~ 1.35  → 0.60 이상 → 억제 안 함 ✓
 std::vector<ParsedMetadataObject> apply_nms(
     std::vector<ParsedMetadataObject> objs,
-    float iou_thresh = 0.45f)
+    float iou_thresh = 0.45f,
+    float size_suppress_ratio = 0.60f)
 {
     if (objs.size() <= 1) return objs;
 
@@ -59,6 +70,7 @@ std::vector<ParsedMetadataObject> apply_nms(
         const float h = o.bottom - o.top;
         return (w > 0.0f && h > 0.0f) ? (w * h) : 0.0f;
     };
+    // likelihood 내림차순 → 같으면 면적 내림차순 (큰 박스 우선 유지)
     std::sort(objs.begin(), objs.end(),
         [&box_area](const ParsedMetadataObject& a, const ParsedMetadataObject& b) {
             if (a.likelihood != b.likelihood)
@@ -69,13 +81,19 @@ std::vector<ParsedMetadataObject> apply_nms(
     std::vector<bool> suppressed(objs.size(), false);
     for (std::size_t i = 0; i < objs.size(); ++i) {
         if (suppressed[i]) continue;
+        const float area_i = box_area(objs[i]);
         for (std::size_t j = i + 1; j < objs.size(); ++j) {
             if (suppressed[j]) continue;
             float iou = calculate_iou(
                 objs[i].left, objs[i].top, objs[i].right, objs[i].bottom,
                 objs[j].left, objs[j].top, objs[j].right, objs[j].bottom);
-            if (iou > iou_thresh)
-                suppressed[j] = true;
+            if (iou > iou_thresh) {
+                const float area_j = box_area(objs[j]);
+                // j 가 i 보다 현저히 작을 때만 억제 (헤드/서브박스)
+                // 비슷한 크기면 다른 사람으로 간주 → 억제 안 함
+                if (area_i > 0.0f && (area_j / area_i) < size_suppress_ratio)
+                    suppressed[j] = true;
+            }
         }
     }
 
@@ -109,10 +127,12 @@ static float parsed_object_box_area(const ParsedMetadataObject& o) {
 
 // 면적 큰 박스를 먼저 유지. 더 작은 박스가 기존 박스 안에 거의 통째로 들어가면 타입 무관하게 제거
 // (ONVIF 가 머리만 잡아도 타입을 Human 으로 보내는 경우 대비)
+// cover_ratio_thresh: inner 박스 면적 중 outer와 겹치는 비율 ≥ 이 값이면 제거 (낮출수록 더 많이 제거)
+// max_inner_vs_outer_area: inner/outer 면적비가 이 값 이상이면 비슷한 크기로 간주 → 제거 안 함
 std::vector<ParsedMetadataObject> remove_enclosed_smaller_boxes(
     std::vector<ParsedMetadataObject> objs,
-    float cover_ratio_thresh = 0.82f,
-    float max_inner_vs_outer_area = 0.98f)
+    float cover_ratio_thresh = 0.75f,
+    float max_inner_vs_outer_area = 0.60f)
 {
     if (objs.size() <= 1) return objs;
 

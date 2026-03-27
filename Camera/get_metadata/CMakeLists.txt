@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if(NOT DEFINED OpenCV_DIR)
-    set(OpenCV_DIR "C:/Users/2-16/Downloads/opencv/build")
+    set(OpenCV_DIR "C:/Users/2-16/Downloads/opencv-gst/install")
 endif()
 find_package(OpenCV REQUIRED)
 
@@ -25,6 +25,7 @@ target_link_libraries(app PRIVATE ${OpenCV_LIBS})
 
 add_executable(camera_client
     src/camera_client.cpp
+    src/re_id.cpp
     ${COMMON_SRCS}
 )
 target_include_directories(camera_client PRIVATE ${COMMON_INCLUDE_DIR})
@@ -32,6 +33,7 @@ target_link_libraries(camera_client PRIVATE ${OpenCV_LIBS})
 
 add_executable(camera_RBF
     src/camera_RBF.cpp
+    src/re_id.cpp
     ${COMMON_SRCS}
 )
 target_include_directories(camera_RBF PRIVATE ${COMMON_INCLUDE_DIR})

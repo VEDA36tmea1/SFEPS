@@ -99,7 +99,6 @@ void AudioPlayback::playbackThreadFunc()
         while (frames > 0 && running_) {
             snd_pcm_sframes_t written = snd_pcm_writei(pcm_handle_, data, frames);
             if (written == -EPIPE) {
-                std::cerr << "[AudioPlayback] XRUN detected, preparing PCM..." << std::endl;
                 snd_pcm_prepare(pcm_handle_);
                 continue;
             } else if (written < 0) {

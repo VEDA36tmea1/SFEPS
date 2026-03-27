@@ -18,6 +18,7 @@
 #include "RTSPClient.h"
 #include "XMLParser.h"
 #include "Config.h"
+#include "re_id.h"
 
 #include <opencv2/opencv.hpp>
 
@@ -25,11 +26,20 @@
 #include <array>
 #include <sstream>
 #include <utility>
+#ifndef _WIN32
 #include <poll.h>
+#else
+#include <windows.h>
+#include <errno.h>
+#endif
+
+// POSIX 헤더들은 Windows(MSVC)에서 사용할 수 없어서 가드 처리한다.
+#ifndef _WIN32
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#endif
 
 #include <atomic>
 #include <csignal>
@@ -56,6 +66,11 @@ static std::atomic<bool> g_debug_ratio{false}; // 'd' 토글: 선택 객체 내�
 
 static std::mutex g_obj_mutex;
 static std::vector<ParsedMetadataObject> g_objects;  // 마지막 프레임 기준 Human 객체들
+
+// ── IdStabilizer ─────────────────────────────────────────────────────
+static IdStabilizer g_stabilizer;
+static std::mutex g_stable_mutex;
+static std::vector<StableObject> g_stable_objects;
 
 static cv::Mat g_last_frame;
 static std::mutex g_frame_mutex;
@@ -127,8 +142,29 @@ static void metadata_thread_fn(RTSPClient* client, XMLParser* parser)
                     parser->parseHumanObjectsForAnalytics(accumulated_xml, g_detect_all.load());
                 {
                     std::lock_guard<std::mutex> lock(g_obj_mutex);
-                    g_objects = std::move(humans);
+                    g_objects = humans;  // copy (아래에서 사용)
                 }
+
+                // ── IdStabilizer 적용 ──
+                {
+                    std::vector<DetectedInput> inputs;
+                    inputs.reserve(humans.size());
+                    for (const auto& obj : humans) {
+                        DetectedInput d;
+                        d.camera_id = obj.id;
+                        d.left = obj.left;  d.top = obj.top;
+                        d.right = obj.right; d.bottom = obj.bottom;
+                        d.cx = obj.x;  d.cy = obj.y;
+                        inputs.push_back(d);
+                    }
+                    int64_t ts_ms = static_cast<int64_t>(current_timestamp / 90);
+                    auto stable = g_stabilizer.update(inputs, ts_ms);
+                    {
+                        std::lock_guard<std::mutex> lock(g_stable_mutex);
+                        g_stable_objects = std::move(stable);
+                    }
+                }
+
                 accumulated_xml.clear();
             }
             accumulated_xml.append(xml_data, xml_len);
@@ -172,7 +208,16 @@ static std::chrono::steady_clock::time_point g_pose_prev_ok_time;
 static bool read_line_fd_timeout(int fd, std::string& out, int timeout_ms)
 {
     out.clear();
-    char c;
+    char c{};
+
+#ifdef _WIN32
+    // Windows에서는 PoseWorker를 스텁 처리하여 pose 요청이 비활성화된다.
+    // 여기 함수는 호출되지 않으므로 컴파일만 통과하도록 실패로 처리한다.
+    (void)fd;
+    (void)out;
+    (void)timeout_ms;
+    return false;
+#else
     while (true)
     {
         pollfd pfd;
@@ -195,8 +240,23 @@ static bool read_line_fd_timeout(int fd, std::string& out, int timeout_ms)
             break; // safety
     }
     return true;
+#endif
 }
 
+// Windows에서는 fork/pipe/waitpid 기반 pose worker를 안정적으로 돌리기 어려워 스텁 처리한다.
+#ifdef _WIN32
+struct PoseWorker
+{
+    bool active{false};
+    bool start() { return false; }
+    void stop() { active = false; }
+    bool estimate(const cv::Mat&, PoseResult& res)
+    {
+        res.ok = false;
+        return false;
+    }
+};
+#else
 struct PoseWorker
 {
     pid_t pid{-1};
@@ -377,6 +437,8 @@ struct PoseWorker
         return true;
     }
 };
+
+#endif // _WIN32 pose stub
 
 static PoseWorker g_pose_worker;
 
@@ -625,34 +687,42 @@ int main(int argc, char** argv)
         int W = frame.cols;
         int H = frame.rows;
 
-        // 현재 Human bounding box 들을 그려준다
-        std::vector<ParsedMetadataObject> objs;
+        // 현재 Human bounding box 들을 그려준다 (안정 ID 사용)
+        std::vector<StableObject> sobjs;
         {
-            std::lock_guard<std::mutex> lock(g_obj_mutex);
-            objs = g_objects;
+            std::lock_guard<std::mutex> lock(g_stable_mutex);
+            sobjs = g_stable_objects;
         }
-        for (const auto& obj : objs) {
+        for (const auto& s : sobjs) {
             int left, right, top, bottom;
-            if (std::max({obj.left, obj.right, obj.top, obj.bottom}) <= 1.5f) {
-                left   = static_cast<int>(obj.left   * W);
-                right  = static_cast<int>(obj.right  * W);
-                top    = static_cast<int>(obj.top    * H);
-                bottom = static_cast<int>(obj.bottom * H);
+            if (std::max({std::fabs(s.left), std::fabs(s.right),
+                          std::fabs(s.top),  std::fabs(s.bottom)}) <= 1.5f) {
+                left   = static_cast<int>(s.left   * W);
+                right  = static_cast<int>(s.right  * W);
+                top    = static_cast<int>(s.top    * H);
+                bottom = static_cast<int>(s.bottom * H);
             } else {
                 const double sx = static_cast<double>(W) / SENSOR_WIDTH;
                 const double sy = static_cast<double>(H) / SENSOR_HEIGHT;
-                left   = static_cast<int>(obj.left   * sx);
-                right  = static_cast<int>(obj.right  * sx);
-                top    = static_cast<int>(obj.top    * sy);
-                bottom = static_cast<int>(obj.bottom * sy);
+                left   = static_cast<int>(s.left   * sx);
+                right  = static_cast<int>(s.right  * sx);
+                top    = static_cast<int>(s.top    * sy);
+                bottom = static_cast<int>(s.bottom * sy);
             }
             int width  = std::max(1, right - left);
             int height = std::max(1, bottom - top);
 
-            cv::rectangle(frame, cv::Rect(left, top, width, height),
-                          cv::Scalar(0, 255, 255), 2);
-            cv::putText(frame, obj.id.c_str(), cv::Point(left, top - 5),
-                        cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1);
+            cv::Scalar color = s.is_recovered
+                ? cv::Scalar(0, 165, 255)   // 주황 (ID 복구됨)
+                : cv::Scalar(0, 255, 255);  // 노랑 (정상)
+
+            cv::rectangle(frame, cv::Rect(left, top, width, height), color, 2);
+
+            std::string label = s.stable_id;
+            if (s.camera_id != s.stable_id)
+                label += "(" + s.camera_id + ")";
+            cv::putText(frame, label.c_str(), cv::Point(left, top - 5),
+                        cv::FONT_HERSHEY_SIMPLEX, 0.5, color, 1);
         }
 
         // ── MediaPipe Pose 추정 (선택된 객체 bbox ROI 기준: 빠름) ──

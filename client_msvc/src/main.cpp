@@ -17,6 +17,9 @@
 #include "voicemanager.h"
 #include "fraudmanager.h"
 #include "positionmanager.h"
+#include "pwmtransmitter.h"
+#include "videoarchivemanager.h"
+#include "recordinglistmodel.h"
 #ifdef SFEPS_HAVE_OPENCV
 #include "live_frame_provider.h"
 #endif
@@ -65,6 +68,19 @@ int main(int argc, char *argv[]) {
     PositionManager positionManager;
     engine.rootContext()->setContextProperty("positionManager", &positionManager);
 
+    // PwmTransmitter: camera_RBF에서 수신한 PWM 값을 하드웨어로 송신
+    // 환경변수: SFEPS_PWM_MODE (raspi|stm), SFEPS_PWM_HOST, SFEPS_PWM_PORT
+    PwmTransmitter pwmTransmitter;
+    engine.rootContext()->setContextProperty("pwmTransmitter", &pwmTransmitter);
+
+    // VideoArchiveManager: 녹화 파일 카탈로그 및 재생 관리
+    VideoArchiveManager videoArchiveManager;
+    engine.rootContext()->setContextProperty("videoArchiveManager", &videoArchiveManager);
+
+    // RecordingListModel: QML ListView에서 사용하는 녹화 목록 모델
+    RecordingListModel recordingListModel;
+    engine.rootContext()->setContextProperty("recordingListModel", &recordingListModel);
+
   // Video backend: ONVIF metadata + optional OpenCV RTSP preview + native track + RBF/PWM
   MainWindow videoBackend;
   engine.rootContext()->setContextProperty("videoBackend", &videoBackend);
@@ -97,6 +113,37 @@ int main(int argc, char *argv[]) {
       if (!ok || parsed < 1 || parsed > 65535) return defaultValue;
       return parsed;
   };
+
+  // ── PwmTransmitter 초기화 ───────────────────────────────────────────────
+  // SFEPS_PWM_MODE : "raspi" (기본, TCP) | "stm" (ESP8266, UDP)
+  // SFEPS_PWM_HOST : PWM 수신 장치 IP    (기본: 192.168.0.100)
+  // SFEPS_PWM_PORT : PWM 수신 포트       (기본: 5566)
+  {
+      const QString pwmMode = env.value("SFEPS_PWM_MODE", "raspi").trimmed();
+      const QString pwmHost = env.value("SFEPS_PWM_HOST", "192.168.0.100").trimmed();
+      const int     pwmPort = parseEnvPort(env, "SFEPS_PWM_PORT", 5566);
+      qDebug() << "[Main] PwmTransmitter mode=" << pwmMode
+               << " host=" << pwmHost << " port=" << pwmPort;
+      pwmTransmitter.setMode(pwmMode);
+      pwmTransmitter.connectTarget(pwmHost, pwmPort);
+  }
+
+  // camera_RBF.cpp --qt-mode 에서 역방향으로 수신한 PWM → PwmTransmitter로 송신
+  QObject::connect(&positionManager, &PositionManager::pwmReceived,
+                   &pwmTransmitter,  &PwmTransmitter::sendPwm);
+
+  // FraudManager 자동 추적 요청 → PositionManager 전달
+  QObject::connect(&fraudManager, &FraudManager::fraudAutoTrackRequest,
+                   [&positionManager](const QString &cmd) {
+                       positionManager.sendPositionCommand(cmd);
+                   });
+
+  // PositionManager 추적 상태 변화 → FraudManager 대기큐 동기화
+  QObject::connect(&positionManager, &PositionManager::currentSubscribedIdChanged,
+                   [&fraudManager, &positionManager]() {
+                       fraudManager.setActiveTrackingId(
+                           positionManager.currentSubscribedId());
+                   });
 
   const QString alertHost = env.value("FRAUD_SERVER_HOST", "192.168.0.101");
   const bool directStreamMode = parseEnvBool(env, "SFEPS_DIRECT_STREAM_MODE", false);

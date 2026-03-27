@@ -12,6 +12,7 @@
 #include <thread>
 #include <unistd.h>
 
+#include "app_services.h"
 #include "analytics.h"
 #include "text_utils.h"
 
@@ -104,6 +105,7 @@ void RfidMonitor::process_rfid_tag(const std::string& uid,
                                    const std::string& time_str) {
     (void)uid;
     (void)time_str;
+    play_local_rfid_tag_tone();
     m_analytics.onRfidRead(card_age_text);
 }
 
