@@ -10,6 +10,22 @@ Rectangle {
     Layout.fillWidth: true
     property string archiveErrorMessage: ""
     property string currentPlaybackCreatedAt: ""
+    property string videoFilterText: ""
+
+    function _videoMatchesNeedle(itemCreatedAt, needle) {
+        if (!needle || needle === "") return true
+        const n = String(needle).trim().toLowerCase()
+        if (!itemCreatedAt || String(itemCreatedAt).length === 0) return false
+
+        const createdAtStr = String(itemCreatedAt)
+        const caLower = createdAtStr.toLowerCase()
+        if (caLower.indexOf(n) !== -1) return true
+
+        // Make partial search friendlier for ISO timestamps.
+        const d = root.datePart(createdAtStr).toLowerCase()
+        const t = root.timePart(createdAtStr).toLowerCase()
+        return d.indexOf(n) !== -1 || t.indexOf(n) !== -1
+    }
 
     function datePart(ts) {
         if (!ts || ts.length === 0) return "-"
@@ -51,12 +67,47 @@ Rectangle {
             font.pixelSize: 12
         }
 
+        // Timestamp Search Box (Event Log style)
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 38
+            color: AppTheme.surfaceCardAlt
+            radius: 6
+            border.color: AppTheme.borderCard
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 12
+                spacing: 10
+                Image {
+                    source: "qrc:/assets/search.svg"
+                    sourceSize: Qt.size(16, 16)
+                    opacity: 0.7
+                }
+
+                TextField {
+                    id: videoFilterTextField
+                    Layout.fillWidth: true
+                    placeholderText: "Filter by Timestamp..."
+                    color: "white"
+                    placeholderTextColor: "#99FFFFFF"
+                    palette.text: "white"
+                    palette.placeholderText: "#99FFFFFF"
+                    font.pixelSize: 12
+                    background: null
+                    onTextChanged: {
+                        videoFilterText = text
+                    }
+                }
+            }
+        }
+
         ListView {
             id: archiveListView
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
-            spacing: 4
+            spacing: (videoFilterText && videoFilterText.trim() !== "") ? 0 : 4
             model: recordingListModel
 
             header: ColumnLayout {
@@ -99,9 +150,11 @@ Rectangle {
 
             delegate: Rectangle {
                 width: archiveListView.width
-                height: 44
+                property bool isMatch: root._videoMatchesNeedle(createdAt, videoFilterText)
+                height: isMatch ? 44 : 0
                 color: rowMouseArea.containsMouse ? "#2a2a2a" : "transparent"
                 radius: 6
+                visible: isMatch
 
                 RowLayout {
                     anchors.fill: parent

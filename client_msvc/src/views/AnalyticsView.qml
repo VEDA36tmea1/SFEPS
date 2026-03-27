@@ -184,7 +184,7 @@ Page {
                 Layout.rightMargin: 24
                 spacing: 16
 
-                // Entry Status Overview (Donut Chart)
+                // Fare Evasion Rate (Donut Chart)
                 Rectangle {
                     Layout.preferredWidth: Math.round(root.width * 0.4)
                     Layout.fillHeight: true
@@ -201,7 +201,7 @@ Page {
                         RowLayout {
                             Layout.fillWidth: true
                             Text {
-                                text: "Entry Status Overview"
+                                text: "Fare Evasion Rate"
                                 color: "white"
                                 font.bold: true
                                 font.pixelSize: 16
@@ -364,7 +364,7 @@ Page {
                         anchors.fill: parent
                         anchors.margins: 20
                         Text {
-                            text: "Passenger Demographics"
+                            text: "Age Distribution"
                             color: "white"
                             font.bold: true
                             font.pixelSize: 16
