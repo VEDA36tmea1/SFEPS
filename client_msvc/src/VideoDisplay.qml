@@ -54,8 +54,8 @@ Item {
     }
     function setSelectedDetection(id) {
         selectedDetection = id
-        if (typeof videoBackend !== "undefined")
-            videoBackend.setSelectedDetection(id)
+        // Track 버튼 클릭 전까지는 C++ 추적 타겟을 변경하지 않음
+        // (trackByNativeId / clearRbfTarget 에서만 추적 타겟을 설정)
     }
     function setZoomFromItem(itemRect, itemSize) {
         if (!itemSize || itemSize.width <= 0 || itemSize.height <= 0)
@@ -155,10 +155,12 @@ Item {
                     Rectangle {
                         id: box
                         property bool isTracked: root.externalTrackedId !== "" && root.externalTrackedId === String(detections[index].id)
+                        property bool isFraud: detections[index].fraud === true
                         visible: modelData !== undefined
                         color: "transparent"
                         border.width: isTracked ? 3 : 2
                         border.color: isTracked ? "#1e90ff"
+                            : isFraud ? "#ff2222"
                             : root.selectedDetection === String(detections[index].id) ? "yellow"
                             : "green"
                         x: detections[index].x * videoOutput.width

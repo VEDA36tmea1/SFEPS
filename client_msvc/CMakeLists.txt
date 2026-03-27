@@ -44,8 +44,10 @@ set(SFEPS_CLIENT_SOURCES
 if(SFEPS_WITH_OPENCV)
     find_package(OpenCV REQUIRED COMPONENTS core imgproc videoio)
     list(APPEND SFEPS_CLIENT_SOURCES
-        src/rbf_pwm_core.cpp src/rbf_pwm_core.h
-        src/native_metadata_tracker.cpp src/native_metadata_tracker.h
+        # camera_RBF.cpp: CAMERA_RBF_QT_MODE 정의 시 main()/GUI/소켓 제거
+        # RbfTps2D / KalmanBbox2D / NativeTrack / IdStabilizer 등 모두 포함
+        # → rbf_pwm_core.cpp / native_metadata_tracker.cpp 불필요
+        ../Camera/get_metadata/src/camera_RBF.cpp
     )
 endif()
 
@@ -62,8 +64,14 @@ target_link_libraries(appHanwhaVisionSFEPS
 )
 
 if(SFEPS_WITH_OPENCV)
-    target_compile_definitions(appHanwhaVisionSFEPS PRIVATE SFEPS_HAVE_OPENCV)
+    target_compile_definitions(appHanwhaVisionSFEPS PRIVATE
+        SFEPS_HAVE_OPENCV
+        CAMERA_RBF_QT_MODE   # camera_RBF.cpp: main()/GUI/소켓 제거, rbfqt_* 인터페이스 활성화
+    )
     target_link_libraries(appHanwhaVisionSFEPS PRIVATE ${OpenCV_LIBS})
+    target_include_directories(appHanwhaVisionSFEPS PRIVATE
+        ../Camera/get_metadata/src   # camera_RBF.cpp 내부 include 경로 (Config.h 등)
+    )
 endif()
 
 # QML 리소스 설정

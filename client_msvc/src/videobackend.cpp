@@ -25,7 +25,10 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/videoio.hpp>
 #include "live_frame_provider.h"
-#include "rbf_pwm_core.h"
+#ifndef CAMERA_RBF_QT_MODE
+#include "rbf_pwm_core.h"          // 레거시 모드에서만 필요
+#include "native_metadata_tracker.h"
+#endif
 #include <QImage>
 #include <QThread>
 #ifdef _WIN32
@@ -125,6 +128,15 @@ MainWindow::MainWindow(QObject *parent)
     m_tiltMin = env.value(QStringLiteral("SFEPS_PWM_TILT_MIN"), QStringLiteral("500")).toInt();
     m_tiltMax = env.value(QStringLiteral("SFEPS_PWM_TILT_MAX"), QStringLiteral("2500")).toInt();
 
+#ifdef CAMERA_RBF_QT_MODE
+    // camera_RBF Qt 모드: rbfqt_init 으로 초기화 (loadCalibPointsBuiltin 내부 사용)
+    m_rbfOk = rbfqt_init(m_pwmRatio, m_pwmAlpha, m_predictMs,
+                         m_panMin, m_panMax, m_tiltMin, m_tiltMax);
+    if (!m_rbfOk)
+        qWarning() << "[rbfqt] init failed — PWM/RBF disabled";
+    else
+        qDebug() << "[SFEPS] camera_RBF Qt mode active (rbfqt_init OK)";
+#else
     const auto pts = loadCalibPointsBuiltin();
     std::vector<cv::Point2d> px;
     std::vector<double> pan_y, tilt_y;
@@ -138,6 +150,7 @@ MainWindow::MainWindow(QObject *parent)
         qWarning() << "[RBF] fit failed — PWM/RBF disabled";
     else
         qDebug() << "[SFEPS] OpenCV preview + native metadata track + RBF/PWM path active";
+#endif
 #endif
 }
 
@@ -526,23 +539,185 @@ void MainWindow::sendContrastCgi()
 
 #ifdef SFEPS_HAVE_OPENCV
 
+// ── camera_RBF Qt 인터페이스 연동 ─────────────────────────────────────────
+
+void MainWindow::trackByNativeId(const QString &nativeId)
+{
+#ifdef CAMERA_RBF_QT_MODE
+    rbfqt_set_tracked_nativeid(nativeId.toStdString().c_str());
+    m_manualTracking = !nativeId.isEmpty();  // 수동 추적 플래그 → fraud 자동 전환 억제
+    qDebug() << "[MainWindow] trackByNativeId" << nativeId << "→ auto-tracking enabled, manualTracking=" << m_manualTracking;
+#endif
+}
+
+void MainWindow::addFraudXmlId(const QString &xmlId)
+{
+    QMutexLocker lk(&m_mutex);
+    m_fraudXmlIds.insert(xmlId);
+}
+
+void MainWindow::removeFraudXmlId(const QString &xmlId)
+{
+    QMutexLocker lk(&m_mutex);
+    m_fraudXmlIds.remove(xmlId);
+}
+
+void MainWindow::trackByXmlId(const QString &xmlId,
+                              float fallbackL, float fallbackT,
+                              float fallbackR, float fallbackB)
+{
+    const int W = m_frameW.load() > 0 ? m_frameW.load() : 1920;
+    const int H = m_frameH.load() > 0 ? m_frameH.load() : 1080;
+#ifdef CAMERA_RBF_QT_MODE
+    const std::string nativeId = rbfqt_find_native_id(xmlId.toStdString());
+    auto nb = rbfqt_get_bbox_by_xmlid(xmlId.toStdString(), W, H);
+    if (nb.found) {
+        // 1순위: tracker에 있으면 N-ID로 auto-tracking 설정 (매 tick 자동 갱신)
+        if (!nativeId.empty()) {
+            rbfqt_set_tracked_nativeid(nativeId.c_str());
+        } else {
+            rbfqt_set_target_bbox(nb.l, nb.t, nb.r, nb.b, W, H);
+        }
+        qDebug() << "[MainWindow] trackByXmlId" << xmlId
+                 << "nativeId=" << QString::fromStdString(nativeId)
+                 << "bbox=(" << nb.l << nb.t << nb.r << nb.b << ")";
+    } else if (fallbackR > fallbackL && fallbackB > fallbackT) {
+        // 2순위: 서버 Fraud 메시지의 픽셀 좌표 (객체가 화면에 없을 때 fallback)
+        // rbfqt_set_target_bbox는 픽셀 좌표도 자동 판별 (max > 1.5 이면 픽셀로 처리)
+        rbfqt_set_tracked_nativeid("");  // auto-tracking 없음 (화면에 없으므로)
+        rbfqt_set_target_bbox(fallbackL, fallbackT, fallbackR, fallbackB, W, H);
+        qDebug() << "[MainWindow] trackByXmlId" << xmlId
+                 << "server fallback bbox=(" << fallbackL << fallbackT
+                 << fallbackR << fallbackB << ")";
+    } else {
+        qWarning() << "[MainWindow] trackByXmlId: xmlId not found and no fallback bbox:" << xmlId;
+        return;
+    }
+    emit trackingXmlIdChanged(xmlId);
+#else
+    const auto nb2 = m_nativeTracker.getBBoxByXmlId(xmlId);
+    if (!nb2.found) {
+        qWarning() << "[MainWindow] trackByXmlId: xmlId not found:" << xmlId;
+        return;
+    }
+    const QString nid = m_nativeTracker.findNativeIdByXmlId(xmlId);
+    if (!nid.isEmpty()) setSelectedDetection(nid);
+#endif
+}
+
+void MainWindow::clearRbfTarget()
+{
+#ifdef CAMERA_RBF_QT_MODE
+    rbfqt_set_tracked_nativeid("");
+    rbfqt_clear_target();
+    m_manualTracking = false;
+#else
+    setSelectedDetection(QString{});
+#endif
+    emit trackingXmlIdChanged(QString{});
+}
+
+QVariantMap MainWindow::getBBoxByXmlId(const QString &xmlId) const
+{
+    QVariantMap res;
+    const int W = m_frameW.load() > 0 ? m_frameW.load() : 1920;
+    const int H = m_frameH.load() > 0 ? m_frameH.load() : 1080;
+#ifdef CAMERA_RBF_QT_MODE
+    const auto nb = rbfqt_get_bbox_by_xmlid(xmlId.toStdString(), W, H);
+    res["found"] = nb.found;
+    if (nb.found) {
+        res["x"] = nb.l;
+        res["y"] = nb.t;
+        res["w"] = static_cast<double>(nb.r - nb.l);
+        res["h"] = static_cast<double>(nb.b - nb.t);
+        res["xmlId"] = xmlId;
+        res["nativeId"] = QString::fromStdString(rbfqt_find_native_id(xmlId.toStdString()));
+    }
+#else
+    const auto nb = m_nativeTracker.getBBoxByXmlId(xmlId);
+    res["found"] = nb.found;
+    if (nb.found) {
+        res["x"] = nb.l;
+        res["y"] = nb.t;
+        res["w"] = static_cast<double>(nb.r - nb.l);
+        res["h"] = static_cast<double>(nb.b - nb.t);
+        res["xmlId"] = xmlId;
+        res["nativeId"] = m_nativeTracker.findNativeIdByXmlId(xmlId);
+    }
+#endif
+    return res;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 void MainWindow::applyNativeDetections(std::vector<ParsedMetadataObject> humans, unsigned int rtpTs, qint64 wallMs,
                                        qint64 frameNo)
 {
     int W = m_frameW.load();
     int H = m_frameH.load();
-    if (W <= 0)
-        W = 1920;
-    if (H <= 0)
-        H = 1080;
+    if (W <= 0) W = 1920;
+    if (H <= 0) H = 1080;
+
+#ifdef CAMERA_RBF_QT_MODE
+    // camera_RBF.cpp 자체 NativeTrack tracker 사용 (native_metadata_tracker 불필요)
+    rbfqt_process_metadata(humans, W, H);
+
+    // UI에 표시할 QVariantList 직접 구성
+    // QML VideoDisplay.qml 은 x/y/w/h 를 0~1 정규화 좌표로 기대함
+    // ParsedMetadataObject.left/top/right/bottom 은 값에 따라:
+    //   <= 1.5  → 이미 정규화 (0~1)
+    //   >  1.5  → 4K 센서 픽셀 좌표 → 정규화로 변환 (Config.h: SENSOR_WIDTH=3840, SENSOR_HEIGHT=2160)
+    static constexpr float kSensorW = 3840.0f;   // Config.h SENSOR_WIDTH
+    static constexpr float kSensorH = 2160.0f;   // Config.h SENSOR_HEIGHT
+
+    QSet<QString> fraudIds;
+    { QMutexLocker lk(&m_mutex); fraudIds = m_fraudXmlIds; }
+
+    QVariantList dets;
+    dets.reserve(static_cast<int>(humans.size()));
+    for (const auto& obj : humans) {
+        const std::string nativeId = rbfqt_find_native_id(obj.id);
+        // N-ID가 아직 없으면 xmlId를 임시 id로 사용 (매 프레임 rbfqt_process_metadata로 갱신됨)
+        const QString displayId = nativeId.empty()
+                                  ? QString::fromStdString(obj.id)
+                                  : QString::fromStdString(nativeId);
+
+        QVariantMap m;
+        m["id"]            = displayId;
+        m["xmlId"]         = QString::fromStdString(obj.id);
+        m["metaFrameNo"]   = frameNo;
+        m["metaTimestamp"] = static_cast<qlonglong>(rtpTs);
+        m["fraud"]         = fraudIds.contains(QString::fromStdString(obj.id));
+
+        float nl = obj.left, nt = obj.top, nr = obj.right, nb = obj.bottom;
+        if (std::max({nl, nt, nr, nb}) > 1.5f) {
+            nl /= kSensorW; nr /= kSensorW;
+            nt /= kSensorH; nb /= kSensorH;
+        }
+        nl = std::max(0.0f, std::min(1.0f, nl));
+        nt = std::max(0.0f, std::min(1.0f, nt));
+        nr = std::max(0.0f, std::min(1.0f, nr));
+        nb = std::max(0.0f, std::min(1.0f, nb));
+
+        if (nr > nl && nb > nt) {
+            m["x"] = static_cast<double>(nl);
+            m["y"] = static_cast<double>(nt);
+            m["w"] = static_cast<double>(nr - nl);
+            m["h"] = static_cast<double>(nb - nt);
+        }
+        dets.append(m);
+    }
+    setDetections(dets);
+#else
     QVariantList dets = m_nativeTracker.process(humans, W, H, wallMs);
     for (int i = 0; i < dets.size(); ++i) {
         QVariantMap mm = dets[i].toMap();
-        mm["metaFrameNo"] = frameNo;
+        mm["metaFrameNo"]   = frameNo;
         mm["metaTimestamp"] = static_cast<qlonglong>(rtpTs);
         dets[i] = mm;
     }
     setDetections(dets);
+#endif
 }
 
 void MainWindow::opencvCaptureLoop()
@@ -601,8 +776,52 @@ void MainWindow::opencvCaptureLoop()
 
 void MainWindow::onPwmTick()
 {
-    if (!m_rbfOk)
-        return;
+    const int W = m_frameW.load() > 0 ? m_frameW.load() : 1920;
+    const int H = m_frameH.load() > 0 ? m_frameH.load() : 1080;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+
+#ifdef CAMERA_RBF_QT_MODE
+    // ── 수동 추적이 없을 때: fraud 객체 중 화면 중심에서 가장 가까운 것으로 자동 전환 ──
+    if (!m_manualTracking) {
+        QSet<QString> fraudIds;
+        QVariantList dets;
+        {
+            QMutexLocker lk(&m_mutex);
+            fraudIds = m_fraudXmlIds;
+            dets     = m_detections;
+        }
+        if (!fraudIds.isEmpty()) {
+            const double cx = W * 0.5, cy = H * 0.5;
+            double bestDist = 1e18;
+            QString bestNativeId;
+            for (const QVariant &v : dets) {
+                if (!v.canConvert<QVariantMap>()) continue;
+                const QVariantMap dm = v.toMap();
+                if (!dm.value("fraud").toBool()) continue;
+                // 정규화 좌표 → 픽셀 중심
+                const double bx = dm.value("x").toDouble() * W + dm.value("w").toDouble() * W * 0.5;
+                const double by = dm.value("y").toDouble() * H + dm.value("h").toDouble() * H * 0.5;
+                const double d  = (bx - cx) * (bx - cx) + (by - cy) * (by - cy);
+                if (d < bestDist) {
+                    bestDist = d;
+                    bestNativeId = dm.value("id").toString();
+                }
+            }
+            if (!bestNativeId.isEmpty()) {
+                rbfqt_set_tracked_nativeid(bestNativeId.toStdString().c_str());
+            }
+        } else {
+            // fraud 없으면 추적 중지
+            rbfqt_set_tracked_nativeid("");
+        }
+    }
+
+    int pan = 1500, tilt = 1500;
+    if (rbfqt_compute_pwm(static_cast<long long>(now), W, H, &pan, &tilt))
+        emit pwmSetRequested(pan, tilt);
+#else
+    // ── 레거시 모드: rbf_pwm_core.h 의 RbfTps2D 직접 사용 ─────────────────
+    if (!m_rbfOk) return;
 
     QString sel;
     QVariantList dets;
@@ -612,9 +831,6 @@ void MainWindow::onPwmTick()
         dets = m_detections;
     }
 
-    const int W = m_frameW.load() > 0 ? m_frameW.load() : 1920;
-    const int H = m_frameH.load() > 0 ? m_frameH.load() : 1080;
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
     double dt = (m_lastPwmTickMs > 0) ? (now - m_lastPwmTickMs) / 1000.0 : (1.0 / 30.0);
     m_lastPwmTickMs = now;
     dt = std::max(1.0 / 120.0, std::min(1.0 / 15.0, dt));
@@ -625,11 +841,9 @@ void MainWindow::onPwmTick()
 
     if (!sel.isEmpty()) {
         for (const QVariant &v : dets) {
-            if (!v.canConvert<QVariantMap>())
-                continue;
+            if (!v.canConvert<QVariantMap>()) continue;
             const QVariantMap m = v.toMap();
-            if (m.value(QStringLiteral("id")).toString() != sel)
-                continue;
+            if (m.value(QStringLiteral("id")).toString() != sel) continue;
             ParsedMetadataObject po;
             po.id = sel.toStdString();
             po.type = m.value(QStringLiteral("type")).toString().toStdString();
@@ -637,55 +851,43 @@ void MainWindow::onPwmTick()
             const float y = m.value(QStringLiteral("y")).toFloat();
             const float w = m.value(QStringLiteral("w")).toFloat();
             const float h = m.value(QStringLiteral("h")).toFloat();
-            po.left = x;
-            po.top = y;
-            po.right = x + w;
-            po.bottom = y + h;
+            po.left = x; po.top = y; po.right = x + w; po.bottom = y + h;
             if (computeRectFromObj(po, W, H, sel_rect)) {
-                selOk = true;
-                selIdResolved = sel;
+                selOk = true; selIdResolved = sel;
             }
             break;
         }
     }
 
     if (selOk && selIdResolved != m_prevSelPwm) {
-        m_kfPwm.reset();
-        m_prevPan = 1500;
-        m_prevTilt = 1500;
+        m_kfPwm.reset(); m_prevPan = 1500; m_prevTilt = 1500;
         m_prevSelPwm = selIdResolved;
     }
     if (!selOk && !m_prevSelPwm.isEmpty()) {
-        m_kfPwm.reset();
-        m_prevSelPwm.clear();
+        m_kfPwm.reset(); m_prevSelPwm.clear();
     }
 
-    int pred_u = W / 2;
-    int pred_v = H / 2;
+    int pred_u = W / 2, pred_v = H / 2;
     if (selOk) {
         const double bbox_cx = sel_rect.x + sel_rect.width * 0.5;
-        double bbox_cy = sel_rect.y + sel_rect.height * m_pwmRatio;
-        bbox_cy = std::max(0.0, std::min(double(H - 1), bbox_cy));
+        double bbox_cy = std::max(0.0, std::min(sel_rect.y + sel_rect.height * m_pwmRatio, double(H - 1)));
         m_kfPwm.update(bbox_cx, bbox_cy, double(sel_rect.width), double(sel_rect.height), dt);
         double pcx = 0, pcy = 0;
         m_kfPwm.predict(m_predictMs / 1000.0, pcx, pcy);
-        pcx = std::max(0.0, std::min(double(W - 1), pcx));
-        pcy = std::max(0.0, std::min(double(H - 1), pcy));
-        pred_u = static_cast<int>(std::lround(pcx));
-        pred_v = static_cast<int>(std::lround(pcy));
+        pred_u = static_cast<int>(std::lround(std::max(0.0, std::min(double(W - 1), pcx))));
+        pred_v = static_cast<int>(std::lround(std::max(0.0, std::min(double(H - 1), pcy))));
     }
 
-    const double pan_d = m_rbfPan.eval(double(pred_u), double(pred_v));
+    const double pan_d  = m_rbfPan.eval(double(pred_u), double(pred_v));
     const double tilt_d = m_rbfTilt.eval(double(pred_u), double(pred_v));
-    int pan = static_cast<int>(std::lround(std::max(double(m_panMin), std::min(double(m_panMax), pan_d))));
+    int pan  = static_cast<int>(std::lround(std::max(double(m_panMin),  std::min(double(m_panMax),  pan_d))));
     int tilt = static_cast<int>(std::lround(std::max(double(m_tiltMin), std::min(double(m_tiltMax), tilt_d))));
-    pan = static_cast<int>(std::lround(m_pwmAlpha * pan + (1.0 - m_pwmAlpha) * m_prevPan));
+    pan  = static_cast<int>(std::lround(m_pwmAlpha * pan  + (1.0 - m_pwmAlpha) * m_prevPan));
     tilt = static_cast<int>(std::lround(m_pwmAlpha * tilt + (1.0 - m_pwmAlpha) * m_prevTilt));
-    m_prevPan = pan;
-    m_prevTilt = tilt;
+    m_prevPan = pan; m_prevTilt = tilt;
 
-    if (selOk)
-        emit pwmSetRequested(pan, tilt);
+    if (selOk) emit pwmSetRequested(pan, tilt);
+#endif
 }
 
 #endif // SFEPS_HAVE_OPENCV

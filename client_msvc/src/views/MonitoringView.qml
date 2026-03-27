@@ -487,6 +487,8 @@ Page {
                                         if (videoDisplay.selectedDetection !== "") {
                                             var targetId = String(videoDisplay.selectedDetection)
                                             positionManager.sendPositionCommand("TRACK_START|" + targetId)
+                                            // RBF PWM 자동 추적 시작 (매 tick bbox 갱신)
+                                            videoBackend.trackByNativeId(targetId)
                                             currentTrackedId = targetId
                                             visualTrackedId = targetId
                                             videoDisplay.externalTrackedId = visualTrackedId
@@ -523,6 +525,8 @@ Page {
                                     onClicked: {
                                         if (currentTrackedId !== "") {
                                             positionManager.sendPositionCommand("TRACK_END|" + currentTrackedId)
+                                            // RBF PWM 추적 해제
+                                            videoBackend.clearRbfTarget()
                                             currentTrackedId = ""
                                             visualTrackedId = ""
                                             videoDisplay.externalTrackedId = ""
