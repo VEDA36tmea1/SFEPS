@@ -67,9 +67,10 @@ if (-not (Test-Path $caPath)) {
 }
 
 # ── PWM 전송 모드 (camera_RBF --qt-mode 연동) ──────────────────────────────────
-Set-DefaultEnv "SFEPS_PWM_MODE" "raspi"          # raspi | stm
-Set-DefaultEnv "SFEPS_PWM_HOST" "192.168.0.100"  # 라즈베리파이 또는 ESP8266 IP
-Set-DefaultEnv "SFEPS_PWM_PORT" "5566"           # PWM 수신 포트
+# PWM 설정은 항상 강제 적용 (Set-DefaultEnv는 이미 설정된 값을 덮어쓰지 않으므로 직접 설정)
+[Environment]::SetEnvironmentVariable("SFEPS_PWM_MODE", "raspi",        "Process")  # raspi | stm
+[Environment]::SetEnvironmentVariable("SFEPS_PWM_HOST", "127.0.0.1",    "Process")  # SSH 터널: ssh -p 2222 -L 15566:localhost:5566 -N physical-100@192.168.0.87
+[Environment]::SetEnvironmentVariable("SFEPS_PWM_PORT", "15566",        "Process")  # 로컬 터널 포트 (Cursor가 5566 점유 중)
 
 # ── 카메라 CGI 밝기/대조 제어 ──────────────────────────────────────────────────
 Set-DefaultEnv "CAMERA_CGI_USER" "admin"      # 카메라 로그인 아이디
