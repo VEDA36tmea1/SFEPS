@@ -54,7 +54,9 @@ bool parseFraudMessage(const QString &msg,
     }
 
     const QStringList parts = msg.split('|', Qt::KeepEmptyParts);
-    if (parts.size() < 6) {
+    // 최소 필수 필드: FRAUD|objectId|cardAgeText|age|fraudFlag
+    // 뒤쪽(TAG/L/T/R/B/X/Y...)은 가변 확장 필드로 처리한다.
+    if (parts.size() < 5) {
         qWarning() << "[FraudManager] Ignore malformed message (field missing):" << msg;
         return false;
     }
@@ -467,12 +469,18 @@ void FraudManager::drainFraudQueue()
 {
     if (m_fraudQueue.isEmpty()) return;
     QueuedFraud next = m_fraudQueue.takeFirst();
-    qDebug() << "[FraudManager] drainFraudQueue: processing queued fraud objectId="
+    qDebug() << "[FraudManager] drainFraudQueue: tracking queued fraud objectId="
              << next.objectId;
     emit fraudQueueChanged(m_fraudQueue.size());
-    processFraud(next.objectId, next.cardAgeText, next.age,
-                 next.isFraud, next.tag, next.imagePath,
-                 next.bboxL, next.bboxT, next.bboxR, next.bboxB);
+
+    // 큐에 넣을 때 이벤트 로그(fraudDetected)는 이미 emit 되었으므로,
+    // drain 시점에는 자동 추적 요청만 수행한다.
+    if (next.isFraud) {
+        m_activeTrackingId = next.objectId;
+        qDebug() << "[FraudManager] fraudAutoTrackRequest (drain) objectId=" << next.objectId
+                 << "fallbackBbox=(" << next.bboxL << next.bboxT << next.bboxR << next.bboxB << ")";
+        emit fraudAutoTrackRequest(next.objectId, next.bboxL, next.bboxT, next.bboxR, next.bboxB);
+    }
 }
 
 // ─── FRAUD 처리 핵심 ────────────────────────────────────────────────────────
@@ -484,6 +492,9 @@ void FraudManager::processFraud(const QString &objectId,
                                  const QString &imagePath,
                                  float bboxL, float bboxT, float bboxR, float bboxB)
 {
+    // 이벤트 로그/통계는 추적 상태와 무관하게 즉시 반영한다.
+    emit fraudDetected(objectId, cardAgeText, age, isFraud, tag, imagePath);
+
     // 부정승차이고 다른 객체를 이미 추적 중이면 대기큐에 저장
     if (isFraud && !m_activeTrackingId.isEmpty()
         && m_activeTrackingId != objectId)
@@ -497,9 +508,6 @@ void FraudManager::processFraud(const QString &objectId,
         emit fraudQueueChanged(m_fraudQueue.size());
         return;
     }
-
-    // 즉시 처리: UI에 알림
-    emit fraudDetected(objectId, cardAgeText, age, isFraud, tag, imagePath);
 
     // 부정승차면 자동 추적 요청 (main.cpp에서 videoBackend.trackByXmlId와 연결)
     if (isFraud) {
