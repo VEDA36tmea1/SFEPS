@@ -341,13 +341,12 @@ void FraudManager::onReadyRead()
         QString tag;
         bool isFraud = false;
         if (parseFraudMessage(msg, objectId, cardAgeText, age, isFraud, tag)) {
-            // Check if we already have image for this event
             QString eventKey = objectId + "|" + tag;
             QString imagePath;
             if (downloadedImages.contains(eventKey)) {
                 imagePath = downloadedImages.value(eventKey);
             }
-            emit fraudDetected(objectId, cardAgeText, age, isFraud, tag, imagePath);
+            processFraud(objectId, cardAgeText, age, isFraud, tag, imagePath);
         }
     }
 
@@ -385,7 +384,7 @@ void FraudManager::onReadyRead()
                 if (downloadedImages.contains(eventKey)) {
                     imagePath = downloadedImages.value(eventKey);
                 }
-                emit fraudDetected(objectId, cardAgeText, age, isFraud, tag, imagePath);
+                processFraud(objectId, cardAgeText, age, isFraud, tag, imagePath);
                 recvBuffer.clear();
             }
         }
@@ -439,6 +438,62 @@ void FraudManager::downloadImage(const ImgRefData &imgRef)
     qDebug() << "[FraudManager] Starting image download from URL:" << imgRef.url;
 }
 
+// ─── 추적 상태 동기화 ───────────────────────────────────────────────────────
+void FraudManager::setActiveTrackingId(const QString &id)
+{
+    const bool wasTracking = !m_activeTrackingId.isEmpty();
+    m_activeTrackingId = id;
+    qDebug() << "[FraudManager] activeTrackingId set to" << (id.isEmpty() ? "(none)" : id);
+
+    if (wasTracking && id.isEmpty()) {
+        // 추적이 끝났으면 대기큐에서 꺼내서 처리
+        drainFraudQueue();
+    }
+}
+
+// ─── 대기큐 처리 ────────────────────────────────────────────────────────────
+void FraudManager::drainFraudQueue()
+{
+    if (m_fraudQueue.isEmpty()) return;
+    QueuedFraud next = m_fraudQueue.takeFirst();
+    qDebug() << "[FraudManager] drainFraudQueue: processing queued fraud objectId="
+             << next.objectId;
+    emit fraudQueueChanged(m_fraudQueue.size());
+    processFraud(next.objectId, next.cardAgeText, next.age,
+                 next.isFraud, next.tag, next.imagePath);
+}
+
+// ─── FRAUD 처리 핵심 ────────────────────────────────────────────────────────
+void FraudManager::processFraud(const QString &objectId,
+                                 const QString &cardAgeText,
+                                 const QString &age,
+                                 bool isFraud,
+                                 const QString &tag,
+                                 const QString &imagePath)
+{
+    // 부정승차이고 다른 객체를 이미 추적 중이면 대기큐에 저장
+    if (isFraud && !m_activeTrackingId.isEmpty()
+        && m_activeTrackingId != objectId)
+    {
+        QueuedFraud qf{ objectId, cardAgeText, age, tag, imagePath, isFraud };
+        m_fraudQueue.append(qf);
+        qDebug() << "[FraudManager] Queued fraud objectId=" << objectId
+                 << "(currently tracking:" << m_activeTrackingId << ")";
+        emit fraudQueueChanged(m_fraudQueue.size());
+        return;
+    }
+
+    // 즉시 처리: UI에 알림
+    emit fraudDetected(objectId, cardAgeText, age, isFraud, tag, imagePath);
+
+    // 부정승차면 자동 추적 요청 (main.cpp에서 positionManager.sendPositionCommand와 연결)
+    if (isFraud) {
+        qDebug() << "[FraudManager] fraudAutoTrackRequest for objectId=" << objectId;
+        emit fraudAutoTrackRequest(QStringLiteral("TRACK_START|%1").arg(objectId));
+    }
+}
+
+// ─── 이미지 다운로드 완료 ────────────────────────────────────────────────────
 void FraudManager::onImageDownloadFinished(QNetworkReply *reply)
 {
     if (!reply) return;

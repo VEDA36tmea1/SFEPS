@@ -29,6 +29,8 @@ signals:
     void positionDisconnected();
     void positionConnected();
     void currentSubscribedIdChanged();
+    // camera_RBF.cpp로부터 역방향으로 수신된 PWM 값 (--qt-mode 시)
+    void pwmReceived(int pan, int tilt);
 
 private slots:
     void flushPending();

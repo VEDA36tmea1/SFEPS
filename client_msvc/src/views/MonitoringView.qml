@@ -486,7 +486,7 @@ Page {
                                     onClicked: {
                                         if (videoDisplay.selectedDetection !== "") {
                                             var targetId = String(videoDisplay.selectedDetection)
-                                            positionManager.sendPositionCommand("SUB_POS|" + targetId)
+                                            positionManager.sendPositionCommand("TRACK_START|" + targetId)
                                             currentTrackedId = targetId
                                             visualTrackedId = targetId
                                             videoDisplay.externalTrackedId = visualTrackedId
@@ -522,7 +522,7 @@ Page {
                                     }
                                     onClicked: {
                                         if (currentTrackedId !== "") {
-                                            positionManager.sendPositionCommand("UNSUB_POS|" + currentTrackedId)
+                                            positionManager.sendPositionCommand("TRACK_END|" + currentTrackedId)
                                             currentTrackedId = ""
                                             visualTrackedId = ""
                                             videoDisplay.externalTrackedId = ""
