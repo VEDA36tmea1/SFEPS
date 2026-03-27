@@ -42,6 +42,8 @@ Page {
                                                     ? streamStatusOverrideForTest
                                                     : ((videoBackend && videoBackend.streamStatus) ? videoBackend.streamStatus : "STOPPED")
     readonly property bool trackingActive: visualTrackedId !== ""
+    // Expose video backend latency at page(root) scope so Main.qml can bind safely.
+    property int streamLatency: (videoBackend && videoBackend.streamLatency !== undefined) ? videoBackend.streamLatency : 0
 
     // Squish-readable event counter — incremented directly in appendMonitoringEvent.
     // monitoringView.squishEventCount 를 폴링해 이벤트 추가를 확인.
@@ -411,9 +413,6 @@ Page {
                         }
                     }
                 }
-
-                // Expose the low-level video stream latency to the parent scope
-                property int streamLatency: (videoBackend && videoBackend.streamLatency !== undefined) ? videoBackend.streamLatency : 0
 
                 // Popup for Track controls when an object is selected
                 Popup {

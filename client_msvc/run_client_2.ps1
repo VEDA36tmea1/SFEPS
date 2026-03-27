@@ -1,8 +1,5 @@
 # SFEPS 클라이언트 실행 스크립트 (Windows PowerShell)
-# 이 파일에서 환경변수를 수정하세요.
-# 실행 방법: client_msvc 폴더 또는 build-msvc 폴더 어디서든 호출 가능
-#   cd C:\Users\2-16\Desktop\SFEPS\client_msvc
-#   .\run_client.ps1
+# NOTE: 이 파일은 기존 run_client.ps2(커스텀) 내용을 그대로 ps1 확장자로 복사한 것입니다.
 
 # 스크립트 위치 기준으로 client_msvc 폴더를 찾음 (build-msvc 에서 호출해도 동작)
 $clientDir = $PSScriptRoot
@@ -69,12 +66,6 @@ if (-not (Test-Path $caPath)) {
 }
 
 # ── PWM 전송 모드 (camera_RBF --qt-mode 연동) ──────────────────────────────────
-# camera_RBF.cpp를 --qt-mode 로 실행하면 클릭 이벤트 무시 + Track 버튼으로만 추적 시작
-# Qt 클라이언트가 PWM_OUT 수신 후 아래 설정에 따라 Raspberry Pi 또는 ESP8266으로 전송
-#
-#   라즈베리파이 모드 (기본): SFEPS_PWM_MODE=raspi  → TCP 이더넷
-#   STM/ESP8266 모드        : SFEPS_PWM_MODE=stm   → UDP 무선
-#
 Set-DefaultEnv "SFEPS_PWM_MODE" "raspi"          # raspi | stm
 Set-DefaultEnv "SFEPS_PWM_HOST" "192.168.0.100"  # 라즈베리파이 또는 ESP8266 IP
 Set-DefaultEnv "SFEPS_PWM_PORT" "5566"           # PWM 수신 포트
@@ -82,17 +73,11 @@ Set-DefaultEnv "SFEPS_PWM_PORT" "5566"           # PWM 수신 포트
 # ── 카메라 CGI 밝기/대조 제어 ──────────────────────────────────────────────────
 Set-DefaultEnv "CAMERA_CGI_USER" "admin"      # 카메라 로그인 아이디
 Set-DefaultEnv "CAMERA_CGI_PASSWORD" "CCgbdCCgbd"      # 카메라 로그인 비밀번호
-
-# 기본값 그대로 사용 시 아래 두 줄은 주석 유지 (192.168.0.84 고정)
-# $env:CAMERA_BRIGHTNESS_CGI_URL = "https://192.168.0.84/stw-cgi/image.cgi?msubmenu=imageenhancements2&action=set&Brightness={value}"
-# $env:CAMERA_CONTRAST_CGI_URL   = "https://192.168.0.84/stw-cgi/image.cgi?msubmenu=imageenhancements2&action=set&Contrast={value}"
-
-# HTTPS 자체서명 인증서 허용 (카메라 기본 설정)
 Set-DefaultEnv "CAMERA_CGI_ALLOW_INSECURE_TLS" "1"
 
 # ── 실행 ───────────────────────────────────────────────────────────────────────
-# OpenCV 통합 빌드(build-opencv-on)를 우선 사용, 없으면 기존 build-msvc fallback
 $exeCandidates = @(
+    (Join-Path $clientDir "build-opencv-on-msvc\Release\appHanwhaVisionSFEPS.exe"),
     (Join-Path $clientDir "build-opencv-on\Release\appHanwhaVisionSFEPS.exe"),
     (Join-Path $clientDir "build-msvc\Release\appHanwhaVisionSFEPS.exe")
 )
@@ -103,32 +88,20 @@ foreach ($cand in $exeCandidates) {
 
 if (-not $exePath) {
     Write-Error "실행파일을 찾을 수 없습니다 (build-opencv-on 또는 build-msvc)."
-    Write-Host "OpenCV 빌드 예시:"
-    Write-Host "  cmake -S . -B build-opencv-on -G ""Visual Studio 17 2022"" -A x64 -DOpenCV_DIR=""C:/Users/2-16/Desktop/SFEPS/opencv-gst/install"""
-    Write-Host "  cmake --build build-opencv-on --config Release"
-    Write-Host ""
-    Write-Host "기존 빌드 예시:"
-    Write-Host "  cmake -S . -B build-msvc -G ""Visual Studio 17 2022"" -A x64 -DSFEPS_WITH_OPENCV=OFF"
-    Write-Host "  cmake --build build-msvc --config Release"
     exit 1
 }
 
-# OpenCV/GStreamer/Qt 런타임 DLL 경로를 우선 추가
-$opencvBinCandidates = @(
-    "C:\Users\2-16\Desktop\SFEPS\opencv-gst\install\x64\vc17\bin",
-    "C:\Users\2-16\Downloads\opencv-gst\install\x64\vc17\bin"
-)
-$opencvBin = $null
-foreach ($cand in $opencvBinCandidates) {
-    if (Test-Path $cand) { $opencvBin = $cand; break }
-}
-$gstreamerBin = "C:\Program Files\gstreamer\1.0\msvc_x86_64\bin"
-$gstreamerPluginDir = "C:\Program Files\gstreamer\1.0\msvc_x86_64\lib\gstreamer-1.0"
-$qtBin = "C:\Qt\6.10.0\msvc2022_64\bin"
-if ($opencvBin) { $env:Path = "$opencvBin;$env:Path" }
+# --- 런타임 DLL 경로 직접 지정 (2-08 사용자 환경) ---
+$qtBin = "C:\\Qt\\6.10.2\\msvc2022_64\\bin"
+$opencvBin = "C:\\Users\\2-08\\Desktop\\SFEPS\\opencv-gst\\opencv-gst\\install\\x64\\vc17\\bin"
+$gstreamerBin = "C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64\\bin"
+$gstreamerPluginDir = "C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64\\lib\\gstreamer-1.0"
+
+if (Test-Path $qtBin) { $env:Path = "$qtBin;$env:Path" }
+if (Test-Path $opencvBin) { $env:Path = "$opencvBin;$env:Path" }
 if (Test-Path $gstreamerBin) { $env:Path = "$gstreamerBin;$env:Path" }
 if (Test-Path $gstreamerPluginDir) { Set-DefaultEnv "GST_PLUGIN_PATH" $gstreamerPluginDir }
-if (Test-Path $qtBin) { $env:Path = "$qtBin;$env:Path" }
 
-Write-Host "[run_client.ps1] exe=$exePath opencvBin=$opencvBin backend=$($env:RTSP_BACKEND) AUTH_TLS_ENABLE=$($env:AUTH_TLS_ENABLE)"
+Write-Host "[run_client_2.ps1] exe=$exePath opencvBin=$opencvBin backend=$($env:RTSP_BACKEND) AUTH_TLS_ENABLE=$($env:AUTH_TLS_ENABLE)"
 & $exePath
+
