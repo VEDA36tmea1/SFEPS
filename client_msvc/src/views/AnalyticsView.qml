@@ -468,9 +468,9 @@ Page {
                                             : modelData.title === "Storage Capacity"
                                                 ? (storageTotal > 0 ? formatUsedTotal(storageUsed, storageTotal) : "-")
                                                 : modelData.title === "CPU Temperature"
-                                                    ? (cpuTempC > 0 ? (cpuTempC.toFixed(1) + " °C") : "-")
+                                                    ? (sysStatusReceived ? (cpuTempC.toFixed(1) + " °C") : "-")
                                                     : modelData.title === "CPU Usage"
-                                                        ? (typeof cpuUsagePct !== 'undefined' ? (cpuUsagePct.toFixed(1) + " %") : "-")
+                                                        ? (sysStatusReceived ? (cpuUsagePct.toFixed(1) + " %") : "-")
                                                         : modelData.value
                                     color: "white"
                                     font.pixelSize: 18
@@ -491,6 +491,7 @@ Page {
     property var storageUsed: 0
     property real cpuTempC: 0.0
     property real cpuUsagePct: 0.0
+    property bool sysStatusReceived: false
 
     function bytesToReadable(bytes) {
         if (!bytes || bytes <= 0) return "0 B";
@@ -520,11 +521,11 @@ Page {
 
     Connections {
         target: videoArchiveManager
-        onStorageUpdated: function(usedBytes, totalBytes, availableBytes, fileCount) {
-            storageTotal = totalBytes
-            storageAvailable = availableBytes
+        onStorageUpdated: function(usedBytes, capBytes) {
+            storageTotal = capBytes
+            storageAvailable = Math.max(0, capBytes - usedBytes)
             storageUsed = usedBytes
-            console.log("storageUpdated -> used:", usedBytes, "total:", totalBytes, "avail:", availableBytes, "count:", fileCount)
+            console.log("storageUpdated -> used:", usedBytes, "cap:", capBytes, "avail:", storageAvailable)
         }
     }
 
@@ -533,6 +534,7 @@ Page {
         onSysStatusUpdated: function(tempC, usagePct) {
             cpuTempC = tempC
             cpuUsagePct = usagePct
+            sysStatusReceived = true
             console.log("SYS_STATUS -> temp:", tempC, "usage:", usagePct)
         }
     }

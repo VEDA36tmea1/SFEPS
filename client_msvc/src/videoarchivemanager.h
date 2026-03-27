@@ -22,7 +22,7 @@ signals:
     void playUrlReady(const QString &id, const QString &createdAt, const QString &url);
     void catalogError(const QString &code, const QString &message);
     void playError(const QString &code, const QString &message);
-    void storageUpdated(qulonglong usedBytes, qulonglong totalBytes, qulonglong availableBytes, int fileCount);
+    void storageUpdated(qulonglong usedBytes, qulonglong capBytes);
     void sysStatusUpdated(float cpuTempC, float cpuUsagePct);
 
 private slots:

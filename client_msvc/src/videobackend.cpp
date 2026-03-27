@@ -20,6 +20,10 @@
 #include <QMetaObject>
 #include <algorithm>
 #include <cmath>
+#include <chrono>
+#include <cstdio>
+#include <ctime>
+#include <limits>
 #ifdef SFEPS_HAVE_OPENCV
 #include <memory>
 #include <opencv2/imgproc.hpp>
@@ -48,6 +52,65 @@ int clampPercent(int value)
     if (value < 1) return 1;
     if (value > 100) return 100;
     return value;
+}
+
+bool parseOnvifUtcEpochMs(const std::string &tagTime, long long &outEpochMs)
+{
+    if (tagTime.empty()) return false;
+
+    int year = 0, mon = 0, day = 0, hour = 0, min = 0, sec = 0, msec = 0;
+    int parsed = std::sscanf(tagTime.c_str(),
+                             "%d-%d-%dT%d:%d:%d.%d",
+                             &year, &mon, &day, &hour, &min, &sec, &msec);
+    if (parsed < 6) {
+        parsed = std::sscanf(tagTime.c_str(),
+                             "%d-%d-%dT%d:%d:%d",
+                             &year, &mon, &day, &hour, &min, &sec);
+        if (parsed < 6) return false;
+        msec = 0;
+    }
+
+    std::tm tmUtc{};
+    tmUtc.tm_year = year - 1900;
+    tmUtc.tm_mon = mon - 1;
+    tmUtc.tm_mday = day;
+    tmUtc.tm_hour = hour;
+    tmUtc.tm_min = min;
+    tmUtc.tm_sec = sec;
+
+#ifdef _WIN32
+    const std::time_t utcSec = _mkgmtime(&tmUtc);
+#else
+    const std::time_t utcSec = timegm(&tmUtc);
+#endif
+    if (utcSec < 0) return false;
+
+    outEpochMs = static_cast<long long>(utcSec) * 1000LL + static_cast<long long>(msec);
+    return true;
+}
+
+int computeStreamLatencyMsFromXmlTagTime(const std::string &xml)
+{
+    const std::size_t utcPos = xml.find("UtcTime=\"");
+    if (utcPos == std::string::npos) return -1;
+
+    const std::size_t start = utcPos + 9;
+    const std::size_t end = xml.find("\"", start);
+    if (end == std::string::npos || end <= start) return -1;
+
+    const std::string tagTime = xml.substr(start, end - start);
+    long long tagEpochMs = 0;
+    if (!parseOnvifUtcEpochMs(tagTime, tagEpochMs)) return -1;
+
+    const long long nowEpochMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     std::chrono::system_clock::now().time_since_epoch())
+                                     .count();
+    long long latencyMs = nowEpochMs - tagEpochMs;
+    if (latencyMs < 0) latencyMs = 0;
+    if (latencyMs > static_cast<long long>(std::numeric_limits<int>::max())) {
+        latencyMs = static_cast<long long>(std::numeric_limits<int>::max());
+    }
+    return static_cast<int>(latencyMs);
 }
 }
 
@@ -337,6 +400,7 @@ void MainWindow::startMetadataWorker()
 
             if (currentTimestamp != lastTimestamp && lastTimestamp != 0)
             {
+                const int metaLatencyMs = computeStreamLatencyMsFromXmlTagTime(accumulatedXml);
                 auto humans = parser.parseHumanObjectsForAnalytics(accumulatedXml, false);
                 accumulatedXml.clear();
 
@@ -345,7 +409,12 @@ void MainWindow::startMetadataWorker()
 #ifdef SFEPS_HAVE_OPENCV
                 const unsigned int rtpSnap = lastTimestamp;
                 auto payload = std::make_shared<std::vector<ParsedMetadataObject>>(std::move(humans));
-                QMetaObject::invokeMethod(this, [this, payload, rtpSnap, frameNo]() {
+                QMetaObject::invokeMethod(this, [this, payload, rtpSnap, frameNo, metaLatencyMs]() {
+                    if (metaLatencyMs >= 0 && m_streamLatencyMs != metaLatencyMs) {
+                        m_streamLatencyMs = metaLatencyMs;
+                        emit streamLatencyChanged();
+                        qInfo() << "[StreamLatency][tag-time]" << m_streamLatencyMs << "ms";
+                    }
                     applyNativeDetections(std::move(*payload), rtpSnap, QDateTime::currentMSecsSinceEpoch(), frameNo);
                 }, Qt::QueuedConnection);
 #else
@@ -380,7 +449,12 @@ void MainWindow::startMetadataWorker()
                     dets.push_back(m);
                 }
 
-                QMetaObject::invokeMethod(this, [this, dets]() {
+                QMetaObject::invokeMethod(this, [this, dets, metaLatencyMs]() {
+                    if (metaLatencyMs >= 0 && m_streamLatencyMs != metaLatencyMs) {
+                        m_streamLatencyMs = metaLatencyMs;
+                        emit streamLatencyChanged();
+                        qInfo() << "[StreamLatency][tag-time]" << m_streamLatencyMs << "ms";
+                    }
                     this->setDetections(dets);
                 }, Qt::QueuedConnection);
 #endif
@@ -553,7 +627,7 @@ void MainWindow::opencvCaptureLoop()
               "0|probesize;32768");
 #endif
     const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    const QString url = env.value(QStringLiteral("RTSP_STREAM_URL"), QStringLiteral("rtsp://192.168.0.82:8554/cam1"));
+    const QString url = env.value(QStringLiteral("RTSP_STREAM_URL"), QStringLiteral("rtsp://192.168.0.101:8554/cam1"));
     const QString gstPipe = env.value(QStringLiteral("SFEPS_GSTREAMER_PIPELINE")).trimmed();
 
     cv::VideoCapture cap;
