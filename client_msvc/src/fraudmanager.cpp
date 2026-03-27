@@ -46,7 +46,8 @@ bool parseFraudMessage(const QString &msg,
                        QString &cardAgeText,
                        QString &age,
                        bool &isFraud,
-                       QString &tag)
+                       QString &tag,
+                       float &bboxL, float &bboxT, float &bboxR, float &bboxB)
 {
     if (!msg.startsWith("FRAUD|")) {
         return false;
@@ -81,17 +82,17 @@ bool parseFraudMessage(const QString &msg,
         age[0] = age[0].toUpper();
     }
 
-    // New alert format:
-    // FRAUD|<object_id>|<card_age_text>|<age>|<Y|N>|TAG=<iso8601>
-    const QString tagPart = parts[5].trimmed();
-    if (!tagPart.startsWith("TAG=")) {
-        qWarning() << "[FraudManager] Ignore malformed message (missing TAG field):" << msg;
-        return false;
-    }
-    tag = tagPart.mid(4).trimmed();
-    if (tag.isEmpty()) {
-        qWarning() << "[FraudManager] Ignore malformed message (empty TAG value):" << msg;
-        return false;
+    // Extract TAG / L / T / R / B from remaining fields
+    // 형식 예: FRAUD|1071432|0|20|Y|L=1510.0|T=71.0|R=1880.0|B=830.0|X=1695.0|Y=45|TAG=...
+    tag.clear();
+    bboxL = bboxT = bboxR = bboxB = 0.0f;
+    for (int i = 5; i < parts.size(); ++i) {
+        const QString p = parts[i].trimmed();
+        if      (p.startsWith("TAG=")) tag   = p.mid(4).trimmed();
+        else if (p.startsWith("L="))  bboxL = p.mid(2).toFloat();
+        else if (p.startsWith("T="))  bboxT = p.mid(2).toFloat();
+        else if (p.startsWith("R="))  bboxR = p.mid(2).toFloat();
+        else if (p.startsWith("B="))  bboxB = p.mid(2).toFloat();
     }
 
     return true;
@@ -344,13 +345,16 @@ void FraudManager::onReadyRead()
         QString age;
         QString tag;
         bool isFraud = false;
-        if (parseFraudMessage(msg, objectId, cardAgeText, age, isFraud, tag)) {
+        float bboxL = 0, bboxT = 0, bboxR = 0, bboxB = 0;
+        if (parseFraudMessage(msg, objectId, cardAgeText, age, isFraud, tag,
+                              bboxL, bboxT, bboxR, bboxB)) {
             QString eventKey = objectId + "|" + tag;
             QString imagePath;
             if (downloadedImages.contains(eventKey)) {
                 imagePath = downloadedImages.value(eventKey);
             }
-            processFraud(objectId, cardAgeText, age, isFraud, tag, imagePath);
+            processFraud(objectId, cardAgeText, age, isFraud, tag, imagePath,
+                         bboxL, bboxT, bboxR, bboxB);
         }
     }
 
@@ -362,6 +366,7 @@ void FraudManager::onReadyRead()
         QString age;
         QString tag;
         bool isFraud = false;
+        float bboxL = 0, bboxT = 0, bboxR = 0, bboxB = 0;
         if (!s.isEmpty()) {
             qDebug() << "[FraudManager] Received (no-nl fallback):" << s;
             if (s.startsWith("TEST|LOGIN_OK|")) {
@@ -382,13 +387,15 @@ void FraudManager::onReadyRead()
                 recvBuffer.clear();
                 return;
             }
-            if (parseFraudMessage(s, objectId, cardAgeText, age, isFraud, tag)) {
+            if (parseFraudMessage(s, objectId, cardAgeText, age, isFraud, tag,
+                                  bboxL, bboxT, bboxR, bboxB)) {
                 QString eventKey = objectId + "|" + tag;
                 QString imagePath;
                 if (downloadedImages.contains(eventKey)) {
                     imagePath = downloadedImages.value(eventKey);
                 }
-                processFraud(objectId, cardAgeText, age, isFraud, tag, imagePath);
+                processFraud(objectId, cardAgeText, age, isFraud, tag, imagePath,
+                             bboxL, bboxT, bboxR, bboxB);
                 recvBuffer.clear();
             }
         }
@@ -464,7 +471,8 @@ void FraudManager::drainFraudQueue()
              << next.objectId;
     emit fraudQueueChanged(m_fraudQueue.size());
     processFraud(next.objectId, next.cardAgeText, next.age,
-                 next.isFraud, next.tag, next.imagePath);
+                 next.isFraud, next.tag, next.imagePath,
+                 next.bboxL, next.bboxT, next.bboxR, next.bboxB);
 }
 
 // ─── FRAUD 처리 핵심 ────────────────────────────────────────────────────────
@@ -473,16 +481,19 @@ void FraudManager::processFraud(const QString &objectId,
                                  const QString &age,
                                  bool isFraud,
                                  const QString &tag,
-                                 const QString &imagePath)
+                                 const QString &imagePath,
+                                 float bboxL, float bboxT, float bboxR, float bboxB)
 {
     // 부정승차이고 다른 객체를 이미 추적 중이면 대기큐에 저장
     if (isFraud && !m_activeTrackingId.isEmpty()
         && m_activeTrackingId != objectId)
     {
-        QueuedFraud qf{ objectId, cardAgeText, age, tag, imagePath, isFraud };
+        QueuedFraud qf{ objectId, cardAgeText, age, tag, imagePath, isFraud,
+                        bboxL, bboxT, bboxR, bboxB };
         m_fraudQueue.append(qf);
         qDebug() << "[FraudManager] Queued fraud objectId=" << objectId
-                 << "(currently tracking:" << m_activeTrackingId << ")";
+                 << "(currently tracking:" << m_activeTrackingId << ")"
+                 << "bbox=(" << bboxL << bboxT << bboxR << bboxB << ")";
         emit fraudQueueChanged(m_fraudQueue.size());
         return;
     }
@@ -490,10 +501,13 @@ void FraudManager::processFraud(const QString &objectId,
     // 즉시 처리: UI에 알림
     emit fraudDetected(objectId, cardAgeText, age, isFraud, tag, imagePath);
 
-    // 부정승차면 자동 추적 요청 (main.cpp에서 positionManager.sendPositionCommand와 연결)
+    // 부정승차면 자동 추적 요청 (main.cpp에서 videoBackend.trackByXmlId와 연결)
     if (isFraud) {
-        qDebug() << "[FraudManager] fraudAutoTrackRequest for objectId=" << objectId;
-        emit fraudAutoTrackRequest(QStringLiteral("TRACK_START|%1").arg(objectId));
+        // 추적 시작 전에 activeTrackingId 즉시 설정 (동기적으로) → 연속 FRAUD 중복 처리 방지
+        m_activeTrackingId = objectId;
+        qDebug() << "[FraudManager] fraudAutoTrackRequest objectId=" << objectId
+                 << "fallbackBbox=(" << bboxL << bboxT << bboxR << bboxB << ")";
+        emit fraudAutoTrackRequest(objectId, bboxL, bboxT, bboxR, bboxB);
     }
 }
 

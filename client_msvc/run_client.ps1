@@ -75,9 +75,10 @@ if (-not (Test-Path $caPath)) {
 #   라즈베리파이 모드 (기본): SFEPS_PWM_MODE=raspi  → TCP 이더넷
 #   STM/ESP8266 모드        : SFEPS_PWM_MODE=stm   → UDP 무선
 #
-Set-DefaultEnv "SFEPS_PWM_MODE" "raspi"          # raspi | stm
-Set-DefaultEnv "SFEPS_PWM_HOST" "192.168.0.100"  # 라즈베리파이 또는 ESP8266 IP
-Set-DefaultEnv "SFEPS_PWM_PORT" "5566"           # PWM 수신 포트
+# PWM 설정은 항상 강제 적용 (Set-DefaultEnv는 이미 설정된 값을 덮어쓰지 않으므로 직접 설정)
+[Environment]::SetEnvironmentVariable("SFEPS_PWM_MODE", "raspi",        "Process")  # raspi | stm
+[Environment]::SetEnvironmentVariable("SFEPS_PWM_HOST", "127.0.0.1",    "Process")  # SSH 터널: ssh -p 2222 -L 15566:localhost:5566 -N physical-100@192.168.0.87
+[Environment]::SetEnvironmentVariable("SFEPS_PWM_PORT", "15566",        "Process")  # 로컬 터널 포트 (Cursor가 5566 점유 중)
 
 # ── 카메라 CGI 밝기/대조 제어 ──────────────────────────────────────────────────
 Set-DefaultEnv "CAMERA_CGI_USER" "admin"      # 카메라 로그인 아이디
@@ -115,8 +116,14 @@ if (-not $exePath) {
 
 # OpenCV/GStreamer/Qt 런타임 DLL 경로를 우선 추가
 $opencvBinCandidates = @(
+    # 표준 위치 (최우선)
     "C:\Users\2-16\Desktop\SFEPS\opencv-gst\install\x64\vc17\bin",
-    "C:\Users\2-16\Downloads\opencv-gst\install\x64\vc17\bin"
+    # 중첩 폴더 구조인 경우 fallback
+    "C:\Users\2-16\Desktop\SFEPS\opencv-gst\opencv-gst\install\x64\vc17\bin",
+    # 다른 개발자 경로 후보
+    "C:\Users\2-16\Downloads\opencv-gst\install\x64\vc17\bin",
+    "C:\opencv\build\x64\vc17\bin",
+    "C:\opencv-gst\install\x64\vc17\bin"
 )
 $opencvBin = $null
 foreach ($cand in $opencvBinCandidates) {

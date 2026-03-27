@@ -88,6 +88,10 @@ int main(int argc, char *argv[]) {
   auto *liveFrameProvider = new LiveFrameProvider();
   engine.addImageProvider(QStringLiteral("live"), liveFrameProvider);
   videoBackend.setLiveFrameProvider(liveFrameProvider);
+  // RBF 계산된 PWM → PwmTransmitter (Raspberry Pi / ESP8266) 직접 전송
+  QObject::connect(&videoBackend, &MainWindow::pwmSetRequested,
+                   &pwmTransmitter, &PwmTransmitter::sendPwm);
+  // 동시에 PositionManager를 통해 서버(5558)에도 통보 (모니터링/로깅 용도)
   QObject::connect(&videoBackend, &MainWindow::pwmSetRequested, &positionManager,
                    [&positionManager](int pan, int tilt) {
                        positionManager.sendPositionCommand(
@@ -132,17 +136,24 @@ int main(int argc, char *argv[]) {
   QObject::connect(&positionManager, &PositionManager::pwmReceived,
                    &pwmTransmitter,  &PwmTransmitter::sendPwm);
 
-  // FraudManager 자동 추적 요청 → PositionManager 전달
+  // FraudManager 자동 추적 요청 → bbox 빨간색 표시 + (수동 추적 없을 때) 자동 전환
+  // trackByXmlId는 호출하지 않음: onPwmTick에서 fraud 목록 기반으로 자동 전환
   QObject::connect(&fraudManager, &FraudManager::fraudAutoTrackRequest,
-                   [&positionManager](const QString &cmd) {
-                       positionManager.sendPositionCommand(cmd);
+                   [&videoBackend](const QString &xmlId,
+                                   float bboxL, float bboxT, float bboxR, float bboxB) {
+                       qDebug() << "[Main] fraud detected → addFraudXmlId(" << xmlId << ")"
+                                << "fallback=(" << bboxL << bboxT << bboxR << bboxB << ")";
+                       videoBackend.addFraudXmlId(xmlId);
+                       // 수동 추적이 없고 tracker에도 없는 경우 fallback bbox로 즉시 추적
+                       // (수동 추적 중이면 addFraudXmlId만 하고 onPwmTick이 처리)
+                       videoBackend.trackByXmlId(xmlId, bboxL, bboxT, bboxR, bboxB);
                    });
 
-  // PositionManager 추적 상태 변화 → FraudManager 대기큐 동기화
-  QObject::connect(&positionManager, &PositionManager::currentSubscribedIdChanged,
-                   [&fraudManager, &positionManager]() {
-                       fraudManager.setActiveTrackingId(
-                           positionManager.currentSubscribedId());
+  // videoBackend tracking 상태 변화 → FraudManager 대기큐 동기화
+  // trackByXmlId 호출 시 xmlId emit, clearRbfTarget 호출 시 "" emit
+  QObject::connect(&videoBackend, &MainWindow::trackingXmlIdChanged,
+                   [&fraudManager](const QString &xmlId) {
+                       fraudManager.setActiveTrackingId(xmlId);
                    });
 
   const QString alertHost = env.value("FRAUD_SERVER_HOST", "192.168.0.101");

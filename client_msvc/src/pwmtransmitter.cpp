@@ -1,17 +1,20 @@
 #include "pwmtransmitter.h"
+#include <QDateTime>
 #include <QDebug>
 #include <QHostAddress>
 
-PwmTransmitter::PwmTransmitter(QObject *parent) : QObject(parent) {}
+PwmTransmitter::PwmTransmitter(QObject *parent) : QObject(parent)
+{
+    m_reconnectTimer = new QTimer(this);
+    m_reconnectTimer->setSingleShot(true);
+    connect(m_reconnectTimer, &QTimer::timeout, this, &PwmTransmitter::tryReconnect);
+}
 
 bool PwmTransmitter::isConnected() const
 {
-    if (m_mode == Mode::RaspberryPi) {
-        return m_tcpSocket
-               && m_tcpSocket->state() == QAbstractSocket::ConnectedState;
-    }
-    // ESP8266 UDP: 소켓이 열려있으면 항상 전송 가능
-    return m_udpSocket != nullptr;
+    if (m_mode == Mode::RaspberryPi)
+        return m_tcpSocket && m_tcpSocket->state() == QAbstractSocket::ConnectedState;
+    return m_udpSocket != nullptr;   // UDP: 설정되면 전송 가능
 }
 
 QString PwmTransmitter::mode() const
@@ -27,21 +30,9 @@ void PwmTransmitter::setMode(const QString &modeStr)
                              : Mode::RaspberryPi;
     if (newMode == m_mode) return;
     m_mode = newMode;
-    qDebug() << "[PwmTransmitter] Mode changed to" << mode();
+    qDebug() << "[PwmTransmitter] Mode ->" << mode();
     emit modeChanged();
     emit connectedChanged();
-}
-
-void PwmTransmitter::setupTcpSocket()
-{
-    if (m_tcpSocket) return;
-    m_tcpSocket = new QTcpSocket(this);
-    connect(m_tcpSocket, &QTcpSocket::connected,
-            this, &PwmTransmitter::onTcpConnected);
-    connect(m_tcpSocket, &QTcpSocket::disconnected,
-            this, &PwmTransmitter::onTcpDisconnected);
-    connect(m_tcpSocket, &QAbstractSocket::errorOccurred,
-            this, &PwmTransmitter::onTcpError);
 }
 
 void PwmTransmitter::connectTarget(const QString &host, int port)
@@ -52,18 +43,11 @@ void PwmTransmitter::connectTarget(const QString &host, int port)
 
     if (m_mode == Mode::RaspberryPi) {
         setupTcpSocket();
-        if (m_tcpSocket->state() == QAbstractSocket::UnconnectedState) {
-            qDebug() << "[PwmTransmitter] Connecting (TCP/RaspberryPi) to"
-                     << host << ":" << port;
-            m_tcpSocket->connectToHost(host, static_cast<quint16>(port));
-        }
+        doConnect();
     } else {
-        // ESP8266 UDP: 소켓만 생성 (연결 불필요)
-        if (!m_udpSocket) {
+        if (!m_udpSocket)
             m_udpSocket = new QUdpSocket(this);
-        }
-        qDebug() << "[PwmTransmitter] ESP8266 UDP target set to"
-                 << host << ":" << port;
+        qDebug() << "[PwmTransmitter] ESP8266 UDP target:" << host << ":" << port;
         emit connectedChanged();
     }
 }
@@ -71,81 +55,106 @@ void PwmTransmitter::connectTarget(const QString &host, int port)
 void PwmTransmitter::disconnectTarget()
 {
     m_enabled = false;
-    if (m_reconnectTimer && m_reconnectTimer->isActive())
-        m_reconnectTimer->stop();
-    if (m_tcpSocket)
+    m_reconnectTimer->stop();
+    if (m_tcpSocket) {
         m_tcpSocket->disconnectFromHost();
+    }
+    if (m_udpSocket) {
+        m_udpSocket->close();
+        m_udpSocket->deleteLater();
+        m_udpSocket = nullptr;
+    }
+}
+
+void PwmTransmitter::setupTcpSocket()
+{
+    if (m_tcpSocket) return;
+
+    m_tcpSocket = new QTcpSocket(this);
+    connect(m_tcpSocket, &QTcpSocket::connected,
+            this, &PwmTransmitter::onTcpConnected);
+    connect(m_tcpSocket, &QTcpSocket::disconnected,
+            this, &PwmTransmitter::onTcpDisconnected);
+    connect(m_tcpSocket, &QAbstractSocket::errorOccurred,
+            this, &PwmTransmitter::onTcpError);
+}
+
+void PwmTransmitter::doConnect()
+{
+    if (!m_tcpSocket || !m_enabled) return;
+    if (m_tcpSocket->state() != QAbstractSocket::UnconnectedState) return;
+
+    qDebug() << "[PwmTransmitter] Connecting to Raspberry Pi" << m_host << ":" << m_port;
+    m_tcpSocket->connectToHost(m_host, static_cast<quint16>(m_port));
+}
+
+void PwmTransmitter::onTcpConnected()
+{
+    qDebug() << "[PwmTransmitter] Connected to Raspberry Pi" << m_host << ":" << m_port;
+    m_reconnectDelayMs = 2000;
+    emit connectedChanged();
+}
+
+void PwmTransmitter::onTcpDisconnected()
+{
+    qDebug() << "[PwmTransmitter] Disconnected from Raspberry Pi. Retry in"
+             << m_reconnectDelayMs << "ms";
+    emit connectedChanged();
+    if (m_enabled)
+        m_reconnectTimer->start(m_reconnectDelayMs);
+}
+
+void PwmTransmitter::onTcpError(QAbstractSocket::SocketError err)
+{
+    Q_UNUSED(err)
+    const QString msg = m_tcpSocket ? m_tcpSocket->errorString() : "unknown";
+    qWarning() << "[PwmTransmitter] TCP error:" << msg;
+    emit transmitError(msg);
+
+    // 지수 백오프: 2s → 4s → 8s → 최대 30s
+    if (m_enabled) {
+        m_reconnectTimer->start(m_reconnectDelayMs);
+        m_reconnectDelayMs = qMin(m_reconnectDelayMs * 2, 30000);
+    }
+}
+
+void PwmTransmitter::tryReconnect()
+{
+    if (!m_enabled || !m_tcpSocket) return;
+    if (m_tcpSocket->state() != QAbstractSocket::UnconnectedState) return;
+    qDebug() << "[PwmTransmitter] Retrying connection...";
+    doConnect();
 }
 
 void PwmTransmitter::sendPwm(int pan, int tilt)
 {
     if (!m_enabled) return;
 
-    // 형식: "SET_PWM,PAN=<pan>,TILT=<tilt>\n"
-    const QString cmd = QStringLiteral("SET_PWM,PAN=%1,TILT=%2\n").arg(pan).arg(tilt);
-    const QByteArray data = cmd.toUtf8();
+    const QByteArray data =
+        QStringLiteral("SET_PWM,PAN=%1,TILT=%2\n").arg(pan).arg(tilt).toUtf8();
 
     if (m_mode == Mode::RaspberryPi) {
-        if (!m_tcpSocket
-            || m_tcpSocket->state() != QAbstractSocket::ConnectedState) {
-            qWarning() << "[PwmTransmitter] RaspberryPi TCP not connected, drop PWM:"
-                       << pan << tilt;
+        if (!m_tcpSocket ||
+            m_tcpSocket->state() != QAbstractSocket::ConnectedState) {
+            static qint64 lastWarnMs = 0;
+            const qint64 now = QDateTime::currentMSecsSinceEpoch();
+            if (now - lastWarnMs > 5000) {
+                qWarning() << "[PwmTransmitter] Not connected to Raspberry Pi, dropping PWM."
+                           << "(Raspi에서 실행: python3 set_pwm_server.py --port" << m_port << ")";
+                lastWarnMs = now;
+            }
             return;
         }
         m_tcpSocket->write(data);
         emit pwmSent(pan, tilt);
-        qDebug() << "[PwmTransmitter][RASPI] Sent PWM PAN=" << pan << "TILT=" << tilt;
+
     } else {
-        // ESP8266 UDP
         if (!m_udpSocket || m_host.isEmpty()) {
-            qWarning() << "[PwmTransmitter] ESP8266 UDP not configured, drop PWM";
+            qWarning() << "[PwmTransmitter] ESP8266 UDP not configured";
             return;
         }
         m_udpSocket->writeDatagram(data, QHostAddress(m_host),
                                    static_cast<quint16>(m_port));
         emit pwmSent(pan, tilt);
-        qDebug() << "[PwmTransmitter][ESP8266] Sent UDP PWM PAN=" << pan << "TILT=" << tilt;
     }
-}
-
-void PwmTransmitter::onTcpConnected()
-{
-    qDebug() << "[PwmTransmitter] TCP connected to" << m_host << ":" << m_port;
-    m_reconnectDelayMs = 1000;
-    if (m_reconnectTimer && m_reconnectTimer->isActive())
-        m_reconnectTimer->stop();
-    emit connectedChanged();
-}
-
-void PwmTransmitter::onTcpDisconnected()
-{
-    qDebug() << "[PwmTransmitter] TCP disconnected";
-    emit connectedChanged();
-    if (m_enabled) scheduleReconnect();
-}
-
-void PwmTransmitter::onTcpError(QAbstractSocket::SocketError /*err*/)
-{
-    const QString errStr = m_tcpSocket ? m_tcpSocket->errorString() : "unknown";
-    qWarning() << "[PwmTransmitter] TCP error:" << errStr;
-    emit transmitError(errStr);
-    if (m_enabled) scheduleReconnect();
-}
-
-void PwmTransmitter::scheduleReconnect()
-{
-    if (!m_reconnectTimer) {
-        m_reconnectTimer = new QTimer(this);
-        m_reconnectTimer->setSingleShot(true);
-        connect(m_reconnectTimer, &QTimer::timeout, this, [this]() {
-            if (m_enabled && m_tcpSocket
-                && m_tcpSocket->state() == QAbstractSocket::UnconnectedState) {
-                qDebug() << "[PwmTransmitter] Reconnect attempt to"
-                         << m_host << ":" << m_port;
-                m_tcpSocket->connectToHost(m_host, static_cast<quint16>(m_port));
-            }
-            m_reconnectDelayMs = qMin(m_reconnectDelayMs * 2, 30000);
-        });
-    }
-    m_reconnectTimer->start(m_reconnectDelayMs);
 }
