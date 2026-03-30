@@ -179,7 +179,7 @@ Page {
             // Charts Area (Entry Status & Demographic)
             RowLayout {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 240
+                Layout.preferredHeight: 300
                 Layout.leftMargin: 24
                 Layout.rightMargin: 24
                 spacing: 16
@@ -437,7 +437,7 @@ Page {
             // Video Storage
             Rectangle {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 240
+                Layout.preferredHeight: 360
                 Layout.leftMargin: 24
                 Layout.rightMargin: 24
                 color: AppTheme.surfaceCard
