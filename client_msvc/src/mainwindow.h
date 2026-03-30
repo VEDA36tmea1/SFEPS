@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QMutex>
+#include <QSet>
 #include <QTimer>
 #include <QDateTime>
 #include <QNetworkAccessManager>
@@ -16,9 +17,24 @@ class LiveFrameProvider;
 
 #ifdef SFEPS_HAVE_OPENCV
 #include "XMLParser.h"
+#include <vector>
+#include <string>
+#ifdef CAMERA_RBF_QT_MODE
+// camera_RBF.cpp Qt 인터페이스 전방 선언 (rbf_pwm_core.h / native_metadata_tracker.h 불필요)
+struct RbfQtBBox { float l{0}, t{0}, r{0}, b{0}; bool found{false}; };
+bool rbfqt_init(double ratio, double alpha, double predict_ms,
+                int pan_min, int pan_max, int tilt_min, int tilt_max);
+void rbfqt_set_target_bbox(float l, float t, float r, float b, int W, int H);
+void rbfqt_clear_target();
+void rbfqt_set_tracked_nativeid(const char* nativeId);
+bool rbfqt_compute_pwm(long long now_ms, int W, int H, int* pan, int* tilt);
+void rbfqt_process_metadata(const std::vector<ParsedMetadataObject>& objects, int W, int H);
+std::string rbfqt_find_native_id(const std::string& xmlId);
+RbfQtBBox   rbfqt_get_bbox_by_xmlid(const std::string& xmlId, int W, int H);
+#else
 #include "native_metadata_tracker.h"
 #include "rbf_pwm_core.h"
-#include <vector>
+#endif
 #endif
 
 class MainWindow : public QObject
@@ -60,6 +76,26 @@ public:
     Q_INVOKABLE void setSelectedDetection(const QString &id);
     void setExternalTrackedId(const QString &id);
 
+#ifdef SFEPS_HAVE_OPENCV
+    // XML ID(서버 FRAUD ID "1071432")로 객체 추적 시작
+    // 1순위: rbfqt_process_metadata()가 갱신한 현재 bbox 사용
+    // 2순위(fallback): 서버 Fraud 메시지의 픽셀 좌표 (객체가 화면에 없을 때)
+    Q_INVOKABLE void trackByXmlId(const QString &xmlId,
+                                  float fallbackL = 0, float fallbackT = 0,
+                                  float fallbackR = 0, float fallbackB = 0);
+    // QML Track 버튼 → N-ID로 직접 추적 시작 (매 tick 자동 bbox 갱신)
+    Q_INVOKABLE void trackByNativeId(const QString &nativeId);
+    Q_INVOKABLE void clearRbfTarget();
+
+    // Fraud 알림: xmlId 추가/삭제 (bbox 색상 빨간색 표시 및 자동 전환 트리거)
+    Q_INVOKABLE void addFraudXmlId(const QString &xmlId);
+    Q_INVOKABLE void removeFraudXmlId(const QString &xmlId);
+
+    // 현재 활성 객체에서 xmlId 에 해당하는 bbox 반환 (QML/외부 용)
+    // 반환 맵 키: found(bool), x, y, w, h (정규화 [0,1])
+    Q_INVOKABLE QVariantMap getBBoxByXmlId(const QString &xmlId) const;
+#endif
+
     QVariantList detections() const { return m_detections; }
     QString selectedDetection() const { return m_selectedDetectionId; }
     QString externalTrackedId() const { return m_externalTrackedId; }
@@ -93,6 +129,9 @@ signals:
     void detectionsChanged();
     void selectedDetectionChanged();
     void externalTrackedIdChanged();
+    // 현재 RBF 추적 중인 XML ID 변화 (빈 문자열 = 추적 없음)
+    // FraudManager.setActiveTrackingId 에 연결하여 대기큐 동기화에 사용
+    void trackingXmlIdChanged(const QString &xmlId);
 #ifdef SFEPS_HAVE_OPENCV
     void previewRevisionChanged();
     void pwmSetRequested(int pan, int tilt);
@@ -128,6 +167,10 @@ private:
     bool m_hasPendingDetections;
     QString m_selectedDetectionId;
     QString m_externalTrackedId;
+    // Fraud 알림으로 표시된 XML ID 세트 (빨간 bbox + 자동 추적 후보)
+    QSet<QString> m_fraudXmlIds;
+    // 수동 추적 활성 여부 (Track 버튼으로 시작된 경우 true → fraud 자동 전환 억제)
+    bool m_manualTracking{false};
 
     int m_streamLatencyMs = 0;
     int m_videoMetaDelayMs = -1;
@@ -151,11 +194,7 @@ private:
 
 #ifdef SFEPS_HAVE_OPENCV
     LiveFrameProvider *m_liveProvider = nullptr;
-    NativeMetadataTracker m_nativeTracker;
-    RbfTps2D m_rbfPan;
-    RbfTps2D m_rbfTilt;
     bool m_rbfOk = false;
-    KalmanBbox2D m_kfPwm;
     int m_prevPan = 1500;
     int m_prevTilt = 1500;
     QString m_prevSelPwm;
@@ -173,6 +212,13 @@ private:
     std::atomic_bool m_opencvRunning{false};
     QTimer *m_pwmTimer = nullptr;
     qint64 m_lastPwmTickMs = 0;
+#ifndef CAMERA_RBF_QT_MODE
+    // 레거시 모드: native_metadata_tracker + rbf_pwm_core 직접 사용
+    NativeMetadataTracker m_nativeTracker;
+    RbfTps2D m_rbfPan;
+    RbfTps2D m_rbfTilt;
+    KalmanBbox2D m_kfPwm;
+#endif
 #endif
 
 private slots:

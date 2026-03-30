@@ -199,6 +199,18 @@ void PositionManager::processPosBuffer()
                     m_suspected.remove(id);
                 }
             }
+        } else if (s.startsWith("PWM_OUT,")) {
+            // camera_RBF.cpp --qt-mode 에서 역방향으로 전송하는 PWM 값
+            // 형식: PWM_OUT,PAN=1500,TILT=1600
+            int pan = -1, tilt = -1;
+            const QStringList parts = s.mid(8).split(',', Qt::SkipEmptyParts);
+            for (const QString &p : parts) {
+                if (p.startsWith("PAN=")) pan = p.mid(4).toInt();
+                else if (p.startsWith("TILT=")) tilt = p.mid(5).toInt();
+            }
+            if (pan >= 0 && tilt >= 0) {
+                emit pwmReceived(pan, tilt);
+            }
         } else {
             static int unknownLineCount = 0;
             ++unknownLineCount;
@@ -295,26 +307,47 @@ void PositionManager::sendPositionCommand(const QString &msg)
         return;
     }
 
-    QByteArray data = msg.toUtf8();
+    // TRACK_START|id 시 m_pendingMap에서 bbox를 자동으로 포함하여 전송
+    // → camera_RBF.cpp에서 ID 매칭 실패 시 IoU 매칭 보완
+    QString actualMsg = msg;
+    if (msg.startsWith("TRACK_START|") && !msg.contains("|L=")) {
+        const QString id = msg.mid(QString("TRACK_START|").length()).trimmed();
+        if (!id.isEmpty() && m_pendingMap.contains(id)) {
+            const QVariantMap &m = m_pendingMap.value(id);
+            bool hasL = m.contains("L"), hasT = m.contains("T"),
+                 hasR = m.contains("R"), hasB = m.contains("B");
+            if (hasL && hasT && hasR && hasB) {
+                int l = qRound(m.value("L").toDouble());
+                int t = qRound(m.value("T").toDouble());
+                int r = qRound(m.value("R").toDouble());
+                int b = qRound(m.value("B").toDouble());
+                actualMsg = QString("TRACK_START|%1|L=%2|T=%3|R=%4|B=%5")
+                                .arg(id).arg(l).arg(t).arg(r).arg(b);
+                qDebug() << "[PositionManager] Enriched TRACK_START with bbox:" << actualMsg;
+            }
+        }
+    }
+
+    QByteArray data = actualMsg.toUtf8();
     if (!data.endsWith('\n')) data.append('\n');
     qint64 n = posSocket->write(data);
     if (n <= 0) {
-        qWarning() << "[PositionManager] failed to write pos command:" << msg;
+        qWarning() << "[PositionManager] failed to write pos command:" << actualMsg;
     } else {
-        // Avoid synchronous flush to prevent blocking the UI thread
-        // Update client-side current subscription when SUB_POS/UNSUB_POS used
-        if (msg.startsWith("SUB_POS|")) {
-            QString id = msg.mid(QString("SUB_POS|").length()).trimmed();
+        // Update client-side current subscription state
+        if (msg.startsWith("TRACK_START|") || msg.startsWith("SUB_POS|")) {
+            const QString prefix = msg.startsWith("TRACK_START|") ? "TRACK_START|" : "SUB_POS|";
+            QString id = msg.mid(prefix.length()).split('|').first().trimmed();
             if (!id.isEmpty()) {
-                // Reset cached entries so a new subscription starts with fresh data only.
                 m_pendingMap.clear();
                 m_pendingOrder.clear();
                 m_lastSeen.clear();
                 m_suspected.clear();
                 setCurrentSubscribedId(id);
             }
-        } else if (msg.startsWith("UNSUB_POS|")) {
-            QString id = msg.mid(QString("UNSUB_POS|").length()).trimmed();
+        } else if (msg.startsWith("TRACK_END|") || msg.startsWith("UNSUB_POS|")) {
+            const QString prefix = msg.startsWith("TRACK_END|") ? "TRACK_END|" : "UNSUB_POS|";
+            const QString id = msg.mid(prefix.length()).trimmed();
             if (!id.isEmpty() && id == m_currentSubscribedId) {
                 setCurrentSubscribedId(QString());
                 m_pendingMap.clear();
@@ -324,7 +357,7 @@ void PositionManager::sendPositionCommand(const QString &msg)
                 emit positionsUpdated(QVariantList());
             }
         }
-        qDebug() << "[PositionManager] Sent pos command:" << msg;
+        qDebug() << "[PositionManager] Sent pos command:" << actualMsg;
     }
 }
 
@@ -334,7 +367,7 @@ void PositionManager::unsubscribeCurrent()
         qDebug() << "[PositionManager] unsubscribeCurrent: no current subscription";
         return;
     }
-    QString cmd = QString("UNSUB_POS|%1").arg(m_currentSubscribedId);
+    QString cmd = QString("TRACK_END|%1").arg(m_currentSubscribedId);
     sendPositionCommand(cmd);
 }
 

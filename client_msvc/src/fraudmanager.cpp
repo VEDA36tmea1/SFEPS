@@ -46,13 +46,16 @@ bool parseFraudMessage(const QString &msg,
                        QString &cardAgeText,
                        QString &age,
                        bool &isFraud,
-                       QString &tag)
+                       QString &tag,
+                       float &bboxL, float &bboxT, float &bboxR, float &bboxB)
 {
     if (!msg.startsWith("FRAUD|")) {
         return false;
     }
 
     const QStringList parts = msg.split('|', Qt::KeepEmptyParts);
+    // 최소 필수 필드: FRAUD|objectId|cardAgeText|age|fraudFlag
+    // 뒤쪽(TAG/L/T/R/B/X/Y...)은 가변 확장 필드로 처리한다.
     if (parts.size() < 5) {
         qWarning() << "[FraudManager] Ignore malformed message (field missing):" << msg;
         return false;
@@ -81,13 +84,17 @@ bool parseFraudMessage(const QString &msg,
         age[0] = age[0].toUpper();
     }
 
-    // Extract TAG from the message (TAG=<iso8601>)
+    // Extract TAG / L / T / R / B from remaining fields
+    // 형식 예: FRAUD|1071432|0|20|Y|L=1510.0|T=71.0|R=1880.0|B=830.0|X=1695.0|Y=45|TAG=...
     tag.clear();
+    bboxL = bboxT = bboxR = bboxB = 0.0f;
     for (int i = 5; i < parts.size(); ++i) {
-        if (parts[i].startsWith("TAG=")) {
-            tag = parts[i].mid(4).trimmed();
-            break;
-        }
+        const QString p = parts[i].trimmed();
+        if      (p.startsWith("TAG=")) tag   = p.mid(4).trimmed();
+        else if (p.startsWith("L="))  bboxL = p.mid(2).toFloat();
+        else if (p.startsWith("T="))  bboxT = p.mid(2).toFloat();
+        else if (p.startsWith("R="))  bboxR = p.mid(2).toFloat();
+        else if (p.startsWith("B="))  bboxB = p.mid(2).toFloat();
     }
 
     return true;
@@ -340,14 +347,16 @@ void FraudManager::onReadyRead()
         QString age;
         QString tag;
         bool isFraud = false;
-        if (parseFraudMessage(msg, objectId, cardAgeText, age, isFraud, tag)) {
-            // Check if we already have image for this event
+        float bboxL = 0, bboxT = 0, bboxR = 0, bboxB = 0;
+        if (parseFraudMessage(msg, objectId, cardAgeText, age, isFraud, tag,
+                              bboxL, bboxT, bboxR, bboxB)) {
             QString eventKey = objectId + "|" + tag;
             QString imagePath;
             if (downloadedImages.contains(eventKey)) {
                 imagePath = downloadedImages.value(eventKey);
             }
-            emit fraudDetected(objectId, cardAgeText, age, isFraud, tag, imagePath);
+            processFraud(objectId, cardAgeText, age, isFraud, tag, imagePath,
+                         bboxL, bboxT, bboxR, bboxB);
         }
     }
 
@@ -359,6 +368,7 @@ void FraudManager::onReadyRead()
         QString age;
         QString tag;
         bool isFraud = false;
+        float bboxL = 0, bboxT = 0, bboxR = 0, bboxB = 0;
         if (!s.isEmpty()) {
             qDebug() << "[FraudManager] Received (no-nl fallback):" << s;
             if (s.startsWith("TEST|LOGIN_OK|")) {
@@ -379,13 +389,15 @@ void FraudManager::onReadyRead()
                 recvBuffer.clear();
                 return;
             }
-            if (parseFraudMessage(s, objectId, cardAgeText, age, isFraud, tag)) {
+            if (parseFraudMessage(s, objectId, cardAgeText, age, isFraud, tag,
+                                  bboxL, bboxT, bboxR, bboxB)) {
                 QString eventKey = objectId + "|" + tag;
                 QString imagePath;
                 if (downloadedImages.contains(eventKey)) {
                     imagePath = downloadedImages.value(eventKey);
                 }
-                emit fraudDetected(objectId, cardAgeText, age, isFraud, tag, imagePath);
+                processFraud(objectId, cardAgeText, age, isFraud, tag, imagePath,
+                             bboxL, bboxT, bboxR, bboxB);
                 recvBuffer.clear();
             }
         }
@@ -439,6 +451,75 @@ void FraudManager::downloadImage(const ImgRefData &imgRef)
     qDebug() << "[FraudManager] Starting image download from URL:" << imgRef.url;
 }
 
+// ─── 추적 상태 동기화 ───────────────────────────────────────────────────────
+void FraudManager::setActiveTrackingId(const QString &id)
+{
+    const bool wasTracking = !m_activeTrackingId.isEmpty();
+    m_activeTrackingId = id;
+    qDebug() << "[FraudManager] activeTrackingId set to" << (id.isEmpty() ? "(none)" : id);
+
+    if (wasTracking && id.isEmpty()) {
+        // 추적이 끝났으면 대기큐에서 꺼내서 처리
+        drainFraudQueue();
+    }
+}
+
+// ─── 대기큐 처리 ────────────────────────────────────────────────────────────
+void FraudManager::drainFraudQueue()
+{
+    if (m_fraudQueue.isEmpty()) return;
+    QueuedFraud next = m_fraudQueue.takeFirst();
+    qDebug() << "[FraudManager] drainFraudQueue: tracking queued fraud objectId="
+             << next.objectId;
+    emit fraudQueueChanged(m_fraudQueue.size());
+
+    // 큐에 넣을 때 이벤트 로그(fraudDetected)는 이미 emit 되었으므로,
+    // drain 시점에는 자동 추적 요청만 수행한다.
+    if (next.isFraud) {
+        m_activeTrackingId = next.objectId;
+        qDebug() << "[FraudManager] fraudAutoTrackRequest (drain) objectId=" << next.objectId
+                 << "fallbackBbox=(" << next.bboxL << next.bboxT << next.bboxR << next.bboxB << ")";
+        emit fraudAutoTrackRequest(next.objectId, next.bboxL, next.bboxT, next.bboxR, next.bboxB);
+    }
+}
+
+// ─── FRAUD 처리 핵심 ────────────────────────────────────────────────────────
+void FraudManager::processFraud(const QString &objectId,
+                                 const QString &cardAgeText,
+                                 const QString &age,
+                                 bool isFraud,
+                                 const QString &tag,
+                                 const QString &imagePath,
+                                 float bboxL, float bboxT, float bboxR, float bboxB)
+{
+    // 이벤트 로그/통계는 추적 상태와 무관하게 즉시 반영한다.
+    emit fraudDetected(objectId, cardAgeText, age, isFraud, tag, imagePath);
+
+    // 부정승차이고 다른 객체를 이미 추적 중이면 대기큐에 저장
+    if (isFraud && !m_activeTrackingId.isEmpty()
+        && m_activeTrackingId != objectId)
+    {
+        QueuedFraud qf{ objectId, cardAgeText, age, tag, imagePath, isFraud,
+                        bboxL, bboxT, bboxR, bboxB };
+        m_fraudQueue.append(qf);
+        qDebug() << "[FraudManager] Queued fraud objectId=" << objectId
+                 << "(currently tracking:" << m_activeTrackingId << ")"
+                 << "bbox=(" << bboxL << bboxT << bboxR << bboxB << ")";
+        emit fraudQueueChanged(m_fraudQueue.size());
+        return;
+    }
+
+    // 부정승차면 자동 추적 요청 (main.cpp에서 videoBackend.trackByXmlId와 연결)
+    if (isFraud) {
+        // 추적 시작 전에 activeTrackingId 즉시 설정 (동기적으로) → 연속 FRAUD 중복 처리 방지
+        m_activeTrackingId = objectId;
+        qDebug() << "[FraudManager] fraudAutoTrackRequest objectId=" << objectId
+                 << "fallbackBbox=(" << bboxL << bboxT << bboxR << bboxB << ")";
+        emit fraudAutoTrackRequest(objectId, bboxL, bboxT, bboxR, bboxB);
+    }
+}
+
+// ─── 이미지 다운로드 완료 ────────────────────────────────────────────────────
 void FraudManager::onImageDownloadFinished(QNetworkReply *reply)
 {
     if (!reply) return;

@@ -5,11 +5,25 @@
 // - stdout 으로 "SET_PWM,PAN=...,TILT=..." 출력 (ubuntu_tcp_server 파이프로 전달)
 // - (옵션) 월드(X,Y, cm) -> 픽셀(u,v) RBF를 이용해 Z=1200mm 평면 그리드 오버레이 표시
 // - DeepSORT Python 워커로 안정적 ID 부여 (별도 스레드)
+//
+// ── 빌드 모드 ────────────────────────────────────────────────────────────────
+// 단독 실행 파일 (기본): cmake 없이 make_msvc.cmd 등으로 빌드
+// Qt 라이브러리 모드  : -DCAMERA_RBF_QT_MODE 정의 시
+//   - main(), OpenCV 윈도우/마우스/스레드 제거
+//   - capture_thread_fn, metadata_thread_fn, remote_select_thread_fn 제거
+//   - 계산 로직(RbfTps2D/KalmanBbox2D/CalibPoint/load_calib_points)은 그대로 사용
+//   - rbfqt_init / rbfqt_set_target_bbox / rbfqt_clear_target / rbfqt_compute_pwm
+//   - rbfqt_process_metadata / rbfqt_get_objects / rbfqt_find_xmlid 함수 노출
+// ─────────────────────────────────────────────────────────────────────────────
 
-#include "RTSPClient.h"
 #include "XMLParser.h"
 #include "Config.h"
-#include "re_id.h"
+
+#ifndef CAMERA_RBF_QT_MODE
+  // 단독 모드: RTSP / DeepSORT 헤더 포함
+  #include "RTSPClient.h"
+  #include "re_id.h"
+#endif
 
 #include <opencv2/opencv.hpp>
 #include <opencv2/videoio/registry.hpp>
@@ -27,6 +41,8 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <unordered_map>
+#include <unordered_set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -34,6 +50,9 @@
 #include <cmath>
 
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX   // std::max / std::min 이 windows.h max/min 매크로에 의해 파괴되는 것 방지
+#endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -67,6 +86,7 @@ static std::vector<ParsedMetadataObject> g_raw_objects;
 static std::mutex g_obj_mutex;
 static std::vector<ParsedMetadataObject> g_objects;
 
+#ifndef CAMERA_RBF_QT_MODE
 // ── IdStabilizer (DeepSORT 후단에서 ID 안정화) ──────────────────────
 static IdStabilizer g_stabilizer;
 
@@ -81,6 +101,7 @@ static std::vector<ParsedMetadataObject> g_stable_objects;
 static std::vector<ParsedMetadataObject> g_deepsort_last_objects;
 static int g_deepsort_empty_count = 0;
 static constexpr int DEEPSORT_EMPTY_GRACE_FRAMES = 5;
+#endif // !CAMERA_RBF_QT_MODE (IdStabilizer / DeepSORT 전역)
 
 // ── ID별 bbox EMA 스무더 ─────────────────────────────────────────────
 // DeepSORT 비동기 파이프라인의 프레임 지연 + to_ltrb() 칼만 예측값의
@@ -104,6 +125,16 @@ static int g_last_tilt = 1500;
 static int g_last_target_u = -1;
 static int g_last_target_v = -1;
 static bool g_last_pwm_valid = false;
+
+// QT 모드: 클릭 이벤트 무시, TRACK_START|id 수신 후에만 추적 시작
+// 연결된 Qt 클라이언트 소켓으로 PWM_OUT 역방향 전송
+static bool g_qt_mode = false;
+#ifdef _WIN32
+static SOCKET g_remote_client_fd = INVALID_SOCKET;
+#else
+static int g_remote_client_fd = -1;
+#endif
+static std::mutex g_remote_client_fd_mutex;
 
 static std::mutex g_click_mutex;
 static bool g_click_pending = false;
@@ -176,6 +207,7 @@ static std::string build_gstreamer_rtsp_pipeline(bool use_tcp)
 }
 
 // ── 캡처 전용 스레드: RTSP 프레임을 계속 읽어 g_cap_latest_frame 갱신 ──
+#ifndef CAMERA_RBF_QT_MODE
 static void capture_thread_fn()
 {
     setup_low_latency_capture_env();
@@ -243,6 +275,7 @@ static void capture_thread_fn()
     cap.release();
     g_cap_cv.notify_all();
 }
+#endif // !CAMERA_RBF_QT_MODE  (capture_thread_fn)
 
 enum class RemoteTrackEvent
 {
@@ -385,6 +418,7 @@ static double iou_norm(double l1, double t1, double r1, double b1,
     return inter / uni;
 }
 
+#ifndef CAMERA_RBF_QT_MODE
 static void remote_select_thread_fn(std::string host, int port)
 {
     constexpr int kReconnectMs = 700;
@@ -433,6 +467,11 @@ static void remote_select_thread_fn(std::string host, int port)
             continue;
         }
         std::cerr << "[remote_select] connected " << host << ":" << port << "\n";
+        // QT 모드: 연결된 소켓 fd를 역방향 PWM 전송에 사용
+        {
+            std::lock_guard<std::mutex> lk(g_remote_client_fd_mutex);
+            g_remote_client_fd = fd;
+        }
 
         std::string buf;
         char tmp[512];
@@ -444,7 +483,7 @@ static void remote_select_thread_fn(std::string host, int port)
             ssize_t n = ::recv(fd, tmp, sizeof(tmp), 0);
 #endif
             if (n <= 0) break;
-            buf.append(tmp, tmp + n);
+            buf.append(tmp, static_cast<std::size_t>(n));
             while (true)
             {
                 std::size_t eol = buf.find_first_of("\r\n");
@@ -511,6 +550,15 @@ static void remote_select_thread_fn(std::string host, int port)
                 }
             }
         }
+        // 연결 해제: fd 클리어
+        {
+            std::lock_guard<std::mutex> lk(g_remote_client_fd_mutex);
+#ifdef _WIN32
+            g_remote_client_fd = INVALID_SOCKET;
+#else
+            g_remote_client_fd = -1;
+#endif
+        }
 #ifdef _WIN32
         ::closesocket(fd);
 #else
@@ -521,9 +569,11 @@ static void remote_select_thread_fn(std::string host, int port)
         std::this_thread::sleep_for(std::chrono::milliseconds(kReconnectMs));
     }
 }
+#endif // !CAMERA_RBF_QT_MODE  (remote_select_thread_fn)
 
+#ifndef CAMERA_RBF_QT_MODE
 // ──────────────────────────────────────────────────────────────────────
-// DeepSORT 워커 프로세스 + 비동기 스레드
+// DeepSORT 워커 프로세스 + 비동기 스레드 (단독 실행 모드 전용)
 // ──────────────────────────────────────────────────────────────────────
 struct DeepSortWorker {
 #ifdef _WIN32
@@ -921,6 +971,7 @@ private:
 };
 
 static DeepSortWorker g_deepsort;
+#endif // !CAMERA_RBF_QT_MODE (DeepSortWorker / g_deepsort)
 
 static bool compute_rect_from_obj(const ParsedMetadataObject& obj, int W, int H, cv::Rect& out)
 {
@@ -953,6 +1004,7 @@ static bool compute_rect_from_obj(const ParsedMetadataObject& obj, int W, int H,
     return (out.area() > 20);
 }
 
+#ifndef CAMERA_RBF_QT_MODE
 static void metadata_thread_fn(RTSPClient* client, XMLParser* parser)
 {
     unsigned char header[4];
@@ -1007,10 +1059,14 @@ static void metadata_thread_fn(RTSPClient* client, XMLParser* parser)
 
     delete[] big_buffer;
 }
+#endif // !CAMERA_RBF_QT_MODE  (metadata_thread_fn)
 
+#ifndef CAMERA_RBF_QT_MODE
 static void on_mouse(int event, int x, int y, int /*flags*/, void* userdata)
 {
     if (event != cv::EVENT_LBUTTONDOWN) return;
+    // QT 모드: 마우스 클릭으로 추적 선택하지 않음 (Track 버튼으로만 선택)
+    if (g_qt_mode) return;
 
     cv::Mat* frame_ptr = static_cast<cv::Mat*>(userdata);
     cv::Mat frame_copy;
@@ -1056,7 +1112,9 @@ static void on_mouse(int event, int x, int y, int /*flags*/, void* userdata)
         break;
     }
 }
+#endif // !CAMERA_RBF_QT_MODE  (on_mouse)
 
+// 계산 로직: Qt 모드/단독 모드 공통 (화면 표시 제외)
 class RbfTps2D
 {
 public:
@@ -1176,6 +1234,7 @@ static std::vector<CalibPoint> load_calib_points()
     return pts;
 }
 
+#ifndef CAMERA_RBF_QT_MODE
 static void draw_world_grid(cv::Mat& frame, const RbfTps2D& rbf_u, const RbfTps2D& rbf_v,
                             const std::vector<CalibPoint>& pts)
 {
@@ -1238,6 +1297,7 @@ static void draw_world_grid(cv::Mat& frame, const RbfTps2D& rbf_u, const RbfTps2
                     cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 200, 255), 1);
     }
 }
+#endif // !CAMERA_RBF_QT_MODE  (draw_world_grid)
 
 struct KalmanBbox2D
 {
@@ -1307,6 +1367,7 @@ struct KalmanBbox2D
     void reset() { initialized = false; cx = cy = vx = vy = w = h = 0; }
 };
 
+#ifndef CAMERA_RBF_QT_MODE
 int main(int argc, char** argv)
 {
     enum class TrackerMode { DeepSort, Native };
@@ -1334,6 +1395,7 @@ int main(int argc, char** argv)
     {
         std::string arg = argv[i];
         if (arg == "--detect-all") g_detect_all = true;
+        else if (arg == "--qt-mode") g_qt_mode = true;
         else if (arg == "--ratio" && i + 1 < argc) ratio = std::atof(argv[++i]);
         else if (arg == "--alpha" && i + 1 < argc) alpha = std::atof(argv[++i]);
         else if (arg == "--send-every" && i + 1 < argc) send_every_n = std::max(1, std::atoi(argv[++i]));
@@ -2012,6 +2074,20 @@ int main(int argc, char** argv)
         if (sel_ok && frame_id % send_every_n == 0)
         {
             std::cout << "SET_PWM,PAN=" << pan << ",TILT=" << tilt << std::endl;
+            // QT 모드: 연결된 Qt 클라이언트 소켓으로 PWM 값 역방향 전송
+            if (g_qt_mode)
+            {
+                std::string pwm_msg = "PWM_OUT,PAN=" + std::to_string(pan)
+                                      + ",TILT=" + std::to_string(tilt) + "\n";
+                std::lock_guard<std::mutex> lk(g_remote_client_fd_mutex);
+#ifdef _WIN32
+                if (g_remote_client_fd != INVALID_SOCKET)
+                    ::send(g_remote_client_fd, pwm_msg.c_str(), (int)pwm_msg.size(), 0);
+#else
+                if (g_remote_client_fd >= 0)
+                    ::send(g_remote_client_fd, pwm_msg.c_str(), pwm_msg.size(), MSG_NOSIGNAL);
+#endif
+            }
             const bool can_log_by_time =
                 (std::chrono::duration_cast<std::chrono::milliseconds>(t_now_send - t_last_pwm_log).count() >= pwm_log_interval_ms);
             if (can_log_by_time)
@@ -2128,3 +2204,404 @@ int main(int argc, char** argv)
 #endif
     return 0;
 }
+#endif // !CAMERA_RBF_QT_MODE  (main)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CAMERA_RBF_QT_MODE — Qt 클라이언트 라이브러리 인터페이스
+//
+// Qt 빌드 시 -DCAMERA_RBF_QT_MODE 정의하면 이 블록만 노출됩니다.
+// tracker(NativeTrack+IdStabilizer), RBF, Kalman 모두 camera_RBF.cpp 자체 구현 사용.
+// native_metadata_tracker.cpp 는 불필요합니다.
+//
+// 사용 흐름:
+//   1. rbfqt_init(...)                 — 앱 시작 시 한 번 (RBF 피팅)
+//   2. rbfqt_process_metadata(...)     — Qt가 ONVIF 메타데이터 수신할 때마다
+//      → 내부에서 NativeTrack + IdStabilizer 실행, XML ID ↔ 내부 ID 매핑 갱신
+//   3. rbfqt_set_target_bbox(...)      — Track 버튼 / Fraud 이벤트 때마다
+//   4. rbfqt_compute_pwm(...)         — 33ms 주기 타이머에서 호출
+//   5. rbfqt_clear_target()           — Untrack 시
+//   6. rbfqt_find_native_id(xmlId)    — XML ID → 내부 N-ID 조회
+//   7. rbfqt_get_bbox_by_xmlid(xmlId) — XML ID로 현재 bbox 조회
+// ═══════════════════════════════════════════════════════════════════════════
+#ifdef CAMERA_RBF_QT_MODE
+
+// ── NativeTrack 전역 상태 (Qt 모드에서 rbfqt_process_metadata 가 사용) ────
+namespace {
+    struct NativeTrackState {
+        int id{0};
+        cv::Rect2d box;
+        cv::Point2d vel{0.0, 0.0};
+        int miss{0};
+        int lock_det{-1};
+        int lock_left{0};
+        std::string xmlId;  // 원본 ONVIF XML ID 보존
+    };
+    std::vector<NativeTrackState> g_qt_nativeTracks;
+    int g_qt_nativeNextId = 1;
+    std::unordered_map<std::string, std::string> g_qt_xmlToNative;  // "1071432" → "N5"
+    std::unordered_map<std::string, std::string> g_qt_nativeToXml;  // "N5" → "1071432"
+    std::unordered_map<std::string, cv::Rect2d>  g_qt_nativeBbox;   // "N5" → EMA 스무더 적용된 bbox (픽셀)
+    std::unordered_map<std::string, SmoothedRect> g_qt_smoothBbox;   // "N5" → EMA 상태
+    std::mutex g_qt_tracker_mutex;
+}
+
+static RbfTps2D  g_rbfqt_pan,  g_rbfqt_tilt;
+static bool      g_rbfqt_ok         = false;
+static double    g_rbfqt_ratio      = 0.35;
+static double    g_rbfqt_alpha      = 0.5;
+static double    g_rbfqt_predict_ms = 300.0;
+static int       g_rbfqt_pan_min    = 500,  g_rbfqt_pan_max  = 2500;
+static int       g_rbfqt_tilt_min   = 500,  g_rbfqt_tilt_max = 2500;
+static KalmanBbox2D g_rbfqt_kf;
+static int       g_rbfqt_prev_pan   = 1500, g_rbfqt_prev_tilt = 1500;
+static long long g_rbfqt_last_ms    = 0;
+static bool      g_rbfqt_has_target = false;
+static cv::Rect  g_rbfqt_target_rect;
+static std::mutex g_rbfqt_mutex;
+// 현재 추적 중인 N-ID (빈 문자열이면 수동 bbox 고정 모드)
+static std::string g_rbfqt_tracked_native_id;
+
+// RBF 초기화 (앱 시작 시 한 번 호출)
+bool rbfqt_init(double ratio, double alpha, double predict_ms,
+                int pan_min, int pan_max, int tilt_min, int tilt_max)
+{
+    g_rbfqt_ratio      = ratio;
+    g_rbfqt_alpha      = alpha;
+    g_rbfqt_predict_ms = predict_ms;
+    g_rbfqt_pan_min    = pan_min;  g_rbfqt_pan_max  = pan_max;
+    g_rbfqt_tilt_min   = tilt_min; g_rbfqt_tilt_max = tilt_max;
+
+    const auto pts = load_calib_points();   // camera_RBF.cpp 자체 캘리브 데이터 사용
+    std::vector<cv::Point2d> px;
+    std::vector<double> pan_y, tilt_y;
+    px.reserve(pts.size());
+    pan_y.reserve(pts.size());
+    tilt_y.reserve(pts.size());
+    for (const auto& p : pts) {
+        px.emplace_back(p.u, p.v);
+        pan_y.push_back(p.pan);
+        tilt_y.push_back(p.tilt);
+    }
+    g_rbfqt_ok = g_rbfqt_pan.fit(px, pan_y) && g_rbfqt_tilt.fit(px, tilt_y);
+    if (g_rbfqt_ok)
+        std::cerr << "[rbfqt] RBF fitted N=" << px.size() << " ratio=" << ratio
+                  << " alpha=" << alpha << " predict_ms=" << predict_ms << "\n";
+    else
+        std::cerr << "[rbfqt] RBF fit FAILED\n";
+    return g_rbfqt_ok;
+}
+
+// 추적할 객체의 bbox 설정 (정규화 [0,1] 또는 픽셀 좌표 자동 판별)
+void rbfqt_set_target_bbox(float l, float t, float r, float b, int W, int H)
+{
+    int left, top, right, bottom;
+    if (std::max({l, t, r, b}) <= 1.5f) {
+        left   = static_cast<int>(l * W);
+        top    = static_cast<int>(t * H);
+        right  = static_cast<int>(r * W);
+        bottom = static_cast<int>(b * H);
+    } else {
+        left = static_cast<int>(l); top = static_cast<int>(t);
+        right = static_cast<int>(r); bottom = static_cast<int>(b);
+    }
+    left   = std::max(0, std::min(left,   W - 1));
+    top    = std::max(0, std::min(top,    H - 1));
+    right  = std::max(left + 1, std::min(right,  W));
+    bottom = std::max(top  + 1, std::min(bottom, H));
+
+    std::lock_guard<std::mutex> lk(g_rbfqt_mutex);
+    g_rbfqt_target_rect = cv::Rect(left, top, right - left, bottom - top);
+    if (!g_rbfqt_has_target) {
+        // 새 타겟: Kalman 리셋
+        g_rbfqt_kf.reset();
+        g_rbfqt_prev_pan  = 1500;
+        g_rbfqt_prev_tilt = 1500;
+        g_rbfqt_last_ms   = 0;
+    }
+    g_rbfqt_has_target = true;
+}
+
+// 추적 해제
+void rbfqt_clear_target()
+{
+    std::lock_guard<std::mutex> lk(g_rbfqt_mutex);
+    g_rbfqt_has_target = false;
+    g_rbfqt_tracked_native_id.clear();
+    g_rbfqt_kf.reset();
+    g_rbfqt_prev_pan  = 1500;
+    g_rbfqt_prev_tilt = 1500;
+    g_rbfqt_last_ms   = 0;
+}
+
+// 추적할 N-ID 설정 — rbfqt_compute_pwm에서 매 tick마다 해당 ID의 bbox를 자동 갱신
+// nativeId가 nullptr 또는 ""이면 자동 갱신 비활성화
+void rbfqt_set_tracked_nativeid(const char* nativeId)
+{
+    std::lock_guard<std::mutex> lk(g_rbfqt_mutex);
+    const std::string newId = nativeId ? nativeId : "";
+    if (g_rbfqt_tracked_native_id == newId) return;
+    g_rbfqt_tracked_native_id = newId;
+    if (newId.empty()) {
+        g_rbfqt_has_target = false;
+    }
+    // bbox는 다음 rbfqt_compute_pwm에서 g_qt_nativeBbox로부터 자동 갱신됨
+    // Kalman은 bbox가 처음 확인될 때 reset
+    g_rbfqt_kf.reset();
+    g_rbfqt_prev_pan  = 1500;
+    g_rbfqt_prev_tilt = 1500;
+    g_rbfqt_last_ms   = 0;
+}
+
+// PWM 계산 (33ms 주기 타이머에서 호출)
+// now_ms: QDateTime::currentMSecsSinceEpoch()
+// 반환값: true = pan/tilt 유효, false = 타겟 없음 또는 RBF 미초기화
+bool rbfqt_compute_pwm(long long now_ms, int W, int H, int* pan, int* tilt)
+{
+    // ── Step 1: tracked N-ID가 있으면 현재 bbox를 g_qt_nativeBbox에서 자동 갱신 ──
+    // 단독 실행 모드와 동일: 매 프레임 NativeTrack 결과로 bbox 업데이트
+    {
+        std::string trackedId;
+        {
+            std::lock_guard<std::mutex> lk(g_rbfqt_mutex);
+            trackedId = g_rbfqt_tracked_native_id;
+        }
+        if (!trackedId.empty()) {
+            cv::Rect2d liveBox;
+            bool found = false;
+            {
+                std::lock_guard<std::mutex> tk(g_qt_tracker_mutex);
+                auto it = g_qt_nativeBbox.find(trackedId);
+                if (it != g_qt_nativeBbox.end()) {
+                    liveBox = it->second;
+                    found = true;
+                }
+            }
+            if (found) {
+                std::lock_guard<std::mutex> lk(g_rbfqt_mutex);
+                const bool firstHit = !g_rbfqt_has_target;
+                g_rbfqt_target_rect = cv::Rect(
+                    static_cast<int>(liveBox.x), static_cast<int>(liveBox.y),
+                    std::max(1, static_cast<int>(liveBox.width)),
+                    std::max(1, static_cast<int>(liveBox.height)));
+                if (firstHit) {
+                    g_rbfqt_kf.reset();
+                    g_rbfqt_prev_pan  = 1500;
+                    g_rbfqt_prev_tilt = 1500;
+                    g_rbfqt_last_ms   = 0;
+                }
+                g_rbfqt_has_target = true;
+            }
+        }
+    }
+
+    std::lock_guard<std::mutex> lk(g_rbfqt_mutex);
+    if (!g_rbfqt_ok || !g_rbfqt_has_target) return false;
+
+    double dt = (g_rbfqt_last_ms > 0)
+                    ? (now_ms - g_rbfqt_last_ms) / 1000.0
+                    : (1.0 / 30.0);
+    g_rbfqt_last_ms = now_ms;
+    dt = std::max(1.0 / 120.0, std::min(dt, 1.0 / 15.0));
+
+    const double bbox_cx = g_rbfqt_target_rect.x + g_rbfqt_target_rect.width  * 0.5;
+    double bbox_cy = g_rbfqt_target_rect.y + g_rbfqt_target_rect.height * g_rbfqt_ratio;
+    bbox_cy = std::max(0.0, std::min(bbox_cy, static_cast<double>(H - 1)));
+
+    g_rbfqt_kf.update(bbox_cx, bbox_cy,
+                      static_cast<double>(g_rbfqt_target_rect.width),
+                      static_cast<double>(g_rbfqt_target_rect.height), dt);
+
+    double pcx = 0.0, pcy = 0.0;
+    g_rbfqt_kf.predict(g_rbfqt_predict_ms / 1000.0, pcx, pcy);
+    pcx = std::max(0.0, std::min(pcx, static_cast<double>(W - 1)));
+    pcy = std::max(0.0, std::min(pcy, static_cast<double>(H - 1)));
+
+    const double pan_d  = g_rbfqt_pan .eval(pcx, pcy);
+    const double tilt_d = g_rbfqt_tilt.eval(pcx, pcy);
+    int p = static_cast<int>(std::lround(
+                std::max(static_cast<double>(g_rbfqt_pan_min),
+                         std::min(static_cast<double>(g_rbfqt_pan_max), pan_d))));
+    int t = static_cast<int>(std::lround(
+                std::max(static_cast<double>(g_rbfqt_tilt_min),
+                         std::min(static_cast<double>(g_rbfqt_tilt_max), tilt_d))));
+    p = static_cast<int>(std::lround(g_rbfqt_alpha * p + (1.0 - g_rbfqt_alpha) * g_rbfqt_prev_pan));
+    t = static_cast<int>(std::lround(g_rbfqt_alpha * t + (1.0 - g_rbfqt_alpha) * g_rbfqt_prev_tilt));
+    g_rbfqt_prev_pan  = p;
+    g_rbfqt_prev_tilt = t;
+    *pan  = p;
+    *tilt = t;
+    return true;
+}
+
+// ── Qt 모드 tracker: NativeTrack + IdStabilizer ──────────────────────────────
+// Qt 가 ONVIF 메타데이터를 받을 때마다 호출.
+// objects: ParsedMetadataObject 벡터, W/H: 현재 프레임 크기
+// 내부적으로 NativeTrack IoU greedy 매칭 수행 후 g_qt_xmlToNative 갱신
+void rbfqt_process_metadata(const std::vector<ParsedMetadataObject>& objects, int W, int H)
+{
+    struct Det { const ParsedMetadataObject* obj; cv::Rect2d box; cv::Point2d c; };
+    std::vector<Det> dets;
+    dets.reserve(objects.size());
+    for (const auto& ro : objects) {
+        cv::Rect r;
+        if (!compute_rect_from_obj(ro, W, H, r)) continue;
+        Det d;
+        d.obj = &ro;
+        d.box = cv::Rect2d(r.x, r.y, r.width, r.height);
+        d.c   = cv::Point2d(d.box.x + d.box.width * 0.5, d.box.y + d.box.height * 0.5);
+        dets.push_back(d);
+    }
+
+    auto iou = [](const cv::Rect2d& a, const cv::Rect2d& b) {
+        const double x1 = std::max(a.x, b.x), y1 = std::max(a.y, b.y);
+        const double x2 = std::min(a.x + a.width,  b.x + b.width);
+        const double y2 = std::min(a.y + a.height, b.y + b.height);
+        const double w = std::max(0.0, x2 - x1), h = std::max(0.0, y2 - y1);
+        const double inter = w * h;
+        if (inter <= 0.0) return 0.0;
+        const double uni = a.area() + b.area() - inter;
+        return (uni > 1e-9) ? (inter / uni) : 0.0;
+    };
+
+    std::lock_guard<std::mutex> lk(g_qt_tracker_mutex);
+
+    std::vector<int>  detOwner(dets.size(), -1);
+    std::vector<bool> trackMatched(g_qt_nativeTracks.size(), false);
+
+    for (size_t ti = 0; ti < g_qt_nativeTracks.size(); ++ti) {
+        auto& tr = g_qt_nativeTracks[ti];
+        cv::Rect2d pred = tr.box;
+        pred.x += tr.vel.x; pred.y += tr.vel.y;
+        const cv::Point2d predC(pred.x + pred.width * 0.5, pred.y + pred.height * 0.5);
+
+        double bestScore = 0.0; int bestDi = -1;
+        for (size_t di = 0; di < dets.size(); ++di) {
+            if (detOwner[di] != -1) continue;
+            const double ov   = iou(pred, dets[di].box);
+            const double dist = cv::norm(predC - dets[di].c);
+            const double score = 0.85 * ov + 0.15 * std::exp(-dist / 120.0);
+            if (score > bestScore) { bestScore = score; bestDi = static_cast<int>(di); }
+        }
+        if (bestDi >= 0 && bestScore >= 0.18) {
+            const cv::Point2d prevC(tr.box.x + tr.box.width * 0.5, tr.box.y + tr.box.height * 0.5);
+            tr.vel   = 0.7 * tr.vel + 0.3 * (dets[bestDi].c - prevC);
+            tr.box   = dets[bestDi].box;
+            tr.miss  = 0;
+            tr.lock_det = bestDi;
+            detOwner[bestDi] = static_cast<int>(ti);
+            trackMatched[ti] = true;
+        }
+    }
+
+    for (size_t ti = 0; ti < g_qt_nativeTracks.size(); ++ti)
+        if (!trackMatched[ti]) g_qt_nativeTracks[ti].miss++;
+
+    g_qt_nativeTracks.erase(
+        std::remove_if(g_qt_nativeTracks.begin(), g_qt_nativeTracks.end(),
+                       [](const NativeTrackState& t) { return t.miss > 20; }),
+        g_qt_nativeTracks.end());
+
+    for (size_t di = 0; di < dets.size(); ++di) {
+        if (detOwner[di] != -1) continue;
+        NativeTrackState t;
+        t.id  = g_qt_nativeNextId++;
+        t.box = dets[di].box;
+        t.lock_det = static_cast<int>(di);
+        t.xmlId = dets[di].obj->id;   // 원본 ONVIF XML ID
+        g_qt_nativeTracks.push_back(t);
+        detOwner[di] = static_cast<int>(g_qt_nativeTracks.size() - 1);
+    }
+
+    // 매핑 테이블 및 EMA 스무더 적용 bbox 갱신
+    g_qt_xmlToNative.clear();
+    g_qt_nativeToXml.clear();
+    g_qt_nativeBbox.clear();
+
+    // 이번 프레임에 등장한 N-ID 집합 (사라진 객체의 스무더 상태 정리용)
+    std::unordered_set<std::string> activeNativeIds;
+
+    for (size_t di = 0; di < dets.size(); ++di) {
+        if (detOwner[di] < 0 || detOwner[di] >= static_cast<int>(g_qt_nativeTracks.size())) continue;
+        const auto& tr = g_qt_nativeTracks[detOwner[di]];
+        const std::string nativeId = "N" + std::to_string(tr.id);
+        activeNativeIds.insert(nativeId);
+
+        if (!tr.xmlId.empty()) {
+            g_qt_xmlToNative[tr.xmlId] = nativeId;
+            g_qt_nativeToXml[nativeId] = tr.xmlId;
+        }
+
+        // ── Adaptive EMA 스무더 적용 ─────────────────────────────────────────
+        auto& sr = g_qt_smoothBbox[nativeId];
+        const double rx = tr.box.x, ry = tr.box.y;
+        const double rw = tr.box.width, rh = tr.box.height;
+        if (!sr.init) {
+            sr.x = rx; sr.y = ry; sr.w = rw; sr.h = rh;
+            sr.init = true;
+        } else {
+            const double dx = rx - sr.x, dy = ry - sr.y;
+            const double dw = rw - sr.w, dh = rh - sr.h;
+            const double dist = std::sqrt(dx*dx + dy*dy);
+            const double size_rel_w = std::fabs(dw) / std::max(1.0, sr.w);
+            const double size_rel_h = std::fabs(dh) / std::max(1.0, sr.h);
+            const double curr_ar = sr.w / std::max(1.0, sr.h);
+            const double raw_ar  = rw   / std::max(1.0, rh);
+
+            double a = BBOX_SMOOTH_ALPHA, a_size = BBOX_SMOOTH_ALPHA * 0.75;
+            if      (dist < 2.5)   { a = 0.06; a_size = 0.02; }
+            else if (dist < 8.0)   { a = 0.14; a_size = 0.07; }
+            else if (dist > 100.0) { a = 0.15; a_size = 0.10; }
+
+            const double ddx = (std::fabs(dx) < 1.0) ? 0.0 : dx;
+            const double ddy = (std::fabs(dy) < 1.0) ? 0.0 : dy;
+            const bool size_jitter = (size_rel_w < 0.03 && size_rel_h < 0.03 && dist < 6.0);
+            if (size_jitter) a_size = 0.0;
+            if (std::fabs(raw_ar - curr_ar) > 0.18 && dist < 10.0)
+                a_size = std::min(a_size, 0.03);
+
+            sr.x += a * ddx;  sr.y += a * ddy;
+            sr.w += a_size * dw; sr.h += a_size * dh;
+        }
+        // 스무더 적용된 값을 nativeBbox에 저장
+        g_qt_nativeBbox[nativeId] = cv::Rect2d(sr.x, sr.y,
+                                               std::max(1.0, sr.w),
+                                               std::max(1.0, sr.h));
+    }
+
+    // 사라진 객체의 스무더 상태 제거 (메모리 누수 방지)
+    for (auto it = g_qt_smoothBbox.begin(); it != g_qt_smoothBbox.end(); ) {
+        if (activeNativeIds.find(it->first) == activeNativeIds.end())
+            it = g_qt_smoothBbox.erase(it);
+        else
+            ++it;
+    }
+}
+
+// XML ID → 내부 N-ID 조회 (없으면 빈 문자열)
+std::string rbfqt_find_native_id(const std::string& xmlId)
+{
+    std::lock_guard<std::mutex> lk(g_qt_tracker_mutex);
+    auto it = g_qt_xmlToNative.find(xmlId);
+    return (it != g_qt_xmlToNative.end()) ? it->second : std::string{};
+}
+
+// XML ID 로 현재 bbox 조회. found=false 이면 추적 중 아님.
+struct RbfQtBBox { float l{0}, t{0}, r{0}, b{0}; bool found{false}; };
+RbfQtBBox rbfqt_get_bbox_by_xmlid(const std::string& xmlId, int W, int H)
+{
+    std::lock_guard<std::mutex> lk(g_qt_tracker_mutex);
+    auto it = g_qt_xmlToNative.find(xmlId);
+    if (it == g_qt_xmlToNative.end()) return {};
+    auto bit = g_qt_nativeBbox.find(it->second);
+    if (bit == g_qt_nativeBbox.end()) return {};
+    const auto& b = bit->second;
+    RbfQtBBox res;
+    res.l = static_cast<float>(b.x) / W;
+    res.t = static_cast<float>(b.y) / H;
+    res.r = static_cast<float>(b.x + b.width)  / W;
+    res.b = static_cast<float>(b.y + b.height) / H;
+    res.found = true;
+    return res;
+}
+
+#endif // CAMERA_RBF_QT_MODE

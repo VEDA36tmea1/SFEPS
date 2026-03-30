@@ -15,6 +15,9 @@ Page {
     property int sessionEvasions: 0
     property int totalEvasions: 0 + sessionEvasions
     property real evasionRate: totalEntries > 0 ? Math.round((totalEvasions / totalEntries) * 1000) / 10 : 0
+    readonly property int entryOverviewTotal: totalEntries
+    readonly property int entryOverviewEvasions: totalEvasions
+    readonly property real entryOverviewRate: evasionRate
 
     // Demographic Counters
     property int ageCount18: 0
@@ -23,30 +26,116 @@ Page {
     property int ageCount45: 0
     property int ageCount60: 0
     property int ageCountPlus: 0
+    property var countedEntryIds: []
+    property var countedFraudIds: []
+    property var countedAgeByObject: ({})
+
+    function resetSessionStats() {
+        totalEntries = 0
+        sessionEvasions = 0
+        ageCount18 = 0
+        ageCount25 = 0
+        ageCount35 = 0
+        ageCount45 = 0
+        ageCount60 = 0
+        ageCountPlus = 0
+        countedEntryIds = []
+        countedFraudIds = []
+        countedAgeByObject = ({})
+    }
+
+    function _resolveAgeBucketFromRaw(age) {
+        const raw = age !== undefined ? String(age).trim().toLowerCase() : ""
+        if (raw.length === 0) return ""
+
+        const m = raw.match(/\d+/)
+        if (m && m.length > 0) {
+            const n = parseInt(m[0], 10)
+            if (!isNaN(n)) {
+                if (n < 18) return "18"
+                if (n <= 25) return "25"
+                if (n <= 35) return "35"
+                if (n <= 45) return "45"
+                if (n <= 60) return "60"
+                return "plus"
+            }
+        }
+
+        // Backward compatibility for decade-like labels (e.g. 20s, 30대)
+        if (raw.indexOf("10") !== -1) return "18"
+        if (raw.indexOf("20") !== -1) return "25"
+        if (raw.indexOf("30") !== -1) return "35"
+        if (raw.indexOf("40") !== -1) return "45"
+        if (raw.indexOf("50") !== -1 || raw.indexOf("60") !== -1) return "60"
+        return "plus"
+    }
+
+    function _applyAgeBucketCount(bucket) {
+        if (bucket === "18") ageCount18++
+        else if (bucket === "25") ageCount25++
+        else if (bucket === "35") ageCount35++
+        else if (bucket === "45") ageCount45++
+        else if (bucket === "60") ageCount60++
+        else if (bucket === "plus") ageCountPlus++
+    }
 
     // Monitoring forwarded values from main window (optional)
     property int monitoringTotalBoardingCount: 0
     property int monitoringFraudBoardingCount: 0
     property int monitoringStreamLatency: 0
+    property int monitoringAgeCount18: 0
+    property int monitoringAgeCount25: 0
+    property int monitoringAgeCount35: 0
+    property int monitoringAgeCount45: 0
+    property int monitoringAgeCount60: 0
+    property int monitoringAgeCountPlus: 0
     property real monitoringEvasionRate: monitoringTotalBoardingCount > 0 ? Math.round((monitoringFraudBoardingCount / monitoringTotalBoardingCount) * 1000) / 10 : 0
+    readonly property int monitoringAgeTotal: monitoringAgeCount18 + monitoringAgeCount25 + monitoringAgeCount35 + monitoringAgeCount45 + monitoringAgeCount60 + monitoringAgeCountPlus
 
     // Dynamic scaling helper
-    property int maxAgeCount: Math.max(1, ageCount18, ageCount25, ageCount35, ageCount45, ageCount60, ageCountPlus)
+    property int maxAgeCount: Math.max(
+                                  1,
+                                  ageCount18,
+                                  ageCount25,
+                                  ageCount35,
+                                  ageCount45,
+                                  ageCount60,
+                                  ageCountPlus
+                              )
 
     // Keep analytics counters updated from fraud events even though the alert list card is removed.
     Connections {
         target: fraudManager
-        function onFraudDetected(objectId, cardAgeText, ageGroup, isFraud) {
-            sessionEvasions++
-            totalEntries++
+        function onFraudDetected(objectId, cardAgeText, age, isFraud, tag, imagePath) {
+            const oidRaw = objectId !== undefined ? String(objectId).trim() : ""
+            // Entry 집계는 objectId 단위로만 수행해 중복/유령 카운트 방지
+            if (oidRaw.length === 0) {
+                return
+            }
 
-            const grp = ageGroup.toLowerCase()
-            if (grp.indexOf("10") !== -1) ageCount18++
-            else if (grp.indexOf("20") !== -1) ageCount25++
-            else if (grp.indexOf("30") !== -1) ageCount35++
-            else if (grp.indexOf("40") !== -1) ageCount45++
-            else if (grp.indexOf("50") !== -1 || grp.indexOf("60") !== -1) ageCount60++
-            else ageCountPlus++
+            const entryIds = countedEntryIds || []
+            if (entryIds.indexOf(oidRaw) === -1) {
+                entryIds.push(oidRaw)
+                countedEntryIds = entryIds
+                totalEntries++
+            }
+
+            const fraudIds = countedFraudIds || []
+            if (isFraud && fraudIds.indexOf(oidRaw) === -1) {
+                fraudIds.push(oidRaw)
+                countedFraudIds = fraudIds
+                sessionEvasions++
+            }
+
+            const ageMap = countedAgeByObject || {}
+            if (!Object.prototype.hasOwnProperty.call(ageMap, oidRaw)) {
+                const bucket = _resolveAgeBucketFromRaw(age)
+                if (bucket.length > 0) {
+                    ageMap[oidRaw] = bucket
+                    countedAgeByObject = ageMap
+                    _applyAgeBucketCount(bucket)
+                }
+            }
         }
     }
 
@@ -95,7 +184,7 @@ Page {
                 Layout.rightMargin: 24
                 spacing: 16
 
-                // Entry Status Overview (Donut Chart)
+                // Fare Evasion Rate (Donut Chart)
                 Rectangle {
                     Layout.preferredWidth: Math.round(root.width * 0.4)
                     Layout.fillHeight: true
@@ -112,7 +201,7 @@ Page {
                         RowLayout {
                             Layout.fillWidth: true
                             Text {
-                                text: "Entry Status Overview"
+                                text: "Fare Evasion Rate"
                                 color: "white"
                                 font.bold: true
                                 font.pixelSize: 16
@@ -160,9 +249,9 @@ Page {
                                             ctx.arc(cx, cy, radius, 0, 2 * Math.PI);
                                             ctx.stroke();
 
-                                            // Compute ratio from monitoring counts (fall back to local totals if not set)
-                                            var total = monitoringTotalBoardingCount > 0 ? monitoringTotalBoardingCount : (root.totalEntries > 0 ? root.totalEntries : 0);
-                                            var ev = monitoringFraudBoardingCount > 0 ? monitoringFraudBoardingCount : (root.totalEvasions > 0 ? root.totalEvasions : 0);
+                                            // Compute ratio from FRAUD-parsed counters (FraudManager signal based)
+                                            var total = root.entryOverviewTotal > 0 ? root.entryOverviewTotal : 0;
+                                            var ev = root.entryOverviewEvasions > 0 ? root.entryOverviewEvasions : 0;
                                             var ratio = 0;
                                             if (total > 0) ratio = Math.min(1, ev / total);
 
@@ -185,7 +274,7 @@ Page {
                                         anchors.centerIn: parent
                                         spacing: 4
                                         Text {
-                                            text: monitoringEvasionRate + "%"
+                                            text: root.entryOverviewRate + "%"
                                             color: "white"
                                             font.bold: true
                                             font.pixelSize: 24
@@ -202,8 +291,8 @@ Page {
                                     // Repaint when underlying values change
                                     Connections {
                                         target: root
-                                        onMonitoringTotalBoardingCountChanged: donutCanvas.requestPaint()
-                                        onMonitoringFraudBoardingCountChanged: donutCanvas.requestPaint()
+                                        onTotalEntriesChanged: donutCanvas.requestPaint()
+                                        onTotalEvasionsChanged: donutCanvas.requestPaint()
                                     }
                                 }
 
@@ -226,7 +315,7 @@ Page {
                                                 font.pixelSize: 12
                                             }
                                             Text {
-                                                text: monitoringFraudBoardingCount.toLocaleString()
+                                                text: root.entryOverviewEvasions.toLocaleString()
                                                 color: "white"
                                                 font.bold: true
                                                 font.pixelSize: 16
@@ -249,7 +338,7 @@ Page {
                                                 font.pixelSize: 12
                                             }
                                             Text {
-                                                text: monitoringTotalBoardingCount.toLocaleString()
+                                                text: root.entryOverviewTotal.toLocaleString()
                                                 color: "white"
                                                 font.bold: true
                                                 font.pixelSize: 16
@@ -275,7 +364,7 @@ Page {
                         anchors.fill: parent
                         anchors.margins: 20
                         Text {
-                            text: "Passenger Demographics"
+                            text: "Age Distribution"
                             color: "white"
                             font.bold: true
                             font.pixelSize: 16
@@ -318,7 +407,7 @@ Page {
                                                     anchors.horizontalCenter: parent.horizontalCenter
                                                     width: 30
                                                     height: parent.height * (modelData.val / root.maxAgeCount) * 0.9 // 90% space max
-                                                    color: AppTheme.accent
+                                                    color: (AppTheme && AppTheme.statusOnline) ? AppTheme.statusOnline : "#22c55e"
                                                     radius: 4
                                                     opacity: 0.9
                                                 }
@@ -468,9 +557,9 @@ Page {
                                             : modelData.title === "Storage Capacity"
                                                 ? (storageTotal > 0 ? formatUsedTotal(storageUsed, storageTotal) : "-")
                                                 : modelData.title === "CPU Temperature"
-                                                    ? (cpuTempC > 0 ? (cpuTempC.toFixed(1) + " °C") : "-")
+                                                    ? (sysStatusReceived ? (cpuTempC.toFixed(1) + " °C") : "-")
                                                     : modelData.title === "CPU Usage"
-                                                        ? (typeof cpuUsagePct !== 'undefined' ? (cpuUsagePct.toFixed(1) + " %") : "-")
+                                                        ? (sysStatusReceived ? (cpuUsagePct.toFixed(1) + " %") : "-")
                                                         : modelData.value
                                     color: "white"
                                     font.pixelSize: 18
@@ -491,6 +580,7 @@ Page {
     property var storageUsed: 0
     property real cpuTempC: 0.0
     property real cpuUsagePct: 0.0
+    property bool sysStatusReceived: false
 
     function bytesToReadable(bytes) {
         if (!bytes || bytes <= 0) return "0 B";
@@ -520,11 +610,11 @@ Page {
 
     Connections {
         target: videoArchiveManager
-        onStorageUpdated: function(usedBytes, totalBytes, availableBytes, fileCount) {
-            storageTotal = totalBytes
-            storageAvailable = availableBytes
+        onStorageUpdated: function(usedBytes, capBytes) {
+            storageTotal = capBytes
+            storageAvailable = Math.max(0, capBytes - usedBytes)
             storageUsed = usedBytes
-            console.log("storageUpdated -> used:", usedBytes, "total:", totalBytes, "avail:", availableBytes, "count:", fileCount)
+            console.log("storageUpdated -> used:", usedBytes, "cap:", capBytes, "avail:", storageAvailable)
         }
     }
 
@@ -533,6 +623,7 @@ Page {
         onSysStatusUpdated: function(tempC, usagePct) {
             cpuTempC = tempC
             cpuUsagePct = usagePct
+            sysStatusReceived = true
             console.log("SYS_STATUS -> temp:", tempC, "usage:", usagePct)
         }
     }

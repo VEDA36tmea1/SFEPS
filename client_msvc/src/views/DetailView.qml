@@ -11,11 +11,11 @@ Item {
 
     property string objectId: "3679"
     property string cardAgeText: "Adult"
-    property string ageGroup: "Senior"
+    property string age: "Senior"
     property bool isFraud: true
     property string imagePath: ""
     property string cardAgeDisplay: cardAgeText && cardAgeText.trim() !== "" ? cardAgeText.toUpperCase() : "-"
-    property string estimatedAgeDisplay: ageGroup && ageGroup.trim() !== "" ? ageGroup.toUpperCase() : "-"
+    property string estimatedAgeDisplay: age && age.trim() !== "" ? age.toUpperCase() : "-"
     property string fraudDisplay: isFraud ? "FARE EVASION (Y)" : "NORMAL BOARDING (N)"
 
     RowLayout {
@@ -89,26 +89,8 @@ Item {
                     }
                     
                     // Face Detection Box - only show when image is loaded
-                    Rectangle {
-                        x: parent.width * 0.4
-                        y: parent.height * 0.3
-                        width: 120; height: 120
-                        color: "transparent"
-                        border.color: AppTheme.accent
-                        border.width: 2
-                        visible: fraudImage.visible
-                        
-                        Rectangle {
-                            anchors.left: parent.left; anchors.top: parent.top
-                            width: 30; height: 30; color: AppTheme.accent
-                            Text {
-                                text: isFraud ? "Y" : "N"
-                                anchors.centerIn: parent
-                                color: "white"
-                                font.bold: true; font.pixelSize: 10
-                            }
-                        }
-                    }
+                    // (Removed) Face detection overlay box.
+                    // 이미지 위의 주황색 박스는 요구사항에 따라 노출하지 않습니다.
                     
                     // Loading indicator when image is being loaded
                     BusyIndicator {

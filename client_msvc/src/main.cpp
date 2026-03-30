@@ -17,6 +17,9 @@
 #include "voicemanager.h"
 #include "fraudmanager.h"
 #include "positionmanager.h"
+#include "pwmtransmitter.h"
+#include "videoarchivemanager.h"
+#include "recordinglistmodel.h"
 #ifdef SFEPS_HAVE_OPENCV
 #include "live_frame_provider.h"
 #endif
@@ -65,6 +68,19 @@ int main(int argc, char *argv[]) {
     PositionManager positionManager;
     engine.rootContext()->setContextProperty("positionManager", &positionManager);
 
+    // PwmTransmitter: camera_RBF에서 수신한 PWM 값을 하드웨어로 송신
+    // 환경변수: SFEPS_PWM_MODE (raspi|stm), SFEPS_PWM_HOST, SFEPS_PWM_PORT
+    PwmTransmitter pwmTransmitter;
+    engine.rootContext()->setContextProperty("pwmTransmitter", &pwmTransmitter);
+
+    // VideoArchiveManager: 녹화 파일 카탈로그 및 재생 관리
+    VideoArchiveManager videoArchiveManager;
+    engine.rootContext()->setContextProperty("videoArchiveManager", &videoArchiveManager);
+
+    // RecordingListModel: QML ListView에서 사용하는 녹화 목록 모델
+    RecordingListModel recordingListModel;
+    engine.rootContext()->setContextProperty("recordingListModel", &recordingListModel);
+
   // Video backend: ONVIF metadata + optional OpenCV RTSP preview + native track + RBF/PWM
   MainWindow videoBackend;
   engine.rootContext()->setContextProperty("videoBackend", &videoBackend);
@@ -72,6 +88,10 @@ int main(int argc, char *argv[]) {
   auto *liveFrameProvider = new LiveFrameProvider();
   engine.addImageProvider(QStringLiteral("live"), liveFrameProvider);
   videoBackend.setLiveFrameProvider(liveFrameProvider);
+  // RBF 계산된 PWM → PwmTransmitter (Raspberry Pi / ESP8266) 직접 전송
+  QObject::connect(&videoBackend, &MainWindow::pwmSetRequested,
+                   &pwmTransmitter, &PwmTransmitter::sendPwm);
+  // 동시에 PositionManager를 통해 서버(5558)에도 통보 (모니터링/로깅 용도)
   QObject::connect(&videoBackend, &MainWindow::pwmSetRequested, &positionManager,
                    [&positionManager](int pan, int tilt) {
                        positionManager.sendPositionCommand(
@@ -97,6 +117,44 @@ int main(int argc, char *argv[]) {
       if (!ok || parsed < 1 || parsed > 65535) return defaultValue;
       return parsed;
   };
+
+  // ── PwmTransmitter 초기화 ───────────────────────────────────────────────
+  // SFEPS_PWM_MODE : "raspi" (기본, TCP) | "stm" (ESP8266, UDP)
+  // SFEPS_PWM_HOST : PWM 수신 장치 IP    (기본: 192.168.0.100)
+  // SFEPS_PWM_PORT : PWM 수신 포트       (기본: 5566)
+  {
+      const QString pwmMode = env.value("SFEPS_PWM_MODE", "raspi").trimmed();
+      const QString pwmHost = env.value("SFEPS_PWM_HOST", "192.168.0.100").trimmed();
+      const int     pwmPort = parseEnvPort(env, "SFEPS_PWM_PORT", 5566);
+      qDebug() << "[Main] PwmTransmitter mode=" << pwmMode
+               << " host=" << pwmHost << " port=" << pwmPort;
+      pwmTransmitter.setMode(pwmMode);
+      pwmTransmitter.connectTarget(pwmHost, pwmPort);
+  }
+
+  // camera_RBF.cpp --qt-mode 에서 역방향으로 수신한 PWM → PwmTransmitter로 송신
+  QObject::connect(&positionManager, &PositionManager::pwmReceived,
+                   &pwmTransmitter,  &PwmTransmitter::sendPwm);
+
+  // FraudManager 자동 추적 요청 → bbox 빨간색 표시 + (수동 추적 없을 때) 자동 전환
+  // trackByXmlId는 호출하지 않음: onPwmTick에서 fraud 목록 기반으로 자동 전환
+  QObject::connect(&fraudManager, &FraudManager::fraudAutoTrackRequest,
+                   [&videoBackend](const QString &xmlId,
+                                   float bboxL, float bboxT, float bboxR, float bboxB) {
+                       qDebug() << "[Main] fraud detected → addFraudXmlId(" << xmlId << ")"
+                                << "fallback=(" << bboxL << bboxT << bboxR << bboxB << ")";
+                       videoBackend.addFraudXmlId(xmlId);
+                       // 수동 추적이 없고 tracker에도 없는 경우 fallback bbox로 즉시 추적
+                       // (수동 추적 중이면 addFraudXmlId만 하고 onPwmTick이 처리)
+                       videoBackend.trackByXmlId(xmlId, bboxL, bboxT, bboxR, bboxB);
+                   });
+
+  // videoBackend tracking 상태 변화 → FraudManager 대기큐 동기화
+  // trackByXmlId 호출 시 xmlId emit, clearRbfTarget 호출 시 "" emit
+  QObject::connect(&videoBackend, &MainWindow::trackingXmlIdChanged,
+                   [&fraudManager](const QString &xmlId) {
+                       fraudManager.setActiveTrackingId(xmlId);
+                   });
 
   const QString alertHost = env.value("FRAUD_SERVER_HOST", "192.168.0.101");
   const bool directStreamMode = parseEnvBool(env, "SFEPS_DIRECT_STREAM_MODE", false);
