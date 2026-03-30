@@ -976,6 +976,12 @@ void MainWindow::trackByXmlId(const QString &xmlId,
     const int W = m_frameW.load() > 0 ? m_frameW.load() : 1920;
     const int H = m_frameH.load() > 0 ? m_frameH.load() : 1080;
 #ifdef CAMERA_RBF_QT_MODE
+    // 수동 추적 중에는 서버에서 오는 자동 trackByXmlId 요청이 들어와도
+    // 현재 수동 target을 절대 덮어쓰지 않는다(수동 값이 최우선).
+    if (m_manualTracking) {
+        qDebug() << "[MainWindow] trackByXmlId ignored (manualTracking active):" << xmlId;
+        return;
+    }
     const std::string nativeId = rbfqt_find_native_id(xmlId.toStdString());
     auto nb = rbfqt_get_bbox_by_xmlid(xmlId.toStdString(), W, H);
     if (nb.found) {
@@ -1284,6 +1290,14 @@ void MainWindow::onPwmTick()
             // pose crop용 sticky bbox (정규화 [0,1])
             double stickyX = 0.0, stickyY = 0.0, stickyW = 0.0, stickyH = 0.0;
             bool stickyBoxFound = false;
+            // best 후보 rect (정규화 [0,1])
+            double bestX = 0.0, bestY = 0.0, bestW = 0.0, bestH = 0.0;
+            // 정책:
+            //  - stickyStableId(S_xxx)가 있으면 유지/전환 판정은 S_xxx 기준만 사용
+            //  - 없으면 기존처럼 xmlId(ONVIF XML ID) 기준으로 fallback
+            const bool useStablePolicy = !stickyStable.isEmpty();
+            const std::string stickyStableStr = useStablePolicy ? stickyStable.toStdString()
+                                                                 : std::string{};
 
             for (const QVariant &v : dets) {
                 if (!v.canConvert<QVariantMap>()) continue;
@@ -1313,8 +1327,10 @@ void MainWindow::onPwmTick()
                 const std::string sid = !nid.empty() ? rbfqt_find_stable_id(nid) : std::string{};
                 const std::string key = !sid.empty() ? sid : key_str;
 
-                // sticky target이 화면에 보이는지 여부는 fraud flag와 무관하게 xmlId 존재로 판단
-                if (!stickyXml.isEmpty() && xmlId == stickyXml) {
+                // sticky target이 화면에 보이는지 여부 판정 (stable 우선, 없으면 xml fallback)
+                const bool isStickyPresent = useStablePolicy ? (key == stickyStableStr)
+                                                                : (!stickyXml.isEmpty() && xmlId == stickyXml);
+                if (isStickyPresent) {
                     currentArea = safeArea;
                     currentFound = true;
                     stickyX = dm.value("x").toDouble();
@@ -1327,10 +1343,18 @@ void MainWindow::onPwmTick()
                 // best candidate는 fraud=true인 객체들로만 구성
                 if (!isFraud) continue;
 
+                // stickyStableId가 존재하면, 전환 판단은 S_xxx stable-mapped 후보로만 허용
+                // (stable 매핑이 안 되는 후보로는 전환하지 않음)
+                if (useStablePolicy && sid.empty()) continue;
+
                 if (safeArea < bestArea) {
                     bestArea = safeArea;
                     bestKey = key;
                     bestXmlId = xmlId;
+                    bestX = dm.value("x").toDouble();
+                    bestY = dm.value("y").toDouble();
+                    bestW = dm.value("w").toDouble();
+                    bestH = dm.value("h").toDouble();
                 }
             }
 
@@ -1461,8 +1485,42 @@ void MainWindow::onPwmTick()
                 } else {
                     // 현재 타겟이 보이는 상태: 새 후보가 "충분히" 더 작을 때만 전환
                     stableMissingFrames = 0;
-                    if (bestXmlId != stickyXml && bestArea < currentArea * kSwitchRatio) {
-                        shouldSwitch = true;
+                    const bool diffOk = useStablePolicy ? (bestKey != stickyStableStr)
+                                                          : (bestXmlId != stickyXml);
+                    if (diffOk && bestArea < currentArea * kSwitchRatio) {
+                        // 겹침(occlusion) 상황에서 다른 사람에게 뺏기는 걸 막기 위해,
+                        // sticky bbox와 best 후보 bbox의 IoU가 큰 동안은 전환을 억제한다.
+                        auto iouNorm = [](double ax, double ay, double aw, double ah,
+                                           double bx, double by, double bw, double bh) -> double {
+                            const double a1x = ax;
+                            const double a1y = ay;
+                            const double a2x = ax + aw;
+                            const double a2y = ay + ah;
+                            const double b1x = bx;
+                            const double b1y = by;
+                            const double b2x = bx + bw;
+                            const double b2y = by + bh;
+                            const double ix1 = std::max(a1x, b1x);
+                            const double iy1 = std::max(a1y, b1y);
+                            const double ix2 = std::min(a2x, b2x);
+                            const double iy2 = std::min(a2y, b2y);
+                            const double iw = std::max(0.0, ix2 - ix1);
+                            const double ih = std::max(0.0, iy2 - iy1);
+                            const double inter = iw * ih;
+                            const double areaA = std::max(0.0, aw) * std::max(0.0, ah);
+                            const double areaB = std::max(0.0, bw) * std::max(0.0, bh);
+                            const double uni = areaA + areaB - inter;
+                            return (uni > 1e-9) ? (inter / uni) : 0.0;
+                        };
+
+                        const double iou = (stickyBoxFound && bestArea < 1e17)
+                                                ? iouNorm(stickyX, stickyY, stickyW, stickyH,
+                                                          bestX, bestY, bestW, bestH)
+                                                : 0.0;
+                        const double kMaxIouBlock = 0.25; // 겹치면 전환 억제
+                        if (!(iou > kMaxIouBlock)) {
+                            shouldSwitch = true;
+                        }
                     }
                 }
 
