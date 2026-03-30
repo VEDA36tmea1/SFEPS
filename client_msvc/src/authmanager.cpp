@@ -77,8 +77,7 @@ void AuthManager::login(const QString &id, const QString &pw)
     const QString authHost = env.value("AUTH_SERVER_HOST", QString::fromUtf8(kDefaultAuthHost));
     const int authTlsPort = parseEnvPort(env, "AUTH_TLS_PORT", kDefaultAuthTlsPort);
     const int authPlainPort = parseEnvPort(env, "AUTH_PLAINTEXT_PORT", kDefaultAuthPlainPort);
-    // Force plaintext auth transport: disable TLS regardless of environment.
-    const bool authTlsEnable = false;
+    const bool authTlsEnable = parseEnvBool(env, "AUTH_TLS_ENABLE", true);
     const bool allowPlainFallback = parseEnvBool(env,
                                                  "AUTH_ALLOW_PLAINTEXT_FALLBACK",
                                                  kDefaultPlainFallbackEnable);
@@ -285,13 +284,24 @@ AuthManager::LoginAttemptResult AuthManager::attemptTlsLogin(const QString &host
 
     const qint64 written = socket->write(payload);
     socket->flush();
-    if (written < 0 || !socket->waitForBytesWritten(kAuthConnectTimeoutMs)) {
+    qWarning() << "[AuthManager] TLS write: host=" << host << "port=" << port
+               << "payload_bytes=" << payload.size() << "written_return=" << written;
+
+    // Some servers accept and respond quickly while the TLS write completion signal
+    // may not arrive in time; plaintext logic tolerates waitForBytesWritten failure.
+    // Do the same for TLS: if we wrote bytes, continue waiting for the auth response.
+    const bool wroteSome = (written >= 0);
+    const bool bytesWrittenOk = socket->waitForBytesWritten(kAuthConnectTimeoutMs);
+    if (written < 0 || (!bytesWrittenOk && !wroteSome)) {
         outTransportError = QString("TLS write failed (%1:%2): %3")
                                 .arg(host)
                                 .arg(port)
                                 .arg(socket->errorString());
         socket->abort();
         return LoginAttemptResult::TransportError;
+    }
+    if (!bytesWrittenOk && wroteSome) {
+        qWarning() << "[AuthManager] TLS write waitForBytesWritten returned false; continuing to wait response.";
     }
 
     if (!socket->waitForReadyRead(kAuthConnectTimeoutMs)) {

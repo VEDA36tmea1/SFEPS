@@ -1,7 +1,11 @@
 #include "videoarchivemanager.h"
 #include <QProcessEnvironment>
 #include <QDebug>
+#include <QFile>
 #include <QRegularExpression>
+#include <QSslConfiguration>
+#include <QSslCertificate>
+#include <QSslError>
 
 namespace {
 int parseTotalField(const QString &line)
@@ -24,7 +28,9 @@ VideoArchiveManager::VideoArchiveManager(QObject *parent) : QObject(parent)
     host = env.value("VIDEO_CATALOG_HOST", "127.0.0.1");
     const bool tls = env.value("SFEPS_VIDEO_CATALOG_TLS_ENABLE", "0").toLower() == "1" || env.value("SFEPS_VIDEO_CATALOG_TLS_ENABLE", "0").toLower() == "true";
     useTls = tls;
-    port = tls ? env.value("SFEPS_VIDEO_CATALOG_TLS_PORT", "6559").toInt() : env.value("SFEPS_VIDEO_CATALOG_PORT", "5559").toInt();
+    tlsPort = env.value("SFEPS_VIDEO_CATALOG_TLS_PORT", "6559").toInt();
+    plainPort = env.value("SFEPS_VIDEO_CATALOG_PORT", "5559").toInt();
+    port = useTls ? tlsPort : plainPort;
 }
 
 void VideoArchiveManager::connectCatalog()
@@ -37,12 +43,47 @@ void VideoArchiveManager::ensureSocket()
     if (useTls) {
         if (!ssl) {
             ssl = new QSslSocket(this);
+            // TLS 인증서 검증을 AuthManager와 동일하게 CA 기반으로 수행
+            const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+            ssl->setPeerVerifyMode(QSslSocket::VerifyPeer);
+
+            const QString caPath = env.value("SFEPS_CLIENT_CA_FILE", env.value("AUTH_TLS_CA_FILE")).trimmed();
+            if (!caPath.isEmpty()) {
+                QFile f(caPath);
+                if (f.open(QIODevice::ReadOnly)) {
+                    const QList<QSslCertificate> certs = QSslCertificate::fromData(f.readAll(), QSsl::Pem);
+                    if (!certs.isEmpty()) {
+                        QSslConfiguration cfg = ssl->sslConfiguration();
+                        cfg.setCaCertificates(certs);
+                        cfg.setProtocol(QSsl::TlsV1_2OrLater);
+                        cfg.setPeerVerifyMode(QSslSocket::VerifyPeer);
+                        ssl->setSslConfiguration(cfg);
+                    } else {
+                        qWarning() << "[VideoArchiveManager] No valid PEM CA in" << caPath;
+                    }
+                } else {
+                    qWarning() << "[VideoArchiveManager] Failed to open CA file" << caPath << f.errorString();
+                }
+            } else {
+                qWarning() << "[VideoArchiveManager] CA path is empty; using system trust store (may fail).";
+            }
+
+            const QString serverName = env.value("SFEPS_CLIENT_TLS_SERVER_NAME").trimmed();
+            if (!serverName.isEmpty()) ssl->setPeerVerifyName(serverName);
+            else ssl->setPeerVerifyName(host); // hostname verification fallback
+
             connect(ssl, &QSslSocket::connected, this, &VideoArchiveManager::onConnected);
             connect(ssl, &QSslSocket::readyRead, this, &VideoArchiveManager::onReadyRead);
             connect(ssl, &QSslSocket::errorOccurred, this, &VideoArchiveManager::onSocketError);
+            connect(ssl, &QSslSocket::sslErrors, this, [this](const QList<QSslError> &errors) {
+                for (const QSslError &err : errors) {
+                    qWarning() << "[VideoArchiveManager] sslError:" << err.errorString();
+                }
+            });
         }
         if (ssl->state() == QAbstractSocket::UnconnectedState) {
-            ssl->connectToHostEncrypted(host, port);
+            tlsAttemptInProgress = true;
+            ssl->connectToHostEncrypted(host, tlsPort);
         }
     } else {
         if (!tcp) {
@@ -52,6 +93,7 @@ void VideoArchiveManager::ensureSocket()
             connect(tcp, &QTcpSocket::errorOccurred, this, &VideoArchiveManager::onSocketError);
         }
         if (tcp->state() == QAbstractSocket::UnconnectedState) {
+            tlsAttemptInProgress = false;
             tcp->connectToHost(host, port);
         }
     }
@@ -84,6 +126,7 @@ void VideoArchiveManager::requestPlayUrl(const QString &id)
 
 void VideoArchiveManager::onConnected()
 {
+    tlsAttemptInProgress = false;
     qDebug() << "VideoArchiveManager connected to" << host << port << "tls=" << useTls;
 }
 
@@ -185,5 +228,22 @@ void VideoArchiveManager::onReadyRead()
 void VideoArchiveManager::onSocketError(QAbstractSocket::SocketError socketError)
 {
     Q_UNUSED(socketError)
+
     qWarning() << "VideoArchiveManager socket error:" << (useTls && ssl ? ssl->errorString() : tcp ? tcp->errorString() : QString());
+
+    // TLS->Plain fallback (recording/playback 카탈로그 동작 유지 목적).
+    if (useTls && tlsAttemptInProgress && ssl) {
+        qWarning() << "[VideoArchiveManager] TLS failed -> fallback to plain" << host << ":" << plainPort;
+        tlsAttemptInProgress = false;
+        useTls = false;
+        port = plainPort;
+
+        ssl->abort();
+        ssl->deleteLater();
+        ssl = nullptr;
+
+        // Reconnect using plaintext.
+        ensureSocket();
+        return;
+    }
 }
