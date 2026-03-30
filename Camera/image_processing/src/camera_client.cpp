@@ -306,7 +306,7 @@ bool runFullPipeline(const cv::Mat& frame,
         if (frame.type() != CV_16UC1) {
             isp_out = frame;
         } else {
-            isp_out = runPureISP(frame);
+            isp_out = runPureISP_withHistograms(frame, "/home/hingu/SFEPS/Camera/image_processing/isp_debug/");
             cv::imwrite("2_pure_isp_out.jpg", isp_out);
         }
     } else {
