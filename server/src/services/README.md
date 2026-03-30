@@ -15,16 +15,21 @@
 - 역할 자체는 작지만, `core/bootstrap`과 `modules/*_service.cpp` 사이 계약을 고정하는 헤더입니다.
 
 ### `service_shared.h` / `service_shared.cpp`
-- 여러 서비스가 함께 쓰는 상수와 문자열/프로토콜 유틸을 제공합니다.
+- 여러 서비스가 함께 쓰는 상수와 문자열 유틸을 제공합니다.
 - 포함 내용:
   - 기본 포트 상수 (`5555`~`5558`)
-  - Position/Object ID 관련 포맷 함수
+  - 요청 크기/Object ID 길이 같은 공용 제한값
   - 인증된 IP 세션 집합 관리
   - 에러/시간/URL 문자열 정규화
 - 대표 함수:
   - `mark_ip_authenticated`, `unmark_ip_authenticated`, `is_ip_authenticated`
-  - `format_obj_pos_line`, `format_obj_end_line`
+  - `trim_copy`, `normalize_login_key`
+  - `normalize_to_iso8601`, `sanitize_error_field`
   - `join_http_url`
+
+주의:
+- 예전에는 Position 프로토콜 포맷 함수(`format_obj_pos_line`, `format_obj_end_line`)도 이 계층에 있었지만, 지금은 `modules/ui/position_service.cpp` 내부 정적 함수로 이동했습니다.
+- 즉 `service_shared.*`는 이제 "여러 서비스가 실제로 공용으로 쓰는 것" 위주로 남겨둔 상태입니다.
 
 ### `transport_utils.h` / `transport_utils.cpp`
 - plain TCP와 TLS를 서비스 코드에서 같은 방식으로 다루기 위한 공용 전송 계층입니다.
@@ -49,6 +54,7 @@
 
 ### `modules`
 - `modules/auth`, `modules/alerts`, `modules/ui`, `modules/voice` 구현들이 `service_shared.*`, `transport_utils.*`를 직접 사용합니다.
+- 다만 Position 전용 텍스트 프로토콜 포맷은 더 이상 `service_shared.*`에 두지 않고 `modules/ui/position_service.cpp` 안에서 처리합니다.
 
 ### `core/network`
 - `transport_utils.cpp`는 내부적으로 `create_listen_socket`, `send_all_plain`, `send_all_tls`, `accept_tls_client` 같은 `core/network` 기능을 조합해서 씁니다.
@@ -60,9 +66,12 @@
 2. `transport_utils.h`
    - 서비스 공통 네트워크 추상화 이해
 3. `service_shared.h`
-   - 인증 상태, Position 포맷, 공통 문자열 유틸 확인
+   - 인증 상태와 공통 문자열 유틸 확인
+4. `modules/ui/position_service.cpp`
+   - Position 전용 프로토콜 포맷과 실제 방송 흐름 확인
 
 ## 설계 포인트
 
 - 서비스 구현 코드가 plain/TLS 분기와 공통 파싱 로직을 매번 직접 쓰지 않도록 중간 계층을 둔 구조입니다.
+- 반대로 특정 서비스에서만 쓰는 포맷 로직은 그 서비스 파일 안에 두는 편이 추적성이 좋아서, Position 전용 포맷 함수는 `position_service.cpp`로 되돌려 둔 상태입니다.
 - 새 TCP/TLS 서비스가 늘어나면 보통 이 디렉토리 유틸을 재사용해 `modules/`에 구현을 추가하는 흐름이 됩니다.

@@ -19,6 +19,7 @@
 #include "rfid_monitor.h"
 #include "runtime_config.h"
 #include "security_runtime.h"
+#include "service_shared.h"
 
 std::atomic<bool> g_running(true);
 
@@ -52,15 +53,6 @@ std::string sanitize_alert_field(std::string value) {
 
 const char* bool_to_yn(bool value) {
     return value ? "Y" : "N";
-}
-
-std::string join_http_url(const std::string& base, const std::string& filename) {
-    std::string normalized_base = base;
-    while (!normalized_base.empty() && normalized_base.back() == '/') {
-        normalized_base.pop_back();
-    }
-    if (normalized_base.empty()) return filename;
-    return normalized_base + "/" + filename;
 }
 
 }  // namespace
@@ -177,8 +169,8 @@ int main() {
                 return;
             }
 
-            const std::string url =
-                join_http_url(sec_cfg.fraud_image_http_base_url, fraud_image_info.filename);
+            const std::string url = app_services_shared::join_http_url(
+                sec_cfg.fraud_image_http_base_url, fraud_image_info.filename);
             std::string message = "IMG_REF|OBJECT_ID=" +
                                   sanitize_alert_field(fraud_image_info.object_id) +
                                   "|URL=" + sanitize_alert_field(url) +

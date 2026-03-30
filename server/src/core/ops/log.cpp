@@ -5,6 +5,7 @@
 #include <iostream>
 #include <vector>
 
+#include "service_shared.h"
 #include "video_catalog_events.h"
 
 namespace {
@@ -75,14 +76,6 @@ int execute_delete(MYSQL* conn, const char* query, my_ulonglong* affected_rows) 
     return 0;
 }
 
-std::string normalize_to_iso8601(std::string timestamp) {
-    if (timestamp.size() >= 19 && timestamp[10] == ' ') {
-        timestamp[10] = 'T';
-        timestamp.resize(19);
-    }
-    return timestamp;
-}
-
 bool fetch_recording_info_by_id(MYSQL* conn,
                                 unsigned long long insert_id,
                                 VideoCatalogRecordInfo& out_record) {
@@ -112,7 +105,7 @@ bool fetch_recording_info_by_id(MYSQL* conn,
 
     out_record.id = std::strtoll(row[0], nullptr, 10);
     out_record.filename = row[1];
-    out_record.created_at = normalize_to_iso8601(row[2]);
+    out_record.created_at = app_services_shared::normalize_to_iso8601(row[2]);
     mysql_free_result(res);
     return out_record.id > 0 && !out_record.filename.empty() && !out_record.created_at.empty();
 }
