@@ -90,11 +90,25 @@ bool parseFraudMessage(const QString &msg,
     bboxL = bboxT = bboxR = bboxB = 0.0f;
     for (int i = 5; i < parts.size(); ++i) {
         const QString p = parts[i].trimmed();
-        if      (p.startsWith("TAG=")) tag   = p.mid(4).trimmed();
-        else if (p.startsWith("L="))  bboxL = p.mid(2).toFloat();
-        else if (p.startsWith("T="))  bboxT = p.mid(2).toFloat();
-        else if (p.startsWith("R="))  bboxR = p.mid(2).toFloat();
-        else if (p.startsWith("B="))  bboxB = p.mid(2).toFloat();
+        // 서버 필드는 포맷/대소문자가 섞일 수 있으므로 '=' 기준으로 값만 뽑는다.
+        const QString pu = p.toUpper();
+        if (pu.startsWith("TAG=")) {
+            tag = p.mid(p.indexOf('=') + 1).trimmed();
+        } else {
+            const int eq = p.indexOf('=');
+            if (eq > 0) {
+                const QString key = pu.left(eq).trimmed();
+                const QString val = p.mid(eq + 1).trimmed();
+                bool ok = false;
+                const float f = val.toFloat(&ok);
+                if (ok) {
+                    if (key == "L") bboxL = f;
+                    else if (key == "T") bboxT = f;
+                    else if (key == "R") bboxR = f;
+                    else if (key == "B") bboxB = f;
+                }
+            }
+        }
     }
 
     return true;

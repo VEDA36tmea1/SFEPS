@@ -136,16 +136,25 @@ int main(int argc, char *argv[]) {
   QObject::connect(&positionManager, &PositionManager::pwmReceived,
                    &pwmTransmitter,  &PwmTransmitter::sendPwm);
 
-  // FraudManager 자동 추적 요청 → bbox 빨간색 표시 + (수동 추적 없을 때) 자동 전환
-  // trackByXmlId는 호출하지 않음: onPwmTick에서 fraud 목록 기반으로 자동 전환
+  // 부정승차(isFraud)마다 XML ID를 세트에 넣어 빨간 bbox (추적 중이어도 processFraud가 항상 emit)
+  QObject::connect(&fraudManager, &FraudManager::fraudDetected,
+                   [&videoBackend](const QString &objectId,
+                                   const QString & /*cardAgeText*/,
+                                   const QString & /*age*/,
+                                   bool isFraud,
+                                   const QString & /*tag*/,
+                                   const QString & /*imagePath*/) {
+                       if (isFraud && !objectId.isEmpty())
+                           videoBackend.addFraudXmlId(objectId);
+                   });
+
+  // 자동 추적 요청: 큐에 넣지 않은 경우(또는 drain 시)에만 emit → trackByXmlId
+  // addFraudXmlId는 위 fraudDetected에서 처리 (추적 중 추가 FRAUD도 빨간색 반영)
   QObject::connect(&fraudManager, &FraudManager::fraudAutoTrackRequest,
                    [&videoBackend](const QString &xmlId,
                                    float bboxL, float bboxT, float bboxR, float bboxB) {
-                       qDebug() << "[Main] fraud detected → addFraudXmlId(" << xmlId << ")"
+                       qDebug() << "[Main] fraud auto-track request xmlId=" << xmlId
                                 << "fallback=(" << bboxL << bboxT << bboxR << bboxB << ")";
-                       videoBackend.addFraudXmlId(xmlId);
-                       // 수동 추적이 없고 tracker에도 없는 경우 fallback bbox로 즉시 추적
-                       // (수동 추적 중이면 addFraudXmlId만 하고 onPwmTick이 처리)
                        videoBackend.trackByXmlId(xmlId, bboxL, bboxT, bboxR, bboxB);
                    });
 
@@ -155,6 +164,16 @@ int main(int argc, char *argv[]) {
                    [&fraudManager](const QString &xmlId) {
                        fraudManager.setActiveTrackingId(xmlId);
                    });
+
+#ifdef CAMERA_RBF_QT_MODE
+  // 자동 레이저 대상이 화면 밖으로 나가 추적을 중지했을 때,
+  // Position server에 TRACK_END를 보내서 해당 객체 구독/추적을 종료한다.
+  QObject::connect(&videoBackend, &MainWindow::laserTrackStopped,
+                   [&positionManager](const QString &xmlId) {
+                       if (xmlId.isEmpty()) return;
+                       positionManager.sendPositionCommand(QStringLiteral("TRACK_END|%1").arg(xmlId));
+                   });
+#endif
 
   const QString alertHost = env.value("FRAUD_SERVER_HOST", "192.168.0.101");
   const bool directStreamMode = parseEnvBool(env, "SFEPS_DIRECT_STREAM_MODE", false);

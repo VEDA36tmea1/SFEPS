@@ -18,11 +18,11 @@
 
 #include "XMLParser.h"
 #include "Config.h"
+#include "re_id.h"
 
 #ifndef CAMERA_RBF_QT_MODE
   // 단독 모드: RTSP / DeepSORT 헤더 포함
   #include "RTSPClient.h"
-  #include "re_id.h"
 #endif
 
 #include <opencv2/opencv.hpp>
@@ -2210,18 +2210,20 @@ int main(int argc, char** argv)
 // CAMERA_RBF_QT_MODE — Qt 클라이언트 라이브러리 인터페이스
 //
 // Qt 빌드 시 -DCAMERA_RBF_QT_MODE 정의하면 이 블록만 노출됩니다.
-// tracker(NativeTrack+IdStabilizer), RBF, Kalman 모두 camera_RBF.cpp 자체 구현 사용.
+// tracker(NativeTrack + IdStabilizer), RBF, Kalman 모두 camera_RBF.cpp 자체 구현 사용.
 // native_metadata_tracker.cpp 는 불필요합니다.
 //
 // 사용 흐름:
 //   1. rbfqt_init(...)                 — 앱 시작 시 한 번 (RBF 피팅)
 //   2. rbfqt_process_metadata(...)     — Qt가 ONVIF 메타데이터 수신할 때마다
-//      → 내부에서 NativeTrack + IdStabilizer 실행, XML ID ↔ 내부 ID 매핑 갱신
+//      → NativeTrack 후 IdStabilizer로 S_xxx 안정 ID, XML ↔ N-ID 매핑 갱신
 //   3. rbfqt_set_target_bbox(...)      — Track 버튼 / Fraud 이벤트 때마다
 //   4. rbfqt_compute_pwm(...)         — 33ms 주기 타이머에서 호출
 //   5. rbfqt_clear_target()           — Untrack 시
 //   6. rbfqt_find_native_id(xmlId)    — XML ID → 내부 N-ID 조회
 //   7. rbfqt_get_bbox_by_xmlid(xmlId) — XML ID로 현재 bbox 조회
+//   8. rbfqt_find_stable_id(N)        — N-ID → IdStabilizer S_xxx
+//   9. rbfqt_resolve_to_native_id(s)  — S_/XML/N → PWM용 N-ID
 // ═══════════════════════════════════════════════════════════════════════════
 #ifdef CAMERA_RBF_QT_MODE
 
@@ -2243,6 +2245,11 @@ namespace {
     std::unordered_map<std::string, cv::Rect2d>  g_qt_nativeBbox;   // "N5" → EMA 스무더 적용된 bbox (픽셀)
     std::unordered_map<std::string, SmoothedRect> g_qt_smoothBbox;   // "N5" → EMA 상태
     std::mutex g_qt_tracker_mutex;
+
+    // IdStabilizer: N-ID → S_xxx, S_xxx → N-ID (매 프레임 rbfqt_process_metadata 끝에서 갱신)
+    static IdStabilizer g_rbfqt_stabilizer;
+    std::unordered_map<std::string, std::string> g_qt_nativeToStable;
+    std::unordered_map<std::string, std::string> g_qt_stableToNative;
 }
 
 static RbfTps2D  g_rbfqt_pan,  g_rbfqt_tilt;
@@ -2333,12 +2340,19 @@ void rbfqt_clear_target()
     g_rbfqt_last_ms   = 0;
 }
 
+std::string rbfqt_resolve_to_native_id(const std::string& s);
+
 // 추적할 N-ID 설정 — rbfqt_compute_pwm에서 매 tick마다 해당 ID의 bbox를 자동 갱신
 // nativeId가 nullptr 또는 ""이면 자동 갱신 비활성화
+// 인자는 N-ID, S_xxx(IdStabilizer), ONVIF XML ID 모두 허용(내부에서 N으로 해석)
 void rbfqt_set_tracked_nativeid(const char* nativeId)
 {
+    std::string newId;
+    if (nativeId && nativeId[0]) {
+        newId = rbfqt_resolve_to_native_id(std::string(nativeId));
+        if (newId.empty()) newId = nativeId;
+    }
     std::lock_guard<std::mutex> lk(g_rbfqt_mutex);
-    const std::string newId = nativeId ? nativeId : "";
     if (g_rbfqt_tracked_native_id == newId) return;
     g_rbfqt_tracked_native_id = newId;
     if (newId.empty()) {
@@ -2488,6 +2502,8 @@ void rbfqt_process_metadata(const std::vector<ParsedMetadataObject>& objects, in
             tr.box   = dets[bestDi].box;
             tr.miss  = 0;
             tr.lock_det = bestDi;
+            if (dets[bestDi].obj && !dets[bestDi].obj->id.empty())
+                tr.xmlId = dets[bestDi].obj->id;
             detOwner[bestDi] = static_cast<int>(ti);
             trackMatched[ti] = true;
         }
@@ -2575,6 +2591,44 @@ void rbfqt_process_metadata(const std::vector<ParsedMetadataObject>& objects, in
         else
             ++it;
     }
+
+    // IdStabilizer: N-ID → S_xxx (단독 실행 경로와 동일 모듈, UI 표시·PWM 해석용)
+    g_qt_nativeToStable.clear();
+    g_qt_stableToNative.clear();
+    {
+        std::vector<DetectedInput> stabIn;
+        stabIn.reserve(dets.size());
+        for (size_t di = 0; di < dets.size(); ++di) {
+            if (detOwner[di] < 0 || detOwner[di] >= static_cast<int>(g_qt_nativeTracks.size())) continue;
+            const auto& tr = g_qt_nativeTracks[detOwner[di]];
+            const std::string nativeId = "N" + std::to_string(tr.id);
+            auto bit = g_qt_nativeBbox.find(nativeId);
+            if (bit == g_qt_nativeBbox.end()) continue;
+            const cv::Rect2d& b = bit->second;
+            DetectedInput din;
+            din.camera_id = nativeId;
+            const double invW = 1.0 / static_cast<double>(W);
+            const double invH = 1.0 / static_cast<double>(H);
+            din.left   = static_cast<float>(b.x * invW);
+            din.top    = static_cast<float>(b.y * invH);
+            din.right  = static_cast<float>((b.x + b.width) * invW);
+            din.bottom = static_cast<float>((b.y + b.height) * invH);
+            din.cx = 0.5f * (din.left + din.right);
+            din.cy = 0.5f * (din.top + din.bottom);
+            din.confidence = 1.0f;
+            stabIn.push_back(din);
+        }
+        if (!stabIn.empty()) {
+            const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now().time_since_epoch())
+                                    .count();
+            const auto stable = g_rbfqt_stabilizer.update(stabIn, now_ms);
+            for (const auto& s : stable) {
+                g_qt_nativeToStable[s.camera_id] = s.stable_id;
+                g_qt_stableToNative[s.stable_id] = s.camera_id;
+            }
+        }
+    }
 }
 
 // XML ID → 내부 N-ID 조회 (없으면 빈 문자열)
@@ -2602,6 +2656,38 @@ RbfQtBBox rbfqt_get_bbox_by_xmlid(const std::string& xmlId, int W, int H)
     res.b = static_cast<float>(b.y + b.height) / H;
     res.found = true;
     return res;
+}
+
+// N-ID → IdStabilizer stable_id (없으면 빈 문자열)
+std::string rbfqt_find_stable_id(const std::string& nativeId)
+{
+    std::lock_guard<std::mutex> lk(g_qt_tracker_mutex);
+    auto it = g_qt_nativeToStable.find(nativeId);
+    return (it != g_qt_nativeToStable.end()) ? it->second : std::string{};
+}
+
+// UI 표시 id(S_xxx) / XML id / 그대로 N → PWM용 N-ID
+std::string rbfqt_resolve_to_native_id(const std::string& s)
+{
+    if (s.empty()) return {};
+    std::lock_guard<std::mutex> lk(g_qt_tracker_mutex);
+    if (s.size() >= 2 && s[0] == 'N') {
+        bool allDigit = true;
+        for (size_t i = 1; i < s.size(); ++i) {
+            const unsigned char c = static_cast<unsigned char>(s[i]);
+            if (c < '0' || c > '9') { allDigit = false; break; }
+        }
+        if (allDigit) return s;
+    }
+    if (s.size() >= 2 && s[0] == 'S' && s[1] == '_') {
+        auto it = g_qt_stableToNative.find(s);
+        if (it != g_qt_stableToNative.end()) return it->second;
+    }
+    {
+        auto it = g_qt_xmlToNative.find(s);
+        if (it != g_qt_xmlToNative.end()) return it->second;
+    }
+    return {};
 }
 
 #endif // CAMERA_RBF_QT_MODE

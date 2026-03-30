@@ -66,6 +66,7 @@ if(SFEPS_WITH_OPENCV)
         # RbfTps2D / KalmanBbox2D / NativeTrack / IdStabilizer 등 모두 포함
         # → rbf_pwm_core.cpp / native_metadata_tracker.cpp 불필요
         ../Camera/get_metadata/src/camera_RBF.cpp
+        ../Camera/get_metadata/src/re_id.cpp
     )
 endif()
 

@@ -664,8 +664,19 @@ void MainWindow::trackByXmlId(const QString &xmlId,
                  << "server fallback bbox=(" << fallbackL << fallbackT
                  << fallbackR << fallbackB << ")";
     } else {
-        qWarning() << "[MainWindow] trackByXmlId: xmlId not found and no fallback bbox:" << xmlId;
-        return;
+        // tracker에도 없고 fallback bbox도 없지만 sticky는 등록해 둔다.
+        // onPwmTick이 다음 RTSP 메타데이터 tick에서 이 xmlId를 detections에서 찾으면 자동으로 추적 시작.
+        qWarning() << "[MainWindow] trackByXmlId: xmlId not in tracker yet, registering sticky only:" << xmlId;
+    }
+    {
+        QMutexLocker lk(&m_mutex);
+        m_fraudLaserStickyXmlId = xmlId;
+        // trackByXmlId 호출 시점에서 stable 매핑이 있으면 바로 고정
+        std::string sid;
+        if (!nativeId.empty())
+            sid = rbfqt_find_stable_id(nativeId);
+        m_fraudLaserStickyStableId = sid.empty() ? QString{} : QString::fromStdString(sid);
+        m_fraudLaserStickyStableMissingFrames = 0;
     }
     emit trackingXmlIdChanged(xmlId);
 #else
@@ -682,9 +693,23 @@ void MainWindow::trackByXmlId(const QString &xmlId,
 void MainWindow::clearRbfTarget()
 {
 #ifdef CAMERA_RBF_QT_MODE
+    // 수동 Untrack 버튼으로 호출되는 경우엔,
+    // 수동 종료 이후에도 "이미 잡혀있는 fraud sticky target"을 다시 이어서 추적할 수 있게
+    // m_fraudLaserSticky*는 유지한다.
+    const bool wasManualTracking = m_manualTracking;
     rbfqt_set_tracked_nativeid("");
     rbfqt_clear_target();
     m_manualTracking = false;
+    {
+        QMutexLocker lk(&m_mutex);
+        if (!wasManualTracking) {
+            // 자동 추적 중지(clearRbfTarget이 간접 호출되는 경우)엔 sticky도 정리한다.
+            m_fraudLaserStickyXmlId.clear();
+            m_fraudLaserStickyStableId.clear();
+        }
+        // 공통: stable missing frame 카운터는 초기화
+        m_fraudLaserStickyStableMissingFrames = 0;
+    }
 #else
     setSelectedDetection(QString{});
 #endif
@@ -751,33 +776,46 @@ void MainWindow::applyNativeDetections(std::vector<ParsedMetadataObject> humans,
     dets.reserve(static_cast<int>(humans.size()));
     for (const auto& obj : humans) {
         const std::string nativeId = rbfqt_find_native_id(obj.id);
-        // N-ID가 아직 없으면 xmlId를 임시 id로 사용 (매 프레임 rbfqt_process_metadata로 갱신됨)
-        const QString displayId = nativeId.empty()
-                                  ? QString::fromStdString(obj.id)
-                                  : QString::fromStdString(nativeId);
+        const std::string stableId = rbfqt_find_stable_id(nativeId);
+        // IdStabilizer S_xxx > N-ID > ONVIF XML (표시)
+        const QString displayId = !stableId.empty() ? QString::fromStdString(stableId)
+                                 : (!nativeId.empty() ? QString::fromStdString(nativeId)
+                                                      : QString::fromStdString(obj.id));
 
         QVariantMap m;
         m["id"]            = displayId;
+        m["nativeId"]      = QString::fromStdString(nativeId);
         m["xmlId"]         = QString::fromStdString(obj.id);
         m["metaFrameNo"]   = frameNo;
         m["metaTimestamp"] = static_cast<qlonglong>(rtpTs);
         m["fraud"]         = fraudIds.contains(QString::fromStdString(obj.id));
 
-        float nl = obj.left, nt = obj.top, nr = obj.right, nb = obj.bottom;
-        if (std::max({nl, nt, nr, nb}) > 1.5f) {
-            nl /= kSensorW; nr /= kSensorW;
-            nt /= kSensorH; nb /= kSensorH;
-        }
-        nl = std::max(0.0f, std::min(1.0f, nl));
-        nt = std::max(0.0f, std::min(1.0f, nt));
-        nr = std::max(0.0f, std::min(1.0f, nr));
-        nb = std::max(0.0f, std::min(1.0f, nb));
+        // Qt 모드에선 트래커가 계산/스무딩한 bbox를 UI에 직접 사용한다.
+        // 그래야 standalone처럼 위/아래 떨림이 줄어든다.
+        const auto qbbox = rbfqt_get_bbox_by_xmlid(obj.id, W, H);
+        if (qbbox.found && qbbox.r > qbbox.l && qbbox.b > qbbox.t) {
+            m["x"] = static_cast<double>(qbbox.l);
+            m["y"] = static_cast<double>(qbbox.t);
+            m["w"] = static_cast<double>(qbbox.r - qbbox.l);
+            m["h"] = static_cast<double>(qbbox.b - qbbox.t);
+        } else {
+            // fallback: 서버 원시 bbox 사용
+            float nl = obj.left, nt = obj.top, nr = obj.right, nb = obj.bottom;
+            if (std::max({nl, nt, nr, nb}) > 1.5f) {
+                nl /= kSensorW; nr /= kSensorW;
+                nt /= kSensorH; nb /= kSensorH;
+            }
+            nl = std::max(0.0f, std::min(1.0f, nl));
+            nt = std::max(0.0f, std::min(1.0f, nt));
+            nr = std::max(0.0f, std::min(1.0f, nr));
+            nb = std::max(0.0f, std::min(1.0f, nb));
 
-        if (nr > nl && nb > nt) {
-            m["x"] = static_cast<double>(nl);
-            m["y"] = static_cast<double>(nt);
-            m["w"] = static_cast<double>(nr - nl);
-            m["h"] = static_cast<double>(nb - nt);
+            if (nr > nl && nb > nt) {
+                m["x"] = static_cast<double>(nl);
+                m["y"] = static_cast<double>(nt);
+                m["w"] = static_cast<double>(nr - nl);
+                m["h"] = static_cast<double>(nb - nt);
+            }
         }
         dets.append(m);
     }
@@ -855,39 +893,168 @@ void MainWindow::onPwmTick()
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
 
 #ifdef CAMERA_RBF_QT_MODE
-    // ── 수동 추적이 없을 때: fraud 객체 중 화면 중심에서 가장 가까운 것으로 자동 전환 ──
+    // ── 수동 추적이 없을 때: 레이저는 fraudAutoTrackRequest로 고정된 XML(sticky)만 추적
+    //    (추가 FRAUD는 fraudDetected→addFraudXmlId로 빨간색만, 레이저 대상은 안 바뀜)
     if (!m_manualTracking) {
         QSet<QString> fraudIds;
         QVariantList dets;
+        QString stickyXml;
+        QString stickyStable;
+        int stableMissingFrames = 0;
         {
             QMutexLocker lk(&m_mutex);
-            fraudIds = m_fraudXmlIds;
-            dets     = m_detections;
+            fraudIds   = m_fraudXmlIds;
+            dets       = m_detections;
+            stickyXml  = m_fraudLaserStickyXmlId;
+            stickyStable = m_fraudLaserStickyStableId;
+            stableMissingFrames = m_fraudLaserStickyStableMissingFrames;
         }
-        if (!fraudIds.isEmpty()) {
-            const double cx = W * 0.5, cy = H * 0.5;
-            double bestDist = 1e18;
-            QString bestNativeId;
+
+        // sticky target이 없으면 레이저는 완전히 멈춘다.
+        if (stickyXml.isEmpty()) {
+            rbfqt_set_tracked_nativeid("");
+        } else {
+        // fraud 없음: 타겟 해제
+        if (fraudIds.isEmpty()) {
+            rbfqt_set_tracked_nativeid("");
+            QMutexLocker lk(&m_mutex);
+            m_fraudLaserStickyStableId.clear();
+            m_fraudLaserStickyStableMissingFrames = 0;
+        } else {
+            const double kSwitchRatio = 0.85;  // 새 후보가 충분히 작을 때만 전환
+            const int kMaxMissingFrames = 10; // ~330ms 허용: RTSP 지연/일시적 누락 무시
+
+            // 현재 타겟이 화면에 존재하는지 여부는 stable 매핑이 아니라
+            // ONVIF XML ID(stickyXml) 자체로 판단한다.
+            // (겹침/occlusion으로 NativeTrack N-ID가 스왑돼도 false stop을 방지)
+
+            // 1) fraud 후보 중 면적 최소(단, ID는 stable_id 우선)
+            double bestArea = 1e18;
+            std::string bestKey;
+            QString bestXmlId;
+            double currentArea = 1e18;
+            bool currentFound = false;
+
             for (const QVariant &v : dets) {
                 if (!v.canConvert<QVariantMap>()) continue;
                 const QVariantMap dm = v.toMap();
-                if (!dm.value("fraud").toBool()) continue;
-                // 정규화 좌표 → 픽셀 중심
-                const double bx = dm.value("x").toDouble() * W + dm.value("w").toDouble() * W * 0.5;
-                const double by = dm.value("y").toDouble() * H + dm.value("h").toDouble() * H * 0.5;
-                const double d  = (bx - cx) * (bx - cx) + (by - cy) * (by - cy);
-                if (d < bestDist) {
-                    bestDist = d;
-                    bestNativeId = dm.value("id").toString();
+                const bool isFraud = dm.value("fraud").toBool();
+
+                const double w = dm.value("w").toDouble();
+                const double h = dm.value("h").toDouble();
+                const double area = w * h;
+                // UI에선 w/h가 0에 가까워도 Math.max(2, ...) 때문에 보일 수 있지만,
+                // 레이저 후보 선택은 area 기준이라 0이면 전부 스킵되어 bestKey가 비게 됨.
+                // 따라서 area가 0이면 아주 작은 epsilon으로 대체한다.
+                const double safeArea = (area > 0.0) ? area : 1e-6;
+
+                const QString xmlId = dm.value("xmlId").toString();
+                if (xmlId.isEmpty()) continue;
+
+                // 1순위: 현재 프레임 매핑
+                std::string nid = rbfqt_find_native_id(xmlId.toStdString());
+                if (nid.empty())
+                    nid = rbfqt_resolve_to_native_id(xmlId.toStdString());
+                // 2순위: applyNativeDetections 시점에 저장된 nativeId (타이밍 갭 커버)
+                if (nid.empty())
+                    nid = dm.value("nativeId").toString().toStdString();
+                // 3순위: xmlId 자체를 키로 사용 (rbfqt_set_tracked_nativeid가 내부 resolve)
+                const std::string key_str = !nid.empty() ? nid : xmlId.toStdString();
+                const std::string sid = !nid.empty() ? rbfqt_find_stable_id(nid) : std::string{};
+                const std::string key = !sid.empty() ? sid : key_str;
+
+                // sticky target이 화면에 보이는지 여부는 fraud flag와 무관하게 xmlId 존재로 판단
+                if (!stickyXml.isEmpty() && xmlId == stickyXml) {
+                    currentArea = safeArea;
+                    currentFound = true;
+                }
+
+                // best candidate는 fraud=true인 객체들로만 구성
+                if (!isFraud) continue;
+
+                if (safeArea < bestArea) {
+                    bestArea = safeArea;
+                    bestKey = key;
+                    bestXmlId = xmlId;
                 }
             }
-            if (!bestNativeId.isEmpty()) {
-                rbfqt_set_tracked_nativeid(bestNativeId.toStdString().c_str());
+
+            // fraud 후보(best)가 없어도 stickyXml이 현재 프레임에 보이면 즉시 멈추면 안 됨.
+            // (fraud 플래그는 다음 메타데이터 tick에서 반영될 수 있음)
+            if (bestKey.empty()) {
+                bool shouldStop = false;
+                if (!currentFound) {
+                    stableMissingFrames++;
+                    if (stableMissingFrames > kMaxMissingFrames) {
+                        shouldStop = true;
+                    }
+                } else {
+                    stableMissingFrames = 0;
+                }
+
+                if (shouldStop) {
+                    emit laserTrackStopped(stickyXml);
+                    // activeTrackingId 정리 → Fraud 대기큐 drain이 다음 tick 이후에 안전하게 진행되도록 queued 실행
+                    QMetaObject::invokeMethod(this, [this]() { clearRbfTarget(); }, Qt::QueuedConnection);
+                    rbfqt_set_tracked_nativeid("");
+                    QMutexLocker lk(&m_mutex);
+                    m_fraudLaserStickyXmlId.clear();
+                    m_fraudLaserStickyStableId.clear();
+                    m_fraudLaserStickyStableMissingFrames = 0;
+                    stableMissingFrames = 0;
+                } else {
+                    QMutexLocker lk(&m_mutex);
+                    m_fraudLaserStickyStableMissingFrames = stableMissingFrames;
+                }
+            } else {
+                bool shouldSwitch = false;
+                QString stoppedXmlToEmit;
+
+                if (!currentFound) {
+                    // sticky target이 화면 밖이라면 전환하지 않고 유지하다가 종료.
+                    stableMissingFrames++;
+                    if (stableMissingFrames > kMaxMissingFrames) {
+                        // 완전히 멈추기 + 서버에 TRACK_END 보내기
+                        stoppedXmlToEmit = stickyXml;
+                        rbfqt_set_tracked_nativeid("");
+
+                        QMutexLocker lk(&m_mutex);
+                        m_fraudLaserStickyXmlId.clear();
+                        m_fraudLaserStickyStableId.clear();
+                        m_fraudLaserStickyStableMissingFrames = 0;
+                        stableMissingFrames = 0;
+                    }
+                } else {
+                    // 현재 타겟이 보이는 상태: 새 후보가 "충분히" 더 작을 때만 전환
+                    stableMissingFrames = 0;
+                    if (bestXmlId != stickyXml && bestArea < currentArea * kSwitchRatio) {
+                        shouldSwitch = true;
+                    }
+                }
+
+                if (!stoppedXmlToEmit.isEmpty()) {
+                    emit laserTrackStopped(stoppedXmlToEmit);
+                    // stop 처리 후 activeTrackingId 정리 + 큐 drain(다음 fraud로 자연스럽게 넘어가기)
+                    QMetaObject::invokeMethod(this, [this]() { clearRbfTarget(); }, Qt::QueuedConnection);
+                } else if (shouldSwitch) {
+                    rbfqt_set_tracked_nativeid(bestKey.c_str());
+                    // 전환 시 stickyXml도 해당 후보로 갱신
+                    bool isStable = bestKey.size() >= 2 && bestKey[0] == 'S' && bestKey[1] == '_';
+                    QMutexLocker lk(&m_mutex);
+                    m_fraudLaserStickyXmlId = bestXmlId;
+                    m_fraudLaserStickyStableId = isStable ? QString::fromStdString(bestKey) : QString{};
+                    m_fraudLaserStickyStableMissingFrames = stableMissingFrames;
+                } else {
+                    // 타겟 유지: 매 tick rbfqt_set_tracked_nativeid를 호출해 tracker를 동기화.
+                    // trackByXmlId 호출 시 N-ID 매핑이 아직 없었거나 N-ID가 프레임 간 바뀌어도 복구됨.
+                    if (currentFound)
+                        rbfqt_set_tracked_nativeid(bestKey.c_str());
+                    QMutexLocker lk(&m_mutex);
+                    m_fraudLaserStickyStableMissingFrames = stableMissingFrames;
+                }
             }
-        } else {
-            // fraud 없으면 추적 중지
-            rbfqt_set_tracked_nativeid("");
         }
+        } // end stickyXml isEmpty guard
     }
 
     int pan = 1500, tilt = 1500;
