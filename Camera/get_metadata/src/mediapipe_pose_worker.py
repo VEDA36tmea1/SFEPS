@@ -19,10 +19,14 @@ C++에서 일정 프레임마다(예: 5프레임에 1회) 호출하는 걸 추�
 import os
 import struct
 import sys
+import urllib.request
+from pathlib import Path
 
 import cv2
-import mediapipe as mp
 import numpy as np
+from mediapipe.tasks.python.core.base_options import BaseOptions
+from mediapipe.tasks.python.vision.core.image import Image, ImageFormat
+from mediapipe.tasks.python.vision.pose_landmarker import PoseLandmarker
 
 os.environ.setdefault("GLOG_minloglevel", "3")
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
@@ -37,15 +41,31 @@ def read_exact(n: int) -> bytes:
         buf.extend(chunk)
     return bytes(buf)
 
-
-mp_pose = mp.solutions.pose
-pose = mp_pose.Pose(
-    static_image_mode=False,
-    model_complexity=1,
-    enable_segmentation=False,
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5,
+# lite 모델: full 대비 ~3-5배 빠름 (정확도 소폭 낮지만 실시간성 우선)
+MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
+    "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"
 )
+_MODEL_PATH = Path(__file__).resolve().parent / "pose_landmarker_lite.task"
+
+
+def ensure_model_file() -> str:
+    if _MODEL_PATH.exists() and _MODEL_PATH.stat().st_size > 1024 * 10:
+        return str(_MODEL_PATH)
+    try:
+        print(f"[mediapipe_pose_worker] downloading model -> {_MODEL_PATH}", file=sys.stderr, flush=True)
+        urllib.request.urlretrieve(MODEL_URL, str(_MODEL_PATH))
+        print(f"[mediapipe_pose_worker] download done", file=sys.stderr, flush=True)
+    except Exception as e:
+        print(f"[mediapipe_pose_worker] model download failed: {e}", file=sys.stderr, flush=True)
+        raise
+    return str(_MODEL_PATH)
+
+
+def build_landmarker() -> PoseLandmarker:
+    model_path = ensure_model_file()
+    # image mode: detect()를 동기적으로 호출
+    return PoseLandmarker.create_from_model_path(model_path)
 
 
 def process_jpeg(jpeg_bytes: bytes) -> str:
@@ -55,17 +75,20 @@ def process_jpeg(jpeg_bytes: bytes) -> str:
         return "0\n"
 
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    res = pose.process(rgb)
+
+    mp_image = Image(image_format=ImageFormat.SRGB, data=rgb)
+    res = LANDMARKER.detect(mp_image)
     if not res.pose_landmarks:
         return "0\n"
 
-    lms = res.pose_landmarks.landmark
-    # mediapipe pose는 33 landmarks
+    lms = res.pose_landmarks[0]
+    # tasks pose landmarker는 33 landmarks
     toks = ["1"]
     for lm in lms:
         toks.append(f"{lm.x:.6f}")
         toks.append(f"{lm.y:.6f}")
-        toks.append(f"{lm.visibility:.6f}")
+        v = lm.visibility if lm.visibility is not None else 1.0
+        toks.append(f"{v:.6f}")
     return " ".join(toks) + "\n"
 
 
@@ -91,5 +114,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # worker 프로세스 시작 시 모델 로드 (1회)
+    LANDMARKER = build_landmarker()
     main()
 

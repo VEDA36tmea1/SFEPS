@@ -970,6 +970,244 @@ private:
     }
 };
 
+// ──────────────────────────────────────────────────────────────────────
+// MediaPipe Pose worker (standalone 모드 전용)
+// - C++ → Python: [uint32 jpeg_len LE][jpeg bytes]
+// - Python → C++: one line: "0" 또는 "1 x0 y0 v0 ... x32 y32 v32"
+// - 어깨(11,12) 랜드마크로 shoulder center를 만들고,
+//   C++에서 어깨 중심 아래 타겟 픽셀을 계산한다.
+#ifndef CAMERA_RBF_QT_MODE
+struct MediapipePoseWorker {
+#ifdef _WIN32
+    PROCESS_INFORMATION pi{};
+    HANDLE child_stdin_write{NULL};
+    HANDLE child_stdout_read{NULL};
+#else
+    pid_t pid{-1};
+    int   write_fd{-1};
+    int   read_fd{-1};
+#endif
+    bool active{false};
+
+    std::string get_exe_dir() const {
+#ifdef _WIN32
+        char buf[MAX_PATH];
+        DWORD n = ::GetModuleFileNameA(nullptr, buf, MAX_PATH);
+        if (n == 0 || n == MAX_PATH) return "";
+        return std::filesystem::path(buf).parent_path().string();
+#else
+        char buf[4096];
+        ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+        if (n <= 0) return "";
+        buf[n] = '\0';
+        return std::filesystem::path(buf).parent_path().string();
+#endif
+    }
+
+    void mark_worker_dead(const char* reason) {
+        (void)reason;
+        active = false;
+#ifdef _WIN32
+        if (child_stdin_write) { CloseHandle(child_stdin_write); child_stdin_write = NULL; }
+        if (child_stdout_read) { CloseHandle(child_stdout_read); child_stdout_read = NULL; }
+#endif
+    }
+
+    bool start() {
+        if (active) return true;
+        std::string root = get_exe_dir();
+        if (root.empty()) return false;
+
+#ifdef _WIN32
+        std::string py_exec = "python";
+        {
+            std::filesystem::path py1 = std::filesystem::path(root) / ".venv" / "Scripts" / "python.exe";
+            std::filesystem::path py2 = std::filesystem::path(root).parent_path() / ".venv" / "Scripts" / "python.exe";
+            std::filesystem::path py3 = std::filesystem::path(root).parent_path().parent_path() / ".venv" / "Scripts" / "python.exe";
+            if (std::filesystem::exists(py1))
+                py_exec = py1.string();
+            else if (std::filesystem::exists(py2))
+                py_exec = py2.string();
+            else if (std::filesystem::exists(py3))
+                py_exec = py3.string();
+        }
+#else
+        std::string py_exec = "python3";
+#endif
+
+        std::filesystem::path script;
+        {
+            std::filesystem::path s1 = std::filesystem::path(root) / "src" / "mediapipe_pose_worker.py";
+            std::filesystem::path s2 = std::filesystem::path(root).parent_path() / "src" / "mediapipe_pose_worker.py";
+            std::filesystem::path s3 = std::filesystem::path(root).parent_path() / "get_metadata" / "src" / "mediapipe_pose_worker.py";
+            if (std::filesystem::exists(s1))
+                script = s1;
+            else if (std::filesystem::exists(s2))
+                script = s2;
+            else if (std::filesystem::exists(s3))
+                script = s3;
+        }
+
+        if (script.empty() || !std::filesystem::exists(script)) {
+            std::cerr << "[mediapipe] worker script missing\n"
+                      << "  root=" << root << "\n"
+                      << "  script candidates: root/src/, parent/src/, parent/get_metadata/src/\n";
+            return false;
+        }
+
+#ifdef _WIN32
+        SECURITY_ATTRIBUTES sa{};
+        sa.nLength = sizeof(sa);
+        sa.bInheritHandle = TRUE;
+
+        HANDLE child_stdout_read_tmp = NULL;
+        HANDLE child_stdout_write = NULL;
+        HANDLE child_stdin_read = NULL;
+        HANDLE child_stdin_write_tmp = NULL;
+
+        if (!CreatePipe(&child_stdout_read_tmp, &child_stdout_write, &sa, 0)) return false;
+        if (!SetHandleInformation(child_stdout_read_tmp, HANDLE_FLAG_INHERIT, 0)) return false;
+        if (!CreatePipe(&child_stdin_read, &child_stdin_write_tmp, &sa, 0)) return false;
+        if (!SetHandleInformation(child_stdin_write_tmp, HANDLE_FLAG_INHERIT, 0)) return false;
+
+        STARTUPINFOA si{};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdInput = child_stdin_read;
+        si.hStdOutput = child_stdout_write;
+        si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+
+        std::string cmd = "\"" + py_exec + "\" \"" + script.string() + "\"";
+        std::vector<char> cmdline(cmd.begin(), cmd.end());
+        cmdline.push_back('\0');
+
+        BOOL ok = CreateProcessA(
+            nullptr,
+            cmdline.data(),
+            nullptr,
+            nullptr,
+            TRUE,
+            CREATE_NO_WINDOW,
+            nullptr,
+            nullptr,
+            &si,
+            &pi
+        );
+
+        CloseHandle(child_stdin_read);
+        CloseHandle(child_stdout_write);
+        if (!ok) {
+            CloseHandle(child_stdout_read_tmp);
+            CloseHandle(child_stdin_write_tmp);
+            return false;
+        }
+        child_stdout_read = child_stdout_read_tmp;
+        child_stdin_write = child_stdin_write_tmp;
+        active = true;
+        std::cerr << "[mediapipe] worker started pid=" << pi.dwProcessId << "\n";
+        return true;
+#else
+        // 리눅스용은 필요 시 확장
+        (void)script;
+        (void)py_exec;
+        return false;
+#endif
+    }
+
+    // 어깨(11,12) 중심의 crop 정규화 좌표 [0,1] 반환
+    bool infer_shoulders_norm(const cv::Mat& crop, double& out_sx, double& out_sy,
+                               int jpeg_quality, int timeout_ms)
+    {
+        if (!active) return false;
+        if (crop.empty()) return false;
+
+        std::vector<uchar> buf;
+        std::vector<int> params{cv::IMWRITE_JPEG_QUALITY, jpeg_quality};
+        if (!cv::imencode(".jpg", crop, buf, params)) return false;
+
+        uint32_t jpeg_len = static_cast<uint32_t>(buf.size());
+        uint8_t hdr[4];
+        hdr[0] = jpeg_len & 0xFF;
+        hdr[1] = (jpeg_len >> 8) & 0xFF;
+        hdr[2] = (jpeg_len >> 16) & 0xFF;
+        hdr[3] = (jpeg_len >> 24) & 0xFF;
+
+#ifdef _WIN32
+        DWORD wrote = 0;
+        if (!WriteFile(child_stdin_write, hdr, 4, &wrote, nullptr) || wrote != 4) {
+            mark_worker_dead("stdin header write failed");
+            return false;
+        }
+        DWORD total = 0;
+        while (total < jpeg_len) {
+            DWORD remain = jpeg_len - total;
+            DWORD chunk = 0;
+            if (!WriteFile(child_stdin_write, buf.data() + total, remain, &chunk, nullptr) || chunk == 0) {
+                mark_worker_dead("stdin jpeg write failed");
+                return false;
+            }
+            total += chunk;
+        }
+#else
+        (void)hdr;
+        (void)buf;
+        return false;
+#endif
+
+        // 응답 읽기
+#ifdef _WIN32
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+        std::string line;
+        char c = 0;
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            DWORD avail = 0;
+            if (!PeekNamedPipe(child_stdout_read, nullptr, 0, nullptr, &avail, nullptr)) {
+                mark_worker_dead("stdout pipe broken");
+                return false;
+            }
+            if (avail == 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                continue;
+            }
+            DWORD got = 0;
+            if (!ReadFile(child_stdout_read, &c, 1, &got, nullptr) || got != 1) {
+                mark_worker_dead("stdout read failed");
+                return false;
+            }
+            if (c == '\n') break;
+            line.push_back(c);
+        }
+        if (line.empty()) {
+            mark_worker_dead("stdout timeout/empty");
+            return false;
+        }
+        if (line[0] == '0') return false;
+#else
+        return false;
+#endif
+
+        std::istringstream iss(line);
+        int ok = 0;
+        if (!(iss >> ok) || ok == 0) return false;
+
+        float x[33]{0}, y[33]{0}, v[33]{0};
+        for (int i = 0; i < 33; i++) {
+            if (!(iss >> x[i] >> y[i] >> v[i])) return false;
+        }
+
+        // Mediapipe Pose: 11=L shoulder, 12=R shoulder
+        const int iL = 11, iR = 12;
+        const float wsum = v[iL] + v[iR] + 1e-6f;
+        out_sx = (x[iL] * v[iL] + x[iR] * v[iR]) / wsum;
+        out_sy = (y[iL] * v[iL] + y[iR] * v[iR]) / wsum;
+        return true;
+    }
+};
+
+static MediapipePoseWorker g_mediapipe_pose;
+#endif // !CAMERA_RBF_QT_MODE (MediapipePoseWorker)
+
 static DeepSortWorker g_deepsort;
 #endif // !CAMERA_RBF_QT_MODE (DeepSortWorker / g_deepsort)
 
@@ -1385,6 +1623,12 @@ int main(int argc, char** argv)
     int send_every_n = 1;
     bool draw_grid = true;
     double predict_ms = 300.0;
+    // MediaPipe pose (어깨 중심 아래 타겟) 설정
+    int pose_every_n = 3;            // n프레임마다 pose 추론 (기본 3: ~100ms@30fps)
+    double pose_pad_ratio = 0.15;   // sel_rect 기준 crop padding 비율
+    int pose_jpeg_quality = 70;     // 낮을수록 전송 빠름 (60-80 권장)
+    int pose_input_size = 256;      // worker에 보낼 최대 변 크기(px); 0=원본
+    int pose_timeout_ms = 2000;     // worker stdout 라인 read timeout
     int pwm_log_interval_ms = 2000; // 사용자 요청: 터미널 로그만 2초마다
     std::string remote_id_host = "192.168.0.101";
     int remote_id_port = 5565;
@@ -1399,6 +1643,11 @@ int main(int argc, char** argv)
         else if (arg == "--ratio" && i + 1 < argc) ratio = std::atof(argv[++i]);
         else if (arg == "--alpha" && i + 1 < argc) alpha = std::atof(argv[++i]);
         else if (arg == "--send-every" && i + 1 < argc) send_every_n = std::max(1, std::atoi(argv[++i]));
+        else if (arg == "--pose-every" && i + 1 < argc) pose_every_n = std::max(1, std::atoi(argv[++i]));
+        else if (arg == "--pose-pad-ratio" && i + 1 < argc) pose_pad_ratio = std::max(0.0, std::atof(argv[++i]));
+        else if (arg == "--pose-jpeg-quality" && i + 1 < argc) pose_jpeg_quality = std::max(1, std::atoi(argv[++i]));
+        else if (arg == "--pose-input-size" && i + 1 < argc) pose_input_size = std::max(0, std::atoi(argv[++i]));
+        else if (arg == "--pose-timeout-ms" && i + 1 < argc) pose_timeout_ms = std::max(200, std::atoi(argv[++i]));
         else if (arg == "--no-grid") draw_grid = false;
         else if (arg == "--predict-ms" && i + 1 < argc) predict_ms = std::atof(argv[++i]);
         else if (arg == "--send-interval-ms" && i + 1 < argc) pwm_log_interval_ms = std::max(100, std::atoi(argv[++i]));
@@ -1417,6 +1666,12 @@ int main(int argc, char** argv)
 #ifndef _WIN32
     std::signal(SIGPIPE, signal_handler);
 #endif
+
+    // MediaPipe pose 워커 시작 (실패하면 bbox 기반 fallback)
+    if (!g_mediapipe_pose.start()) {
+        std::cerr << "[mediapipe] worker start 실패 — bbox 기반으로만 동작\n";
+    }
+    const bool pose_enabled = g_mediapipe_pose.active;
 
     // DeepSORT 워커 시작 (native 모드에서는 사용 안 함)
     if (trackerMode == TrackerMode::DeepSort)
@@ -1525,6 +1780,63 @@ int main(int argc, char** argv)
 
     KalmanBbox2D kf;
     std::string prev_sel_id;
+    // MediaPipe Pose (어깨 랜드마크) — 비동기/스킵 + 오버레이 표시용
+    std::mutex pose_mutex;
+    bool pose_have = false;
+    double pose_shoulder_x_px = 0.0;
+    double pose_shoulder_y_px = 0.0;
+    cv::Rect pose_last_crop_rect;
+    int pose_last_frame_id = -1000000;
+    const int pose_stale_frames = std::max(3, pose_every_n * 3);
+
+    // 1-slot request buffer: 최신 crop만 계속 덮어쓰고, worker는 최신 request를 처리
+    std::mutex pose_req_mutex;
+    std::condition_variable pose_req_cv;
+    bool pose_req_stop = false;
+    bool pose_req_pending = false;
+    cv::Mat pose_req_crop;
+    cv::Rect pose_req_crop_rect;
+    int pose_req_frame_id = -1;
+
+    std::thread pose_thread;
+    if (pose_enabled)
+    {
+        pose_thread = std::thread([&] {
+            while (true)
+            {
+                cv::Mat crop;
+                cv::Rect crop_rect;
+                int fid = -1;
+                {
+                    std::unique_lock<std::mutex> lk(pose_req_mutex);
+                    pose_req_cv.wait(lk, [&] { return pose_req_pending || pose_req_stop; });
+                    if (pose_req_stop) break;
+                    crop = std::move(pose_req_crop);
+                    crop_rect = pose_req_crop_rect;
+                    fid = pose_req_frame_id;
+                    pose_req_pending = false;
+                }
+
+                if (crop.empty()) continue;
+
+                double sx_norm = 0.0, sy_norm = 0.0;
+                if (g_mediapipe_pose.infer_shoulders_norm(crop, sx_norm, sy_norm,
+                                                            pose_jpeg_quality, pose_timeout_ms))
+                {
+                    const double sx_px = crop_rect.x + sx_norm * crop_rect.width;
+                    const double sy_px = crop_rect.y + sy_norm * crop_rect.height;
+                    {
+                        std::lock_guard<std::mutex> lk(pose_mutex);
+                        pose_have = true;
+                        pose_shoulder_x_px = sx_px;
+                        pose_shoulder_y_px = sy_px;
+                        pose_last_crop_rect = crop_rect;
+                        pose_last_frame_id = fid;
+                    }
+                }
+            }
+        });
+    }
 
     // NativeTrack 상태 (Native 모드 전용)
     struct NativeTrack
@@ -2029,13 +2341,86 @@ int main(int argc, char** argv)
             cv::putText(frame, ("SEL " + sel_id).c_str(), cv::Point(sel_rect.x, std::max(0, sel_rect.y - 10)),
                         cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 0), 2);
 
+            // 기본값: 기존 bbox 기반 타겟 (center_x + top + h*ratio)
             double bbox_cx = sel_rect.x + sel_rect.width * 0.5;
             double bbox_cy = sel_rect.y + sel_rect.height * ratio;
+            bool pose_ok_for_log = false;
+
+            // (표시용) pose 추론 스킵 + 비동기: 최신 crop 1개만 worker에 넣는다.
+            if (pose_enabled && (frame_id % pose_every_n == 0))
+            {
+                const int padX = static_cast<int>(std::lround(sel_rect.width * pose_pad_ratio));
+                const int padY = static_cast<int>(std::lround(sel_rect.height * pose_pad_ratio));
+                cv::Rect crop_rect(
+                    sel_rect.x - padX,
+                    sel_rect.y - padY,
+                    sel_rect.width + 2 * padX,
+                    sel_rect.height + 2 * padY
+                );
+                crop_rect.x = std::max(0, std::min(crop_rect.x, W - 1));
+                crop_rect.y = std::max(0, std::min(crop_rect.y, H - 1));
+                crop_rect.width = std::max(1, std::min(crop_rect.width, W - crop_rect.x));
+                crop_rect.height = std::max(1, std::min(crop_rect.height, H - crop_rect.y));
+
+                if (crop_rect.width > 5 && crop_rect.height > 5)
+                {
+                    cv::Mat crop = frame(crop_rect).clone();
+                    // 전송 크기 축소: 원본이 클수록 IPC 전송량/디코딩 시간 급감
+                    if (pose_input_size > 0 &&
+                        (crop.cols > pose_input_size || crop.rows > pose_input_size))
+                    {
+                        const double scale = static_cast<double>(pose_input_size) /
+                                             std::max(crop.cols, crop.rows);
+                        cv::Mat small;
+                        cv::resize(crop, small,
+                                   cv::Size(std::max(1, (int)(crop.cols * scale)),
+                                            std::max(1, (int)(crop.rows * scale))),
+                                   0, 0, cv::INTER_LINEAR);
+                        crop = std::move(small);
+                    }
+                    {
+                        std::lock_guard<std::mutex> lk(pose_req_mutex);
+                        pose_req_crop = std::move(crop);
+                        pose_req_crop_rect = crop_rect;
+                        pose_req_frame_id = frame_id;
+                        pose_req_pending = true;
+                    }
+                    pose_req_cv.notify_one();
+                }
+            }
+
+            // (표시용) pose 오버레이: 어깨 중심 + 어깨에서 bbox_bottom까지의 ratio 내려간 점
+            {
+                bool have = false;
+                double shoulder_x = 0.0, shoulder_y = 0.0;
+                int last_fid = -1000000;
+                {
+                    std::lock_guard<std::mutex> lk(pose_mutex);
+                    have = pose_have;
+                    shoulder_x = pose_shoulder_x_px;
+                    shoulder_y = pose_shoulder_y_px;
+                    last_fid = pose_last_frame_id;
+                }
+                pose_ok_for_log = have && (frame_id - last_fid) <= pose_stale_frames;
+                if (pose_ok_for_log)
+                {
+                    const double bbox_bottom_y = sel_rect.y + sel_rect.height;
+                    const double pose_target_v = shoulder_y + (bbox_bottom_y - shoulder_y) * ratio;
+                    const int sx = (int)std::lround(shoulder_x);
+                    const int sy = (int)std::lround(shoulder_y);
+                    const int tv = (int)std::lround(pose_target_v);
+                    cv::circle(frame, cv::Point(sx, sy), 6, cv::Scalar(255, 0, 0), -1, cv::LINE_AA);
+                    cv::circle(frame, cv::Point(sx, tv), 6, cv::Scalar(0, 0, 255), -1, cv::LINE_AA);
+                    cv::line(frame, cv::Point(sx, sy), cv::Point(sx, tv), cv::Scalar(0, 0, 255), 2, cv::LINE_AA);
+                }
+            }
+
             bbox_cy = std::max(0.0, std::min((double)(H - 1), bbox_cy));
 
             target_u = (int)std::lround(bbox_cx);
             target_v = (int)std::lround(bbox_cy);
-            src = "kalman";
+            // PWM 계산은 bbox 기반 그대로지만, pose 추론 성공 여부를 src로 표시한다.
+            src = pose_ok_for_log ? "pose" : "kalman";
 
             kf.update(bbox_cx, bbox_cy, (double)sel_rect.width, (double)sel_rect.height, dt_sec);
 
@@ -2094,7 +2479,8 @@ int main(int argc, char** argv)
             {
                 std::cerr << "[PWM] id=" << sel_id
                           << " target=(" << pred_target_u << "," << pred_target_v << ")"
-                          << " PAN=" << pan << " TILT=" << tilt << "\n";
+                          << " PAN=" << pan << " TILT=" << tilt
+                          << " src=" << src << "\n";
                 t_last_pwm_log = t_now_send;
             }
         }
@@ -2198,6 +2584,16 @@ int main(int argc, char** argv)
     if (cap_thread.joinable()) cap_thread.join();
     if (remote_sel_thread.joinable()) remote_sel_thread.join();
     if (meta_thread.joinable()) meta_thread.join();
+    if (pose_enabled)
+    {
+        {
+            std::lock_guard<std::mutex> lk(pose_req_mutex);
+            pose_req_stop = true;
+            pose_req_pending = true;
+        }
+        pose_req_cv.notify_all();
+        if (pose_thread.joinable()) pose_thread.join();
+    }
     cv::destroyAllWindows();
 #ifdef _WIN32
     WSACleanup();
@@ -2268,6 +2664,12 @@ static std::mutex g_rbfqt_mutex;
 // 현재 추적 중인 N-ID (빈 문자열이면 수동 bbox 고정 모드)
 static std::string g_rbfqt_tracked_native_id;
 
+// pose 기반 조준점 오버라이드 (클라이언트가 픽셀 u/v를 주입)
+// valid=false면 bbox 기반 계산으로 복귀한다.
+static bool   g_rbfqt_poseAimValid{false};
+static double g_rbfqt_poseAimU{0.0};
+static double g_rbfqt_poseAimV{0.0};
+
 // RBF 초기화 (앱 시작 시 한 번 호출)
 bool rbfqt_init(double ratio, double alpha, double predict_ms,
                 int pan_min, int pan_max, int tilt_min, int tilt_max)
@@ -2334,6 +2736,7 @@ void rbfqt_clear_target()
     std::lock_guard<std::mutex> lk(g_rbfqt_mutex);
     g_rbfqt_has_target = false;
     g_rbfqt_tracked_native_id.clear();
+    g_rbfqt_poseAimValid = false;
     g_rbfqt_kf.reset();
     g_rbfqt_prev_pan  = 1500;
     g_rbfqt_prev_tilt = 1500;
@@ -2341,6 +2744,16 @@ void rbfqt_clear_target()
 }
 
 std::string rbfqt_resolve_to_native_id(const std::string& s);
+
+// pose 기반 조준점 오버라이드 (픽셀 좌표 u/v)
+// valid!=0이면 rbfqt_compute_pwm에서 bbox_cx/bbox_cy 대신 이 값을 사용한다.
+void rbfqt_set_pose_aim(float u_px, float v_px, int valid)
+{
+    std::lock_guard<std::mutex> lk(g_rbfqt_mutex);
+    g_rbfqt_poseAimValid = (valid != 0);
+    g_rbfqt_poseAimU = static_cast<double>(u_px);
+    g_rbfqt_poseAimV = static_cast<double>(v_px);
+}
 
 // 추적할 N-ID 설정 — rbfqt_compute_pwm에서 매 tick마다 해당 ID의 bbox를 자동 갱신
 // nativeId가 nullptr 또는 ""이면 자동 갱신 비활성화
@@ -2355,6 +2768,8 @@ void rbfqt_set_tracked_nativeid(const char* nativeId)
     std::lock_guard<std::mutex> lk(g_rbfqt_mutex);
     if (g_rbfqt_tracked_native_id == newId) return;
     g_rbfqt_tracked_native_id = newId;
+    // 타겟이 바뀌면 pose 오버라이드도 기본값으로 복귀(클라이언트가 다시 주입)
+    g_rbfqt_poseAimValid = false;
     if (newId.empty()) {
         g_rbfqt_has_target = false;
     }
@@ -2417,8 +2832,17 @@ bool rbfqt_compute_pwm(long long now_ms, int W, int H, int* pan, int* tilt)
     g_rbfqt_last_ms = now_ms;
     dt = std::max(1.0 / 120.0, std::min(dt, 1.0 / 15.0));
 
-    const double bbox_cx = g_rbfqt_target_rect.x + g_rbfqt_target_rect.width  * 0.5;
+    double bbox_cx = g_rbfqt_target_rect.x + g_rbfqt_target_rect.width * 0.5;
     double bbox_cy = g_rbfqt_target_rect.y + g_rbfqt_target_rect.height * g_rbfqt_ratio;
+
+    // pose aim 오버라이드가 있으면 bbox_cx/bbox_cy를 대체한다.
+    if (g_rbfqt_poseAimValid)
+    {
+        bbox_cx = g_rbfqt_poseAimU;
+        bbox_cy = g_rbfqt_poseAimV;
+    }
+
+    bbox_cx = std::max(0.0, std::min(bbox_cx, static_cast<double>(W - 1)));
     bbox_cy = std::max(0.0, std::min(bbox_cy, static_cast<double>(H - 1)));
 
     g_rbfqt_kf.update(bbox_cx, bbox_cy,
