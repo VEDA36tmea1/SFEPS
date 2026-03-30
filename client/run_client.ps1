@@ -17,7 +17,7 @@ $env:FRAUD_SERVER_PORT       = "5557"
 $env:POS_SERVER_PORT         = "5558"
 $env:VIDEO_CATALOG_HOST      = "192.168.0.101"
 $env:SFEPS_VIDEO_CATALOG_PORT = "5559"
-$env:AUTH_TLS_ENABLE         = "0"          # TLS 사용 시 1
+$env:AUTH_TLS_ENABLE         = "1"          # TLS 사용 시 1
 
 # ── TLS/CA (로그인 채널) ─────────────────────────────────────────────────────
 # TLS 사용 시 AUTH_TLS_ENABLE=1 로 변경하고, CA 파일 경로를 확인하세요.
@@ -30,6 +30,13 @@ $env:AUTH_TLS_CA_FILE              = $caPath
 # 선택: 통합 TLS 토글(프로젝트의 다른 경로에서 참조 가능)
 $env:SFEPS_CLIENT_TLS_ENABLE = $env:AUTH_TLS_ENABLE
 $env:SFEPS_CLIENT_CA_FILE    = $env:AUTH_TLS_CA_FILE
+$env:SFEPS_ALERT_TLS_ENABLE  = "1"
+$env:SFEPS_ALERT_TLS_PORT    = "6557"
+$env:SFEPS_POS_TLS_ENABLE    = "1"
+$env:SFEPS_POS_TLS_PORT      = "6558"
+$env:SFEPS_AUDIO_TLS_PORT    = "6556"
+$env:SFEPS_VIDEO_CATALOG_TLS_ENABLE = "1"
+$env:SFEPS_VIDEO_CATALOG_TLS_PORT   = "6559"
 
 if (-not (Test-Path $caPath)) {
     Write-Warning "TLS CA 파일을 찾을 수 없습니다: $caPath"

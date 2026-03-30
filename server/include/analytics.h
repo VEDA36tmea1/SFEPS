@@ -124,12 +124,28 @@ private:
         std::chrono::steady_clock::time_point activated_at;
     };
 
+    struct FinalizedDecisionState {
+        std::string card_age_text;
+        std::string age;
+        bool is_fraud = false;
+        std::chrono::steady_clock::time_point updated_at;
+    };
+
     void workerLoop();
     bool prepareStatements();
     void closeStatements();
     bool insertAnalyticsRow(const FraudRecord& record);
     void pruneExpiredPendingLocked(std::chrono::steady_clock::time_point now);
     void pruneExpiredStateLocked(std::chrono::steady_clock::time_point now);
+    void finalizePendingObjectLocked(PendingObject& final_out,
+                                     std::chrono::steady_clock::time_point now,
+                                     std::vector<std::string>& outbound_alerts,
+                                     std::vector<OutlineDecisionPayload>& outbound_outline_decisions,
+                                     bool& should_notify_worker);
+    void flushReadyAwaitingOutlinesLocked(std::chrono::steady_clock::time_point now,
+                                          std::vector<std::string>& outbound_alerts,
+                                          std::vector<OutlineDecisionPayload>& outbound_outline_decisions,
+                                          bool& should_notify_worker);
 
     std::string host;
     std::string user;
@@ -141,10 +157,12 @@ private:
     std::thread worker;
 
     std::deque<PendingObject> pending_queue;
+    std::deque<PendingObject> awaiting_outline_queue;
     std::unordered_set<std::string> pending_object_ids;
     std::unordered_map<std::string, PendingObject> matched_objects;
     std::unordered_map<std::string, LatestObjectInfo> latest_objects;
     std::unordered_map<std::string, bool> object_fraud_flags;
+    std::unordered_map<std::string, FinalizedDecisionState> finalized_decisions;
     std::unordered_map<std::string, EventBBoxAlias> bbox_aliases_by_event_id;
     std::unordered_map<std::string, ActiveFraudTrack> active_fraud_tracks;
     std::queue<FraudRecord> q;
@@ -165,7 +183,6 @@ private:
     std::atomic<std::uint64_t> dropped_queue_count;
     std::atomic<std::uint64_t> dropped_pending_expired_count;
     std::atomic<std::uint64_t> dropped_pending_overflow_count;
-    std::atomic<std::uint64_t> parsed_xml_ok_count;
     TrackPosCallback track_pos_callback;
     RfidPairedCallback rfid_paired_callback;
     OutlineDecisionCallback outline_decision_callback;

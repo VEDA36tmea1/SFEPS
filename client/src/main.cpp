@@ -160,7 +160,7 @@ int main(int argc, char *argv[]) {
 
     // Position channel (separate socket) for SUB_POS/UNSUB_POS and POS events
     const QString posHost = env.value("POS_SERVER_HOST", alertHost);
-    const bool posTlsEnabled = parseEnvBool(env, "SFEPS_POS_TLS_ENABLE", false);
+    const bool posTlsEnabled = parseEnvBool(env, "SFEPS_POS_TLS_ENABLE", clientTlsEnabled);
     const int posPort = posTlsEnabled
                                                         ? parseEnvPort(env, "SFEPS_POS_TLS_PORT", 6558)
                                                         : parseEnvPort(env, "POS_SERVER_PORT", 5558);

@@ -23,9 +23,10 @@ SFEPS Client는 Qt 6/QML 기반 관제 애플리케이션입니다.
 
 기본 포트:
 - Auth: 5555 (TLS 6555)
-- Fraud Alert: 5557
-- Voice: 5556
-- Position: 5558
+- Fraud Alert: 5557 (TLS 6557)
+- Voice: 5556 (TLS 6556)
+- Position: 5558 (TLS 6558)
+- Video Catalog: 5559 (TLS 6559)
 - RTSP: 8554
 
 기본 주소(기본값):
@@ -101,9 +102,14 @@ cd C:\Users\2-08\Desktop\SFEPS\client\build-mingw
 - `CAMERA_BRIGHTNESS_CGI_URL=https://192.168.0.84/stw-cgi/image.cgi?msubmenu=imageenhancements2&action=set&Brightness={value}`
 - `CAMERA_CONTRAST_CGI_URL=https://192.168.0.84/stw-cgi/image.cgi?msubmenu=imageenhancements2&action=set&Contrast={value}`
 
-TLS 로그인:
-- `AUTH_TLS_ENABLE` (`1`이면 TLS)
+TLS:
+- `AUTH_TLS_ENABLE` (`1`이면 Auth TLS)
 - `AUTH_TLS_CA_FILE` (기본: `client/certs/auth_ca.pem`)
+- `SFEPS_CLIENT_TLS_ENABLE` (Alert/Voice/Position 공통 TLS 기본 토글)
+- `SFEPS_ALERT_TLS_ENABLE`, `SFEPS_ALERT_TLS_PORT`
+- `SFEPS_POS_TLS_ENABLE`, `SFEPS_POS_TLS_PORT`
+- `SFEPS_AUDIO_TLS_PORT`
+- `SFEPS_VIDEO_CATALOG_TLS_ENABLE`, `SFEPS_VIDEO_CATALOG_TLS_PORT`
 - `AUTH_TLS_PORT`
 - `AUTH_PLAINTEXT_PORT`
 - `AUTH_ALLOW_PLAINTEXT_FALLBACK`
@@ -137,6 +143,7 @@ Analytics > Video Storage에서 서버 보관 영상 목록 조회 및 재생.
 - `VIDEO_CATALOG_HOST`: Video Catalog 서버 주소 (기본값: 127.0.0.1)
 - `SFEPS_VIDEO_CATALOG_PORT`: TCP 포트 (기본값: 5559)
 - `SFEPS_VIDEO_CATALOG_TLS_ENABLE`: TLS 사용 여부 (기본값: 0)
+- `SFEPS_VIDEO_CATALOG_TLS_PORT`: TLS 포트 (기본값: 6559)
 
 **프로토콜**:
 - 스냅샷: `REC_SNAPSHOT_BEGIN|TOTAL=N` → `REC|id|createdAt` 반복 → `REC_SNAPSHOT_END|TOTAL=N`

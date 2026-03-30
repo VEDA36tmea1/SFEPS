@@ -73,6 +73,7 @@ bool remove_video_file(const VideoFileEntry& file,
                        long retention_sec,
                        std::uintmax_t current_total_bytes,
                        std::uintmax_t max_storage_bytes,
+                       std::uintmax_t resume_storage_bytes,
                        std::uintmax_t& total_bytes,
                        std::size_t& deleted_count) {
     std::error_code ec;
@@ -91,6 +92,7 @@ bool remove_video_file(const VideoFileEntry& file,
     (void)retention_sec;
     (void)current_total_bytes;
     (void)max_storage_bytes;
+    (void)resume_storage_bytes;
     return true;
 }
 
@@ -140,7 +142,8 @@ void run_image_retention_cleanup_worker(std::atomic<bool>& running_flag,
 void run_file_cleanup_worker(std::atomic<bool>& running_flag,
                              const std::string& save_dir,
                              long retention_sec,
-                             std::uintmax_t max_storage_bytes) {
+                             std::uintmax_t max_storage_bytes,
+                             std::uintmax_t resume_storage_bytes) {
     auto interval = std::chrono::seconds(kCleanupIntervalSec);
     while (running_flag) {
         try {
@@ -159,18 +162,23 @@ void run_file_cleanup_worker(std::atomic<bool>& running_flag,
 
                     const auto total_before_delete = total_bytes;
                     remove_video_file(file, "retention", age, retention_sec, total_before_delete,
-                                      max_storage_bytes, total_bytes, deleted_count);
+                                      max_storage_bytes, resume_storage_bytes, total_bytes,
+                                      deleted_count);
                 }
 
                 if (max_storage_bytes > 0 && total_bytes > max_storage_bytes) {
+                    const std::uintmax_t delete_until_bytes =
+                        (resume_storage_bytes > 0 && resume_storage_bytes <= max_storage_bytes)
+                            ? resume_storage_bytes
+                            : max_storage_bytes;
                     for (const auto& file : files) {
-                        if (total_bytes <= max_storage_bytes) break;
+                        if (total_bytes <= delete_until_bytes) break;
                         if (!fs::exists(file.path)) continue;
 
                         const auto total_before_delete = total_bytes;
                         remove_video_file(file, "storage_limit", -1, retention_sec,
-                                          total_before_delete, max_storage_bytes, total_bytes,
-                                          deleted_count);
+                                          total_before_delete, max_storage_bytes,
+                                          resume_storage_bytes, total_bytes, deleted_count);
                     }
                 }
 

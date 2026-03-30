@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <random>
 #include <string_view>
 #include <vector>
 
@@ -18,6 +19,7 @@ constexpr const char* kAnalyticsInsertQuery =
     "INSERT INTO analytics_logs (object_id, card_age_text, age, is_fraud, created_at) "
     "VALUES (?, ?, ?, ?, NOW())";
 constexpr const char* kAnalyticsLogPrefix = "[analytics.cpp]";
+constexpr auto kOutlineRfidGracePeriod = std::chrono::seconds(1);
 
 struct ParsedEventForAnalytics {
     std::string rule_name;
@@ -160,6 +162,29 @@ std::string fraud_flag(bool is_fraud) {
     return is_fraud ? "Y" : "N";
 }
 
+std::string generate_weighted_random_age() {
+    static thread_local std::mt19937 rng(std::random_device{}());
+    static const std::vector<int> weighted_ages = [] {
+        std::vector<int> values;
+        for (int age = 10; age <= 70; ++age) {
+            int repeat = 1;
+            if (age >= 20 && age <= 45) {
+                repeat = 3;
+            } else if (age >= 60) {
+                repeat = 2;
+            }
+
+            for (int i = 0; i < repeat; ++i) {
+                values.push_back(age);
+            }
+        }
+        return values;
+    }();
+    std::uniform_int_distribution<std::size_t> distribution(0, weighted_ages.size() - 1);
+
+    return std::to_string(weighted_ages[distribution(rng)]);
+}
+
 std::string normalize_rule_name(std::string_view raw) {
     return to_lower_copy(trim_copy(std::string(raw)));
 }
@@ -188,8 +213,7 @@ AnalyticsProcessor::AnalyticsProcessor(const char* h,
       dropped_line_limit_count(0),
       dropped_queue_count(0),
       dropped_pending_expired_count(0),
-      dropped_pending_overflow_count(0),
-      parsed_xml_ok_count(0) {}
+      dropped_pending_overflow_count(0) {}
 
 AnalyticsProcessor::~AnalyticsProcessor() {
     stop();
@@ -269,6 +293,7 @@ void AnalyticsProcessor::stop() {
     {
         std::lock_guard<std::mutex> lock(mtx);
         pending_queue.clear();
+        awaiting_outline_queue.clear();
         pending_object_ids.clear();
         matched_objects.clear();
         latest_objects.clear();
@@ -372,6 +397,96 @@ void AnalyticsProcessor::pruneExpiredPendingLocked(std::chrono::steady_clock::ti
     }
 }
 
+void AnalyticsProcessor::finalizePendingObjectLocked(
+    PendingObject& final_out,
+    std::chrono::steady_clock::time_point now,
+    std::vector<std::string>& outbound_alerts,
+    std::vector<OutlineDecisionPayload>& outbound_outline_decisions,
+    bool& should_notify_worker) {
+    if (final_out.card_age_text.empty()) {
+        final_out.card_age_text = "0";
+    }
+    const CardAgeDecision card_age = evaluate_card_age(final_out.card_age_text);
+    final_out.is_fraud = is_fraud_by_age_mismatch(card_age, final_out.age);
+    object_fraud_flags[final_out.object_id] = final_out.is_fraud;
+    finalized_decisions[final_out.object_id] =
+        FinalizedDecisionState {final_out.card_age_text, final_out.age, final_out.is_fraud, now};
+    if (!final_out.source_object_id.empty()) {
+        bbox_aliases_by_event_id[final_out.object_id] =
+            EventBBoxAlias {final_out.source_object_id, now};
+    }
+
+    FraudRecord record;
+    record.object_id = final_out.object_id;
+    record.card_age_text = final_out.card_age_text;
+    record.age = final_out.age;
+    record.is_fraud = final_out.is_fraud;
+
+    if (q.size() >= max_queue_size) {
+        q.pop();
+        const std::uint64_t dropped = ++dropped_queue_count;
+        if (should_sample(dropped, drop_log_interval)) {
+            std::cout << "[analytics.cpp] [Drop] analytics 큐 초과: 최대="
+                      << max_queue_size << ", dropped_count=" << dropped << std::endl;
+        }
+    }
+    q.push(record);
+    should_notify_worker = true;
+
+    const std::string fraud_yn = fraud_flag(final_out.is_fraud);
+    char merged_line[512];
+    const int n = std::snprintf(
+        merged_line, sizeof(merged_line),
+        "FRAUD|%s|%s|%s|%s|L=%.1f|T=%.1f|R=%.1f|B=%.1f|X=%.1f|Y=%.1f|TAG=%s\n",
+        record.object_id.c_str(), record.card_age_text.c_str(), record.age.c_str(),
+        fraud_yn.c_str(), final_out.bbox_left, final_out.bbox_top, final_out.bbox_right,
+        final_out.bbox_bottom, final_out.center_x, final_out.center_y,
+        final_out.outline_tag_time.c_str());
+    if (n > 0 && n < static_cast<int>(sizeof(merged_line))) {
+        outbound_alerts.emplace_back(merged_line, static_cast<std::size_t>(n));
+    }
+
+    OutlineDecisionPayload outline_payload;
+    outline_payload.object_id = final_out.object_id;
+    outline_payload.card_age_text = final_out.card_age_text;
+    outline_payload.age = final_out.age;
+    outline_payload.is_fraud = final_out.is_fraud;
+    outline_payload.tag_time = final_out.outline_tag_time;
+    outbound_outline_decisions.push_back(std::move(outline_payload));
+
+    if (final_out.is_fraud) {
+        ActiveFraudTrack& active_track = active_fraud_tracks[final_out.object_id];
+        active_track.source_object_id = final_out.source_object_id;
+        active_track.activated_at = now;
+    } else {
+        active_fraud_tracks.erase(final_out.object_id);
+    }
+}
+
+void AnalyticsProcessor::flushReadyAwaitingOutlinesLocked(
+    std::chrono::steady_clock::time_point now,
+    std::vector<std::string>& outbound_alerts,
+    std::vector<OutlineDecisionPayload>& outbound_outline_decisions,
+    bool& should_notify_worker) {
+    while (!awaiting_outline_queue.empty()) {
+        const auto& front = awaiting_outline_queue.front();
+        if ((now - front.created_at) < kOutlineRfidGracePeriod) break;
+
+        PendingObject final_out = std::move(awaiting_outline_queue.front());
+        awaiting_outline_queue.pop_front();
+        finalizePendingObjectLocked(
+            final_out, now, outbound_alerts, outbound_outline_decisions, should_notify_worker);
+
+        std::cout << "[analytics.cpp] ---------------- FLOW ----------------" << std::endl;
+        std::cout << "[analytics.cpp] [FLOW] ID=" << final_out.object_id << std::endl;
+        std::cout << "[analytics.cpp] [FLOW] 2. OUTLINE card_age_text="
+                  << final_out.card_age_text << " (유예 만료 확정), age=" << final_out.age
+                  << ", fraud=" << fraud_flag(final_out.is_fraud)
+                  << ", tag_time=" << final_out.outline_tag_time << std::endl;
+        std::cout << "[analytics.cpp] [FLOW] -------------------------------------" << std::endl;
+    }
+}
+
 void AnalyticsProcessor::pruneExpiredStateLocked(std::chrono::steady_clock::time_point now) {
     const auto ttl = std::chrono::seconds(static_cast<long long>(pending_ttl_seconds));
 
@@ -386,6 +501,7 @@ void AnalyticsProcessor::pruneExpiredStateLocked(std::chrono::steady_clock::time
     for (auto it = latest_objects.begin(); it != latest_objects.end();) {
         if ((now - it->second.updated_at) > ttl) {
             object_fraud_flags.erase(it->first);
+            finalized_decisions.erase(it->first);
             it = latest_objects.erase(it);
         } else {
             ++it;
@@ -409,8 +525,6 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
     const std::vector<ParsedEventForAnalytics> parsed_events =
         parse_events_for_analytics(raw, tag_time);
 
-    ++parsed_xml_ok_count;
-
     if (parsed_objects.empty() && parsed_events.empty()) return;
 
     std::size_t accepted_enter_count = 0;
@@ -425,6 +539,8 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
         std::lock_guard<std::mutex> lock(mtx);
         pruneExpiredPendingLocked(now);
         pruneExpiredStateLocked(now);
+        flushReadyAwaitingOutlinesLocked(
+            now, outbound_alerts, outbound_outline_decisions, should_notify_worker);
 
         const auto state_ttl = std::chrono::seconds(static_cast<long long>(pending_ttl_seconds));
         for (auto it = bbox_aliases_by_event_id.begin(); it != bbox_aliases_by_event_id.end();) {
@@ -580,7 +696,7 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
                 PendingObject pending;
                 pending.object_id = object_id;
                 pending.card_age_text = "0";
-                pending.age = "20";
+                pending.age = generate_weighted_random_age();
                 pending.enter_tag_time = event.tag_time;
                 pending.is_fraud = true;
                 pending.created_at = now;
@@ -593,6 +709,13 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
                 pending_queue.push_back(std::move(pending));
                 pending_object_ids.insert(object_id);
                 ++accepted_enter_count;
+                std::cout << "[analytics.cpp] ---------------- FLOW ----------------" << std::endl;
+                std::cout << "[analytics.cpp] [FLOW] ID=" << object_id << std::endl;
+                std::cout << "[analytics.cpp] [FLOW] 1. ENTERLINE card_age_text=0 (카드값 대기), age="
+                          << pending_queue.back().age << ", tag_time=" << event.tag_time
+                          << std::endl;
+                std::cout << "[analytics.cpp] [FLOW] -------------------------------------"
+                          << std::endl;
                 continue;
             }
 
@@ -619,11 +742,16 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
             }
 
             if (!found) {
-                final_out.object_id = object_id;
-                final_out.card_age_text = "0";
-                final_out.age = "20";
-                final_out.is_fraud = true;
-                final_out.created_at = now;
+                const auto finalized_it = finalized_decisions.find(object_id);
+                if (finalized_it != finalized_decisions.end()) {
+                    continue;
+                } else {
+                    final_out.object_id = object_id;
+                    final_out.card_age_text = "0";
+                    final_out.age = generate_weighted_random_age();
+                    final_out.is_fraud = true;
+                    final_out.created_at = now;
+                }
             }
 
             final_out.outline_tag_time = event.tag_time;
@@ -635,54 +763,33 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
                 fill_bbox_from_source(source_object_id, final_out);
             }
 
-            if (final_out.card_age_text.empty()) {
-                final_out.card_age_text = "0";
-            }
-            const CardAgeDecision card_age = evaluate_card_age(final_out.card_age_text);
-            final_out.is_fraud = is_fraud_by_age_mismatch(card_age, final_out.age);
-            object_fraud_flags[final_out.object_id] = final_out.is_fraud;
-            if (!final_out.source_object_id.empty()) {
-                bbox_aliases_by_event_id[final_out.object_id] =
-                    EventBBoxAlias {final_out.source_object_id, now};
-            }
-
-            FraudRecord record;
-            record.object_id = final_out.object_id;
-            record.card_age_text = final_out.card_age_text;
-            record.age = final_out.age;
-            record.is_fraud = final_out.is_fraud;
-
-            if (q.size() >= max_queue_size) {
-                q.pop();
-                const std::uint64_t dropped = ++dropped_queue_count;
-                if (should_sample(dropped, drop_log_interval)) {
-                    std::cout << "[analytics.cpp] [Drop] analytics 큐 초과: 최대="
-                              << max_queue_size << ", dropped_count=" << dropped << std::endl;
-                }
-            }
-            q.push(record);
-            should_notify_worker = true;
-
-            const std::string fraud_yn = fraud_flag(final_out.is_fraud);
-            char merged_line[512];
-            const int n = std::snprintf(
-                merged_line, sizeof(merged_line),
-                "FRAUD|%s|%s|%s|%s|L=%.1f|T=%.1f|R=%.1f|B=%.1f|X=%.1f|Y=%.1f|TAG=%s\n",
-                record.object_id.c_str(), record.card_age_text.c_str(), record.age.c_str(),
-                fraud_yn.c_str(), final_out.bbox_left, final_out.bbox_top, final_out.bbox_right,
-                final_out.bbox_bottom, final_out.center_x, final_out.center_y,
-                final_out.outline_tag_time.c_str());
-            if (n > 0 && n < static_cast<int>(sizeof(merged_line))) {
-                outbound_alerts.emplace_back(merged_line, static_cast<std::size_t>(n));
+            const bool should_wait_for_late_rfid =
+                found && (final_out.card_age_text.empty() || final_out.card_age_text == "0");
+            if (should_wait_for_late_rfid) {
+                final_out.created_at = now;
+                awaiting_outline_queue.push_back(final_out);
+                std::cout << "[analytics.cpp] ---------------- FLOW ----------------" << std::endl;
+                std::cout << "[analytics.cpp] [FLOW] ID=" << final_out.object_id << std::endl;
+                std::cout << "[analytics.cpp] [FLOW] 2. OUTLINE card_age_text=0 (RFID 후행 대기), age="
+                          << final_out.age << ", tag_time=" << final_out.outline_tag_time
+                          << std::endl;
+                std::cout << "[analytics.cpp] [FLOW] -------------------------------------"
+                          << std::endl;
+                continue;
             }
 
-            OutlineDecisionPayload outline_payload;
-            outline_payload.object_id = final_out.object_id;
-            outline_payload.card_age_text = final_out.card_age_text;
-            outline_payload.age = final_out.age;
-            outline_payload.is_fraud = final_out.is_fraud;
-            outline_payload.tag_time = final_out.outline_tag_time;
-            outbound_outline_decisions.push_back(std::move(outline_payload));
+            finalizePendingObjectLocked(
+                final_out, now, outbound_alerts, outbound_outline_decisions, should_notify_worker);
+
+            std::cout << "[analytics.cpp] ---------------- FLOW ----------------" << std::endl;
+            std::cout << "[analytics.cpp] [FLOW] ID=" << final_out.object_id << std::endl;
+            std::cout << "[analytics.cpp] [FLOW] 2. OUTLINE card_age_text="
+                      << final_out.card_age_text
+                      << (final_out.card_age_text == "0" ? " (카드값 미전달)" : " (카드값 전달됨)")
+                      << ", age=" << final_out.age << ", fraud=" << fraud_flag(final_out.is_fraud)
+                      << ", tag_time=" << final_out.outline_tag_time << std::endl;
+            std::cout << "[analytics.cpp] [FLOW] -------------------------------------"
+                      << std::endl;
 
             if (final_out.is_fraud) {
                 ActiveFraudTrack& active_track = active_fraud_tracks[final_out.object_id];
@@ -750,25 +857,82 @@ void AnalyticsProcessor::onRfidRead(const std::string& card_age_text_raw) {
     const auto now = std::chrono::steady_clock::now();
     std::string paired_object_id;
     std::string paired_tag_time;
+    std::string paired_card_age_text;
+    std::string paired_age;
+    bool paired_is_fraud = false;
+    bool paired_from_late_outline = false;
+    bool should_notify_worker = false;
+    std::vector<std::string> outbound_alerts;
+    std::vector<OutlineDecisionPayload> outbound_outline_decisions;
+    std::vector<std::string> late_outbound_alerts;
+    std::vector<OutlineDecisionPayload> late_outbound_outline_decisions;
+    bool has_pair_candidate = false;
 
     {
         std::lock_guard<std::mutex> lock(mtx);
         pruneExpiredPendingLocked(now);
         pruneExpiredStateLocked(now);
+        flushReadyAwaitingOutlinesLocked(
+            now, outbound_alerts, outbound_outline_decisions, should_notify_worker);
 
-        if (pending_queue.empty()) {
-            return;
+        const bool has_late_outline_waiting = !awaiting_outline_queue.empty();
+        has_pair_candidate = has_late_outline_waiting || !pending_queue.empty();
+        if (has_pair_candidate) {
+            PendingObject pending;
+            if (has_late_outline_waiting) {
+                pending = std::move(awaiting_outline_queue.front());
+                awaiting_outline_queue.pop_front();
+                paired_from_late_outline = true;
+            } else {
+                pending = std::move(pending_queue.front());
+                pending_queue.pop_front();
+                pending_object_ids.erase(pending.object_id);
+            }
+
+            pending.card_age_text = card_age.canonical_text;
+            pending.is_fraud = is_fraud_by_age_mismatch(card_age, pending.age);
+            paired_object_id = pending.object_id;
+            paired_tag_time = pending.enter_tag_time;
+            paired_card_age_text = pending.card_age_text;
+            paired_age = pending.age;
+            paired_is_fraud = pending.is_fraud;
+            if (paired_from_late_outline && !pending.outline_tag_time.empty()) {
+                finalizePendingObjectLocked(
+                    pending, now, late_outbound_alerts, late_outbound_outline_decisions,
+                    should_notify_worker);
+            } else {
+                matched_objects[pending.object_id] = std::move(pending);
+            }
         }
+    }
 
-        PendingObject pending = std::move(pending_queue.front());
-        pending_queue.pop_front();
-        pending_object_ids.erase(pending.object_id);
+    for (const auto& msg : outbound_alerts) {
+        send_alert_to_clients(msg);
+    }
+    if (outline_decision_callback) {
+        for (const auto& payload : outbound_outline_decisions) {
+            outline_decision_callback(payload);
+        }
+    }
+    if (!has_pair_candidate) {
+        if (should_notify_worker) {
+            cv.notify_one();
+        }
+        return;
+    }
 
-        pending.card_age_text = card_age.canonical_text;
-        pending.is_fraud = is_fraud_by_age_mismatch(card_age, pending.age);
-        paired_object_id = pending.object_id;
-        paired_tag_time = pending.enter_tag_time;
-        matched_objects[pending.object_id] = std::move(pending);
+    std::cout << "[analytics.cpp] [Matcher] RFID 카드 매칭: object_id=" << paired_object_id
+              << ", card_age_text=" << paired_card_age_text << ", age=" << paired_age
+              << ", fraud=" << fraud_flag(paired_is_fraud) << ", tag_time=" << paired_tag_time
+              << std::endl;
+
+    if (paired_from_late_outline) {
+        std::cout << "[analytics.cpp] [Matcher] 지연 RFID 보정 완료: object_id=" << paired_object_id
+                  << ", outline_tag_time="
+                  << (late_outbound_outline_decisions.empty()
+                          ? ""
+                          : late_outbound_outline_decisions.front().tag_time)
+                  << std::endl;
     }
 
     static std::uint64_t paired_count = 0;
@@ -780,6 +944,17 @@ void AnalyticsProcessor::onRfidRead(const std::string& card_age_text_raw) {
     }
     if (rfid_paired_callback && !paired_object_id.empty()) {
         rfid_paired_callback(paired_object_id, paired_tag_time);
+    }
+    for (const auto& msg : late_outbound_alerts) {
+        send_alert_to_clients(msg);
+    }
+    if (outline_decision_callback) {
+        for (const auto& payload : late_outbound_outline_decisions) {
+            outline_decision_callback(payload);
+        }
+    }
+    if (should_notify_worker) {
+        cv.notify_one();
     }
 }
 

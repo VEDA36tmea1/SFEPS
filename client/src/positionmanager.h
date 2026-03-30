@@ -38,6 +38,8 @@ private slots:
 private:
     void attachPosSocketSignals();
     void flushQueuedCommands();
+    bool resolveTlsEnabled() const;
+    void connectCurrentSocket();
 
     QTcpSocket *posSocket = nullptr;
     QByteArray posRecvBuffer;

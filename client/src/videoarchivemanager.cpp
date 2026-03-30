@@ -1,9 +1,40 @@
 #include "videoarchivemanager.h"
+#include <QFile>
 #include <QProcessEnvironment>
 #include <QDebug>
 #include <QRegularExpression>
+#include <QSslCertificate>
+#include <QSslConfiguration>
+#include <QSslError>
 
 namespace {
+bool parseEnvBool(const QProcessEnvironment &env, const QString &key, bool defaultValue)
+{
+    const QString raw = env.value(key).trimmed().toLower();
+    if (raw.isEmpty()) return defaultValue;
+    if (raw == "1" || raw == "true" || raw == "yes" || raw == "on") return true;
+    if (raw == "0" || raw == "false" || raw == "no" || raw == "off") return false;
+    return defaultValue;
+}
+
+QList<QSslCertificate> loadCaCertificates(const QString &path, QString &outError)
+{
+    QList<QSslCertificate> certs;
+    if (path.trimmed().isEmpty()) return certs;
+
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) {
+        outError = QString("open failed (%1): %2").arg(path, f.errorString());
+        return certs;
+    }
+
+    certs = QSslCertificate::fromData(f.readAll(), QSsl::Pem);
+    if (certs.isEmpty()) {
+        outError = QString("no valid PEM certificate found in %1").arg(path);
+    }
+    return certs;
+}
+
 int parseTotalField(const QString &line)
 {
     const QRegularExpression re("TOTAL=(\\d+)");
@@ -22,9 +53,10 @@ VideoArchiveManager::VideoArchiveManager(QObject *parent) : QObject(parent)
 {
     const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     host = env.value("VIDEO_CATALOG_HOST", "127.0.0.1");
-    const bool tls = env.value("SFEPS_VIDEO_CATALOG_TLS_ENABLE", "0").toLower() == "1" || env.value("SFEPS_VIDEO_CATALOG_TLS_ENABLE", "0").toLower() == "true";
-    useTls = tls;
-    port = tls ? env.value("SFEPS_VIDEO_CATALOG_TLS_PORT", "6559").toInt() : env.value("SFEPS_VIDEO_CATALOG_PORT", "5559").toInt();
+    const bool clientTlsEnabled = parseEnvBool(env, "SFEPS_CLIENT_TLS_ENABLE", false);
+    useTls = parseEnvBool(env, "SFEPS_VIDEO_CATALOG_TLS_ENABLE", clientTlsEnabled);
+    port = useTls ? env.value("SFEPS_VIDEO_CATALOG_TLS_PORT", "6559").toInt()
+                  : env.value("SFEPS_VIDEO_CATALOG_PORT", "5559").toInt();
 }
 
 void VideoArchiveManager::connectCatalog()
@@ -40,8 +72,34 @@ void VideoArchiveManager::ensureSocket()
             connect(ssl, &QSslSocket::connected, this, &VideoArchiveManager::onConnected);
             connect(ssl, &QSslSocket::readyRead, this, &VideoArchiveManager::onReadyRead);
             connect(ssl, &QSslSocket::errorOccurred, this, &VideoArchiveManager::onSocketError);
+            connect(ssl, &QSslSocket::sslErrors, this, [](const QList<QSslError> &errors) {
+                for (const QSslError &err : errors) {
+                    qWarning() << "VideoArchiveManager sslError:" << err.errorString();
+                }
+            });
         }
         if (ssl->state() == QAbstractSocket::UnconnectedState) {
+            const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+            ssl->abort();
+            ssl->setPeerVerifyMode(QSslSocket::VerifyPeer);
+
+            const QString caPath = env.value("SFEPS_CLIENT_CA_FILE").trimmed();
+            QString caErr;
+            const QList<QSslCertificate> certs = loadCaCertificates(caPath, caErr);
+            if (!certs.isEmpty()) {
+                QSslConfiguration cfg = ssl->sslConfiguration();
+                cfg.setProtocol(QSsl::TlsV1_2OrLater);
+                cfg.setPeerVerifyMode(QSslSocket::VerifyPeer);
+                cfg.setCaCertificates(certs);
+                ssl->setSslConfiguration(cfg);
+            } else if (!caPath.isEmpty()) {
+                qWarning() << "VideoArchiveManager CA load failed:" << caErr;
+            }
+
+            const QString serverName = env.value("SFEPS_CLIENT_TLS_SERVER_NAME").trimmed();
+            if (!serverName.isEmpty()) {
+                ssl->setPeerVerifyName(serverName);
+            }
             ssl->connectToHostEncrypted(host, port);
         }
     } else {

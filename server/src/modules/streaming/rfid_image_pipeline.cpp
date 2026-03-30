@@ -322,8 +322,6 @@ void snapshot_rfid_image_for_object(const std::string& object_id, const std::str
         registry.pending_by_object_id[object_id] = out_path;
     }
 
-    std::cout << "[main.cpp] [CAM_TRIGGER_REGISTRY_SET] object_id=" << object_id
-              << ", req_id=" << req_id << ", path=" << out_path << std::endl;
 }
 
 bool finalize_outline_image_for_object(
@@ -421,7 +419,6 @@ bool finalize_outline_image_for_object(
     try {
         const fs::path kept = move_file_to_dir(pending_path, fs::path(kEventImageFraudDir));
         std::cout << "[main.cpp] [RFID_IMAGE_KEEP] object_id=" << payload.object_id
-                  << ", from=" << pending_path << ", to=" << kept
                   << ", tag_time=" << payload.tag_time << std::endl;
         if (out_fraud_image_info != nullptr) {
             out_fraud_image_info->object_id = payload.object_id;

@@ -323,10 +323,6 @@ bool send_snapshot_to_client(ClientState& client, const SecurityRuntimeOptions& 
     const VideoStorageStats storage_stats =
         collect_storage_stats_from_records(records, sec_cfg.video_max_storage_bytes);
 
-    std::cout << "[main.cpp] [VideoCatalog] snapshot 전송 시작: ip=" << client.conn.ip
-              << ", fd=" << client.conn.fd << ", total=" << records.size()
-              << ", used_bytes=" << storage_stats.used_bytes << std::endl;
-
     if (!app_services_transport::client_send_line(
             client.conn, format_snapshot_begin_line(records.size()))) {
         std::cerr << "[main.cpp] [VideoCatalog] snapshot begin 전송 실패: ip=" << client.conn.ip
@@ -354,11 +350,6 @@ bool send_snapshot_to_client(ClientState& client, const SecurityRuntimeOptions& 
     }
 
     client.last_seen_seq = snapshot_seq;
-    std::cout << "[main.cpp] [VideoCatalog] snapshot 전송 완료: ip=" << client.conn.ip
-              << ", fd=" << client.conn.fd << ", total=" << records.size()
-                      << ", snapshot_seq=" << client.last_seen_seq
-                      << ", used_bytes=" << storage_stats.used_bytes
-                      << ", cap_bytes=" << storage_stats.cap_bytes << std::endl;
     return true;
 }
 
@@ -502,10 +493,6 @@ bool sync_client_events(ClientState& client, const SecurityRuntimeOptions& sec_c
                       << ", id=" << event.record.id << std::endl;
             return false;
         }
-        std::cout << "[main.cpp] [VideoCatalog] 실시간 이벤트 전송: ip=" << client.conn.ip
-                  << ", fd=" << client.conn.fd << ", seq=" << event.seq << ", kind="
-                  << (event.kind == VideoCatalogEvent::Kind::Added ? "ADD" : "DEL")
-                  << ", id=" << event.record.id << std::endl;
         client.last_seen_seq = event.seq;
         sent_any_event = true;
     }
@@ -519,10 +506,6 @@ bool sync_client_events(ClientState& client, const SecurityRuntimeOptions& sec_c
                       << client.conn.ip << ", fd=" << client.conn.fd << std::endl;
             return false;
         }
-        std::cout << "[main.cpp] [VideoCatalog] REC_STORAGE 전송: ip=" << client.conn.ip
-                  << ", fd=" << client.conn.fd
-                  << ", used_bytes=" << storage_stats.used_bytes
-                  << ", cap_bytes=" << storage_stats.cap_bytes << std::endl;
     }
 
     return true;
@@ -553,13 +536,6 @@ bool broadcast_system_status(std::vector<ClientState>& clients,
         ++success_count;
     }
 
-    if (success_count > 0) {
-        std::cout << "[main.cpp] [VideoCatalog] SYS_STATUS 주기 전송: clients="
-                  << success_count
-                  << ", cpu_temp_c=" << format_one_decimal(status_snapshot.cpu_temp_c)
-                  << ", cpu_usage_pct=" << format_one_decimal(status_snapshot.cpu_usage_pct)
-                  << std::endl;
-    }
     return true;
 }
 
@@ -667,9 +643,6 @@ void run_video_catalog_service_impl(std::atomic<bool>& running,
                         continue;
                     }
 
-                    std::cout << "[main.cpp] [VideoCatalog] 구독 연결 완료: ip="
-                              << client.conn.ip << ", fd=" << client.conn.fd
-                              << ", snapshot_seq=" << client.last_seen_seq << std::endl;
                     clients.push_back(std::move(client));
                     if (was_empty) {
                         next_system_status_broadcast_at =

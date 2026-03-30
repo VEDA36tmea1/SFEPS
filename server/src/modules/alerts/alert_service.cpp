@@ -67,13 +67,9 @@ void run_fraud_notifier_impl(std::atomic<bool>& running, const SecurityRuntimeOp
 
             if (kind == TransportKind::Plain) {
                 add_alert_plain_client(client.fd, client.ip);
-                std::cout << "[main.cpp] [Alert] plain 클라이언트 연결됨: " << client.ip << ":"
-                          << client.port << " (fd=" << client.fd << ")" << std::endl;
                 client.fd = -1;
             } else {
                 add_alert_tls_client(std::move(client.tls_conn), client.ip);
-                std::cout << "[main.cpp] [Alert] TLS 클라이언트 연결됨: " << client.ip << ":"
-                          << client.port << " (fd=" << client.fd << ")" << std::endl;
                 client.fd = -1;
             }
         }

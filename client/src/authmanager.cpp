@@ -77,8 +77,7 @@ void AuthManager::login(const QString &id, const QString &pw)
     const QString authHost = env.value("AUTH_SERVER_HOST", QString::fromUtf8(kDefaultAuthHost));
     const int authTlsPort = parseEnvPort(env, "AUTH_TLS_PORT", kDefaultAuthTlsPort);
     const int authPlainPort = parseEnvPort(env, "AUTH_PLAINTEXT_PORT", kDefaultAuthPlainPort);
-    // Force plaintext auth transport: disable TLS regardless of environment.
-    const bool authTlsEnable = false;
+    const bool authTlsEnable = parseEnvBool(env, "AUTH_TLS_ENABLE", true);
     const bool allowPlainFallback = parseEnvBool(env,
                                                  "AUTH_ALLOW_PLAINTEXT_FALLBACK",
                                                  kDefaultPlainFallbackEnable);

@@ -43,6 +43,7 @@ struct SecurityRuntimeOptions {
     std::string fraud_image_http_base_url = "http://127.0.0.1:8080/fraud-images";
     std::size_t video_retention_sec = 86400;
     std::uintmax_t video_max_storage_bytes = 5368709120ULL;
+    std::uintmax_t video_storage_resume_bytes = 3221225472ULL;
     std::size_t pending_image_retention_sec = 120;
     std::size_t fraud_image_retention_sec = 86400;
 

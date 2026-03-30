@@ -11,7 +11,8 @@
 void run_file_cleanup_worker(std::atomic<bool>& running_flag,
                              const std::string& save_dir,
                              long retention_sec = 86400,
-                             std::uintmax_t max_storage_bytes = 5368709120ULL);
+                             std::uintmax_t max_storage_bytes = 5368709120ULL,
+                             std::uintmax_t resume_storage_bytes = 3221225472ULL);
 void run_fraud_image_cleanup_worker(std::atomic<bool>& running_flag,
                                     const std::string& save_dir,
                                     long retention_sec = 86400);
