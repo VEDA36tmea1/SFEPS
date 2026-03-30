@@ -541,7 +541,7 @@ constexpr float  kAnalogueGain    = 1.0f;   // 센서 아날로그 게인
 
 static const std::string PIPE_RAW =
     "libcamerasrc ! "
-    "video/x-raw,format=SRGGB10,width=1920,height=1080,framerate=30/1 ! "
+    "video/x-raw,format=SBGGR10,width=1920,height=1080,framerate=30/1 ! "
     "appsink drop=true max-buffers=1 emit-signals=false wait-on-eos=false";
 
 static const std::string PIPE_BGR =
