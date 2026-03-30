@@ -25,7 +25,8 @@ cv::Mat runPureISP(const cv::Mat& raw16_frame);
  *  처리: ShadowBoost × 7 → CLAHE × 7 → Entropy 평가 → Best 선택
  */
 cv::Mat processISPAndGetBest(const cv::Mat& frame_in, cv::Mat& tuning_view_out);
- 
+cv::Mat runPureISP_withHistograms(const cv::Mat& raw16_frame, const std::string& save_dir);
+
 // ── 내부 공유 함수 (단독 사용 가능) ─────────────────────────
 void applyShadowBoost(const cv::Mat& src, cv::Mat& dst, double gamma, double alpha);
 void applyCLAHE(const cv::Mat& src, cv::Mat& dst, double clip_limit, cv::Size grid);
