@@ -53,12 +53,17 @@ if ([string]::IsNullOrWhiteSpace($env:SFEPS_GSTREAMER_PIPELINE) -and $env:RTSP_B
 $caPath = Join-Path $clientDir "certs\auth_ca.pem"
 Set-DefaultEnv "AUTH_TLS_PORT" "6555"
 Set-DefaultEnv "AUTH_PLAINTEXT_PORT" "5555"
-Set-DefaultEnv "AUTH_ALLOW_PLAINTEXT_FALLBACK" "0"
-Set-DefaultEnv "AUTH_TLS_CA_FILE" $caPath
+[Environment]::SetEnvironmentVariable("AUTH_ALLOW_PLAINTEXT_FALLBACK", "1", "Process")
+[Environment]::SetEnvironmentVariable("AUTH_TLS_CA_FILE", $caPath, "Process")
 
 # 선택: 통합 TLS 토글(프로젝트의 다른 경로에서 참조 가능)
-Set-DefaultEnv "SFEPS_CLIENT_TLS_ENABLE" $env:AUTH_TLS_ENABLE
-Set-DefaultEnv "SFEPS_CLIENT_CA_FILE" $env:AUTH_TLS_CA_FILE
+[Environment]::SetEnvironmentVariable("SFEPS_CLIENT_TLS_ENABLE", $env:AUTH_TLS_ENABLE, "Process")
+[Environment]::SetEnvironmentVariable("SFEPS_CLIENT_CA_FILE", $caPath, "Process")
+[Environment]::SetEnvironmentVariable("SFEPS_ALERT_TLS_ENABLE", $env:AUTH_TLS_ENABLE, "Process")
+
+# 기타 서비스(Voice/Alert/Position/VideoCatalog) TLS 기본 토글 동기화
+[Environment]::SetEnvironmentVariable("SFEPS_POS_TLS_ENABLE", "$($env:AUTH_TLS_ENABLE)", "Process")
+[Environment]::SetEnvironmentVariable("SFEPS_VIDEO_CATALOG_TLS_ENABLE", $env:AUTH_TLS_ENABLE, "Process")
 Set-DefaultEnv "QT_FFMPEG_PROTOCOL_WHITELIST" "file,crypto,data,http,https,tcp,tls,rtp,rtsp,udp"
 
 if (-not (Test-Path $caPath)) {
@@ -111,6 +116,6 @@ if ($runtimePrefix.Count -gt 0) {
 }
 if (Test-Path $gstreamerPluginDir) { Set-DefaultEnv "GST_PLUGIN_PATH" $gstreamerPluginDir }
 
-Write-Host "[run_client_2.ps1] exe=$exePath opencvBin=$opencvBin backend=$($env:RTSP_BACKEND) AUTH_TLS_ENABLE=$($env:AUTH_TLS_ENABLE)"
+Write-Host "[run_client_2.ps1] exe=$exePath opencvBin=$opencvBin backend=$($env:RTSP_BACKEND) AUTH_TLS_ENABLE=$($env:AUTH_TLS_ENABLE) SFEPS_CLIENT_TLS_ENABLE=$($env:SFEPS_CLIENT_TLS_ENABLE) SFEPS_POS_TLS_ENABLE=$($env:SFEPS_POS_TLS_ENABLE) SFEPS_ALERT_TLS_ENABLE=$($env:SFEPS_ALERT_TLS_ENABLE)"
 & $exePath
 

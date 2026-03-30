@@ -7,6 +7,7 @@
 #include <QMediaDevices>
 #include <QAudioFormat>
 #include <QTcpSocket>
+#include <QTimer>
 
 // 마이크에서 들어온 RAW PCM을 소켓으로 바로 전달하는 디바이스 (스트리밍)
 class SocketForwardDevice : public QIODevice
@@ -61,6 +62,14 @@ private:
     QTcpSocket *m_socket = nullptr;
     SocketForwardDevice *m_forwardDevice = nullptr;
     bool m_active = false;
+
+    // TLS->Plain fallback support for audio streaming.
+    QString m_currentHost;
+    quint16 m_tlsPort = 6556;
+    quint16 m_plainPort = 5556;
+    bool m_tlsConnectInProgress = false;
+    bool m_tlsFallbackUsed = false;
+    QTimer *m_tlsConnectTimeoutTimer = nullptr;
 };
 
 #endif // VOICEMANAGER_H

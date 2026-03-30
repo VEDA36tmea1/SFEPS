@@ -3,6 +3,29 @@
 #include <QAbstractSocket>
 #include <QDateTime>
 #include <QThread>
+#include <QProcessEnvironment>
+#include <QSslConfiguration>
+#include <QSslCertificate>
+#include <QFile>
+
+static bool parseEnvBool(const QProcessEnvironment &env, const QString &key, bool defaultValue)
+{
+    const QString raw = env.value(key).trimmed().toLower();
+    if (raw.isEmpty()) return defaultValue;
+    if (raw == "1" || raw == "true" || raw == "yes" || raw == "on") return true;
+    if (raw == "0" || raw == "false" || raw == "no" || raw == "off") return false;
+    return defaultValue;
+}
+
+static quint16 parseEnvPort(const QProcessEnvironment &env, const QString &key, quint16 defaultValue)
+{
+    const QString raw = env.value(key).trimmed();
+    if (raw.isEmpty()) return defaultValue;
+    bool ok = false;
+    const int parsed = raw.toInt(&ok);
+    if (!ok || parsed < 1 || parsed > 65535) return defaultValue;
+    return static_cast<quint16>(parsed);
+}
 
 // Sensor/target scaling: incoming coordinates are reported in sensor (4K) pixels.
 // Scale them to FullHD when numeric.
@@ -41,16 +64,58 @@ void PositionManager::attachPosSocketSignals()
     }
     connect(posSocket, &QTcpSocket::readyRead, this, &PositionManager::onPosReadyRead);
     connect(posSocket, &QAbstractSocket::errorOccurred, this, [this](QAbstractSocket::SocketError){
-        if (posSocket) qWarning() << "[PositionManager][POS] socket error:" << posSocket->errorString();
+        if (!posSocket) return;
+        qWarning() << "[PositionManager][POS] socket error:" << posSocket->errorString();
+
+        // TLS->Plain fallback: if TLS socket fails before encryption is established, switch to plaintext.
+        if (m_posTlsPrefer && !m_tlsFallbackUsed && !m_fallbackInProgress) {
+            if (QSslSocket *ssl = qobject_cast<QSslSocket *>(posSocket)) {
+                if (!ssl->isEncrypted()) {
+                    qWarning() << "[PositionManager][POS] TLS failed -> fallback to plain" << lastPosHost << ":" << m_posPlainPort;
+                    m_tlsFallbackUsed = true;
+                    m_fallbackInProgress = true;
+                    if (m_reconnectTimer && m_reconnectTimer->isActive()) m_reconnectTimer->stop();
+
+                    // Recreate plaintext socket.
+                    if (posSocket) {
+                        posSocket->abort();
+                        posSocket->deleteLater();
+                    }
+                    posSocket = new QTcpSocket(this);
+                    attachPosSocketSignals();
+                    posSocket->connectToHost(lastPosHost, m_posPlainPort);
+                }
+            }
+        }
     });
+
+    // When using TLS, wait for QSslSocket::encrypted() before notifying the app.
+    if (QSslSocket *ssl = qobject_cast<QSslSocket *>(posSocket)) {
+        connect(ssl, &QSslSocket::encrypted, this, [this]() {
+            qDebug() << "[PositionManager] Position TLS encrypted to" << lastPosHost << ":" << lastPosPort;
+            resetReconnectBackoff();
+            this->flushQueuedCommands();
+            if (m_fallbackInProgress) m_fallbackInProgress = false;
+            emit positionConnected();
+        });
+    }
+
     connect(posSocket, &QTcpSocket::connected, this, [this]() {
+        // QSslSocket의 connected()는 TLS handshake 전에 날 수 있으므로, TLS에서는 encrypted() 쪽에서만 positionConnected를 방출합니다.
+        if (qobject_cast<QSslSocket *>(posSocket)) return;
         qDebug() << "[PositionManager] Position socket connected to" << lastPosHost << ":" << lastPosPort;
         resetReconnectBackoff();
         this->flushQueuedCommands();
+        if (m_fallbackInProgress) m_fallbackInProgress = false;
         emit positionConnected();
     });
+
     connect(posSocket, &QTcpSocket::disconnected, this, [this]() {
         qDebug() << "[PositionManager] Position socket disconnected.";
+        if (m_fallbackInProgress) {
+            m_fallbackInProgress = false;
+            return; // suppress server-down trigger while we are switching transports
+        }
         emit positionDisconnected();
         scheduleReconnect();
     });
@@ -233,17 +298,52 @@ void PositionManager::processPosBuffer()
 void PositionManager::connectPositionServer(const QString &host, int port)
 {
     lastPosHost = host;
-    lastPosPort = port;
-    qDebug() << "[PositionManager] Connecting position server" << host << ":" << port;
+    Q_UNUSED(port);
+
+    const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    m_posTlsPrefer = parseEnvBool(env, "SFEPS_POS_TLS_ENABLE", false);
+    m_posTlsPort = parseEnvPort(env, "SFEPS_POS_TLS_PORT", 6558);
+    m_posPlainPort = parseEnvPort(env, "POS_SERVER_PORT", 5558);
+
+    m_tlsFallbackUsed = false;
+    m_fallbackInProgress = false;
+
+    lastPosPort = m_posTlsPrefer ? static_cast<int>(m_posTlsPort) : static_cast<int>(m_posPlainPort);
+
+    qDebug() << "[PositionManager] Connecting position server" << host << ":" << lastPosPort
+             << (m_posTlsPrefer ? "(prefer TLS)" : "(plain)");
+
     if (posSocket) {
         if (posSocket->state() != QAbstractSocket::UnconnectedState) posSocket->disconnectFromHost();
         posSocket->deleteLater();
     }
-    posSocket = new QTcpSocket(this);
-    attachPosSocketSignals();
+
     // immediate connect attempt
-    if (posSocket->state() == QAbstractSocket::UnconnectedState) {
-        posSocket->connectToHost(host, static_cast<quint16>(port));
+    if (m_posTlsPrefer) {
+        QSslSocket *ssl = new QSslSocket(this);
+        posSocket = ssl;
+        ssl->setPeerVerifyMode(QSslSocket::VerifyPeer);
+        const QString caPath = env.value("SFEPS_CLIENT_CA_FILE").trimmed();
+        if (!caPath.isEmpty()) {
+            QFile f(caPath);
+            if (f.open(QIODevice::ReadOnly)) {
+                const QList<QSslCertificate> certs = QSslCertificate::fromData(f.readAll(), QSsl::Pem);
+                if (!certs.isEmpty()) {
+                    QSslConfiguration cfg = ssl->sslConfiguration();
+                    cfg.setCaCertificates(certs);
+                    ssl->setSslConfiguration(cfg);
+                }
+            }
+        }
+        const QString serverName = env.value("SFEPS_CLIENT_TLS_SERVER_NAME").trimmed();
+        if (!serverName.isEmpty()) ssl->setPeerVerifyName(serverName);
+
+        attachPosSocketSignals();
+        ssl->connectToHostEncrypted(host, m_posTlsPort);
+    } else {
+        posSocket = new QTcpSocket(this);
+        attachPosSocketSignals();
+        posSocket->connectToHost(host, m_posPlainPort);
     }
 }
 
@@ -255,8 +355,10 @@ void PositionManager::scheduleReconnect()
         connect(m_reconnectTimer, &QTimer::timeout, this, [this]() {
             if (!posSocket) return;
             if (posSocket->state() == QAbstractSocket::UnconnectedState) {
-                qDebug() << "[PositionManager] Reconnect attempt (delay_ms=" << m_reconnectDelayMs << ") to" << lastPosHost << lastPosPort;
-                posSocket->connectToHost(lastPosHost, static_cast<quint16>(lastPosPort));
+                qDebug() << "[PositionManager] Reconnect attempt (delay_ms=" << m_reconnectDelayMs << ") to"
+                         << lastPosHost << lastPosPort;
+                // Recreate socket with current TLS preference.
+                connectPositionServer(lastPosHost, lastPosPort);
             }
             // increase delay for next time (exponential backoff)
             m_reconnectDelayMs = qMin(m_reconnectDelayMs * 2, m_reconnectMaxMs);

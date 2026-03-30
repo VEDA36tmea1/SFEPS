@@ -86,6 +86,13 @@ private:
     QTimer *retryTimer;
     QString lastHost;
     int lastPort;
+    QString m_currentHost;
+    int m_tlsPort = 6557;
+    int m_plainPort = 5557;
+    bool m_tlsInProgress = false;
+    bool m_tlsFallbackUsed = false;
+    bool m_forcePlainAfterTlsFail = false;
+    bool m_skipRetryOnDisconnect = false;
     QByteArray recvBuffer;
     bool m_alertTlsEnabled = false;
     QNetworkAccessManager *networkManager;
