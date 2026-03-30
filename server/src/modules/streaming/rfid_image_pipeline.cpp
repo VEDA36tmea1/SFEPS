@@ -31,7 +31,7 @@ constexpr const char* kEventImagePendingDir = "/home/iam/SFEPS/event_images/pend
 constexpr const char* kEventImageFraudDir = "/home/iam/SFEPS/event_images/fraud";
 constexpr const char* kEventImageFailedDir = "/home/iam/SFEPS/event_images/failed";
 constexpr const char* kCameraTriggerSocketPath = "/tmp/sfeps_camera_trigger.sock";
-constexpr auto kPendingImageReadyWait = std::chrono::milliseconds(750);
+constexpr auto kPendingImageReadyWait = std::chrono::milliseconds(1500);
 constexpr auto kPendingImageReadyPoll = std::chrono::milliseconds(50);
 
 struct EventImageRegistry {
