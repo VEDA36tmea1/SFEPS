@@ -23,10 +23,15 @@
 #include <chrono>
 #include <cstdio>
 #include <ctime>
+#include <condition_variable>
+#include <filesystem>
 #include <limits>
+#include <sstream>
+#include <thread>
 #ifdef SFEPS_HAVE_OPENCV
 #include <memory>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/imgcodecs.hpp>
 #include <opencv2/videoio.hpp>
 #include "live_frame_provider.h"
 #ifndef CAMERA_RBF_QT_MODE
@@ -36,11 +41,325 @@
 #include <QImage>
 #include <QThread>
 #ifdef _WIN32
+#include <windows.h>
 #include <stdlib.h>
 #endif
 #endif
 
 namespace {
+
+#ifdef CAMERA_RBF_QT_MODE
+#ifdef SFEPS_HAVE_OPENCV
+// 최신 원본 프레임( pose crop용 )을 저장해둔다.
+static std::mutex g_latestFrameMutex;
+static cv::Mat g_latestFrame;
+
+// Qt 모드용 MediaPipe Pose worker (crop JPEG -> shoulder center -> aim u/v)
+// - 동기 호출하지 않고 background thread에서 처리
+// - 요청은 1-slot만 유지(최신 값만 반영)
+struct QtPoseWorker
+{
+    std::atomic_bool running{false};
+
+#ifdef _WIN32
+    PROCESS_INFORMATION pi{};
+    HANDLE child_stdin_write{NULL};
+    HANDLE child_stdout_read{NULL};
+#endif
+
+    std::thread worker_thread;
+    std::mutex reqMutex;
+    std::condition_variable reqCv;
+    bool reqPending{false};
+    bool stopFlag{false};
+
+    // 요청 데이터
+    std::vector<uchar> reqJpeg;
+    double reqCropX{0}, reqCropY{0}, reqCropW{0}, reqCropH{0};
+    double reqBboxBottomY{0};  // padding 제외 bbox bottom (원본 frame 픽셀)
+    double reqRatioDown{0.35};
+
+    std::mutex resMutex;
+    bool aimValid{false};
+    double aimU{0}, aimV{0};
+    qint64 aimWallMs{0};
+
+    static std::string get_exe_dir()
+    {
+#ifdef _WIN32
+        char buf[MAX_PATH];
+        DWORD n = ::GetModuleFileNameA(nullptr, buf, MAX_PATH);
+        if (n == 0 || n == MAX_PATH) return "";
+        return std::filesystem::path(buf).parent_path().string();
+#else
+        return "";
+#endif
+    }
+
+    std::string resolve_python_exe(const std::string& exeDir) const
+    {
+        // camera_RBF standalone과 비슷하게 여러 후보를 탐색
+#ifdef _WIN32
+        std::vector<std::filesystem::path> bases;
+        bases.push_back(exeDir);
+        for (int up = 0; up < 6; ++up) {
+            std::filesystem::path p = std::filesystem::path(exeDir);
+            for (int i = 0; i < up; ++i) p = p.parent_path();
+            bases.push_back(p);
+        }
+        for (const auto& b : bases) {
+            auto p1 = b / ".venv" / "Scripts" / "python.exe";
+            auto p2 = b / "Camera" / "get_metadata" / ".venv" / "Scripts" / "python.exe";
+            if (std::filesystem::exists(p1)) return p1.string();
+            if (std::filesystem::exists(p2)) return p2.string();
+        }
+        return "python";
+#else
+        return "python3";
+#endif
+    }
+
+    std::string resolve_script_path(const std::string& exeDir) const
+    {
+#ifdef _WIN32
+        std::vector<std::filesystem::path> bases;
+        bases.push_back(exeDir);
+        for (int up = 0; up < 6; ++up) {
+            std::filesystem::path p = std::filesystem::path(exeDir);
+            for (int i = 0; i < up; ++i) p = p.parent_path();
+            bases.push_back(p);
+        }
+        for (const auto& b : bases) {
+            auto s1 = b / "Camera" / "get_metadata" / "src" / "mediapipe_pose_worker.py";
+            if (std::filesystem::exists(s1)) return s1.string();
+        }
+        return "";
+#else
+        return "";
+#endif
+    }
+
+#ifdef _WIN32
+    void start_process()
+    {
+        const std::string exeDir = get_exe_dir();
+        const std::string py = resolve_python_exe(exeDir);
+        const std::string script = resolve_script_path(exeDir);
+        if (script.empty()) return;
+
+        SECURITY_ATTRIBUTES sa{};
+        sa.nLength = sizeof(sa);
+        sa.bInheritHandle = TRUE;
+
+        HANDLE child_stdout_read_tmp = NULL;
+        HANDLE child_stdout_write = NULL;
+        HANDLE child_stdin_read = NULL;
+        HANDLE child_stdin_write_tmp = NULL;
+
+        if (!CreatePipe(&child_stdout_read_tmp, &child_stdout_write, &sa, 0)) return;
+        if (!SetHandleInformation(child_stdout_read_tmp, HANDLE_FLAG_INHERIT, 0)) return;
+        if (!CreatePipe(&child_stdin_read, &child_stdin_write_tmp, &sa, 0)) return;
+        if (!SetHandleInformation(child_stdin_write_tmp, HANDLE_FLAG_INHERIT, 0)) return;
+
+        STARTUPINFOA si{};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdInput = child_stdin_read;
+        si.hStdOutput = child_stdout_write;
+        si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+
+        std::string cmd = "\"" + py + "\" \"" + script + "\"";
+        std::vector<char> cmdline(cmd.begin(), cmd.end());
+        cmdline.push_back('\0');
+
+        BOOL ok = CreateProcessA(
+            nullptr,
+            cmdline.data(),
+            nullptr,
+            nullptr,
+            TRUE,
+            CREATE_NO_WINDOW,
+            nullptr,
+            nullptr,
+            &si,
+            &pi
+        );
+
+        CloseHandle(child_stdin_read);
+        CloseHandle(child_stdout_write);
+        if (!ok) return;
+
+        child_stdin_write = child_stdin_write_tmp;
+        child_stdout_read = child_stdout_read_tmp;
+        running = true;
+    }
+#endif
+
+    void worker_loop()
+    {
+        // 프로세스 시작
+#ifdef _WIN32
+        start_process();
+        if (!running) return;
+#else
+        running = false;
+        return;
+#endif
+
+        while (true)
+        {
+            std::vector<uchar> jpeg;
+            double cropX = 0, cropY = 0, cropW = 0, cropH = 0;
+            double bboxBottomY = 0;
+            double ratioDown = 0.35;
+
+            {
+                std::unique_lock<std::mutex> lk(reqMutex);
+                reqCv.wait(lk, [&] { return reqPending || stopFlag; });
+                if (stopFlag) break;
+                jpeg = std::move(reqJpeg);
+                cropX = reqCropX; cropY = reqCropY; cropW = reqCropW; cropH = reqCropH;
+                bboxBottomY = reqBboxBottomY;
+                ratioDown = reqRatioDown;
+                reqPending = false;
+            }
+
+            if (jpeg.empty() || !running) continue;
+
+            // 1) Python worker에 JPEG 보내기 (4바이트 len + bytes)
+            const uint32_t jpeg_len = static_cast<uint32_t>(jpeg.size());
+            uint8_t hdr[4];
+            hdr[0]=jpeg_len&0xFF; hdr[1]=(jpeg_len>>8)&0xFF; hdr[2]=(jpeg_len>>16)&0xFF; hdr[3]=(jpeg_len>>24)&0xFF;
+
+#ifdef _WIN32
+            DWORD wrote = 0;
+            if (!WriteFile(child_stdin_write, hdr, 4, &wrote, nullptr) || wrote != 4) { running = false; break; }
+            DWORD total = 0;
+            while (total < jpeg_len) {
+                DWORD remain = jpeg_len - total;
+                DWORD chunk = 0;
+                if (!WriteFile(child_stdin_write, jpeg.data() + total, remain, &chunk, nullptr) || chunk == 0) {
+                    running = false; break;
+                }
+                total += chunk;
+            }
+            if (!running) break;
+
+            // 2) stdout 한 줄 읽기 (newline까지)
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(5000);
+            std::string line;
+            char c = 0;
+            while (std::chrono::steady_clock::now() < deadline)
+            {
+                DWORD avail = 0;
+                if (!PeekNamedPipe(child_stdout_read, nullptr, 0, nullptr, &avail, nullptr)) { running = false; break; }
+                if (avail == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(5)); continue; }
+                DWORD got = 0;
+                if (!ReadFile(child_stdout_read, &c, 1, &got, nullptr) || got != 1) { running = false; break; }
+                if (c == '\n') break;
+                line.push_back(c);
+            }
+            if (!running) break;
+            if (line.empty()) continue;
+            if (line[0] == '0') continue;
+
+            // 3) 파싱: "1 x0 y0 v0 ... x32 y32 v32"
+            std::istringstream iss(line);
+            int ok = 0;
+            if (!(iss >> ok) || ok == 0) continue;
+
+            float x[33]{0}, y[33]{0}, v[33]{0};
+            for (int i = 0; i < 33; i++) {
+                if (!(iss >> x[i] >> y[i] >> v[i])) { ok = 0; break; }
+            }
+            if (!ok) continue;
+
+            const int iL = 11, iR = 12;
+            const float wsum = v[iL] + v[iR] + 1e-6f;
+            const double sx = (x[iL] * v[iL] + x[iR] * v[iR]) / wsum;
+            const double sy = (y[iL] * v[iL] + y[iR] * v[iR]) / wsum;
+
+            const double shoulderX = cropX + sx * cropW;
+            const double shoulderY = cropY + sy * cropH;
+            const double aimU_local = shoulderX;
+            const double aimV_local = shoulderY + (bboxBottomY - shoulderY) * ratioDown;
+
+            {
+                std::lock_guard<std::mutex> lk(resMutex);
+                aimU = aimU_local;
+                aimV = aimV_local;
+                aimValid = true;
+                aimWallMs = QDateTime::currentMSecsSinceEpoch();
+            }
+#endif
+        }
+    }
+
+    void ensure_started()
+    {
+        static std::once_flag once;
+        std::call_once(once, [&] {
+            stopFlag = false;
+            running = false;
+            worker_thread = std::thread([this] { worker_loop(); });
+        });
+    }
+
+    // pose request
+    void submit(const std::vector<uchar> &jpeg, double cropX, double cropY, double cropW, double cropH,
+                double bboxBottomY, double ratioDown)
+    {
+        ensure_started();
+        if (jpeg.empty()) return;
+        if (!running.load()) return;
+        {
+            std::lock_guard<std::mutex> lk(reqMutex);
+            reqJpeg = jpeg;
+            reqCropX = cropX; reqCropY = cropY; reqCropW = cropW; reqCropH = cropH;
+            reqBboxBottomY = bboxBottomY;
+            reqRatioDown = ratioDown;
+            reqPending = true;
+        }
+        reqCv.notify_one();
+    }
+
+    // 최신 aim 얻기
+    bool getAim(double &outU, double &outV, qint64 &outMs)
+    {
+        std::lock_guard<std::mutex> lk(resMutex);
+        if (!aimValid) return false;
+        outU = aimU; outV = aimV; outMs = aimWallMs;
+        return true;
+    }
+
+    void clearAim()
+    {
+        std::lock_guard<std::mutex> lk(resMutex);
+        aimValid = false;
+    }
+
+    void stop()
+    {
+#ifdef _WIN32
+        {
+            std::lock_guard<std::mutex> lk(reqMutex);
+            stopFlag = true;
+            reqPending = true;
+        }
+        reqCv.notify_all();
+        if (worker_thread.joinable()) worker_thread.join();
+        if (child_stdin_write) { CloseHandle(child_stdin_write); child_stdin_write = NULL; }
+        if (child_stdout_read) { CloseHandle(child_stdout_read); child_stdout_read = NULL; }
+        if (pi.hProcess) { TerminateProcess(pi.hProcess, 0); pi.hProcess = NULL; }
+#endif
+        running = false;
+    }
+};
+
+static QtPoseWorker g_qtPoseWorker;
+#endif // SFEPS_HAVE_OPENCV
+#endif // CAMERA_RBF_QT_MODE
+
 bool parseEnvBool(const QProcessEnvironment &env, const QString &key, bool defaultValue)
 {
     const QString raw = env.value(key).trimmed().toLower();
@@ -186,6 +505,13 @@ MainWindow::MainWindow(QObject *parent)
     m_predictMs = env.value(QStringLiteral("SFEPS_RBF_PREDICT_MS"), QStringLiteral("300")).toDouble(&okParse);
     if (!okParse)
         m_predictMs = 300.0;
+
+    // pose(어깨 중심 아래) 목표 v 비율
+    // shoulder_y + (bboxBottom - shoulder_y) * m_poseDownRatio
+    // 여기서 bboxBottom은 sticky bbox의 bottom(패딩 제외)입니다.
+    m_poseDownRatio = env.value(QStringLiteral("SFEPS_POSE_DOWN_RATIO"), QStringLiteral("0.35")).toDouble(&okParse);
+    if (!okParse)
+        m_poseDownRatio = 0.35;
     m_panMin = env.value(QStringLiteral("SFEPS_PWM_PAN_MIN"), QStringLiteral("500")).toInt();
     m_panMax = env.value(QStringLiteral("SFEPS_PWM_PAN_MAX"), QStringLiteral("2500")).toInt();
     m_tiltMin = env.value(QStringLiteral("SFEPS_PWM_TILT_MIN"), QStringLiteral("500")).toInt();
@@ -226,6 +552,10 @@ MainWindow::~MainWindow()
         m_opencvThread.join();
 #endif
     stopMetadataWorker();
+#if defined(CAMERA_RBF_QT_MODE) && defined(SFEPS_HAVE_OPENCV)
+    // pose worker 중복 실행/백그라운드 프로세스 남김 방지
+    g_qtPoseWorker.stop();
+#endif
 }
 
 void MainWindow::setRunning(bool running)
@@ -618,6 +948,9 @@ void MainWindow::sendContrastCgi()
 void MainWindow::trackByNativeId(const QString &nativeId)
 {
 #ifdef CAMERA_RBF_QT_MODE
+    // 수동 추적 모드에선 pose aim 오버라이드를 기본값으로 복귀
+    g_qtPoseWorker.clearAim();
+    rbfqt_set_pose_aim(0.0f, 0.0f, 0);
     rbfqt_set_tracked_nativeid(nativeId.toStdString().c_str());
     m_manualTracking = !nativeId.isEmpty();  // 수동 추적 플래그 → fraud 자동 전환 억제
     qDebug() << "[MainWindow] trackByNativeId" << nativeId << "→ auto-tracking enabled, manualTracking=" << m_manualTracking;
@@ -699,6 +1032,8 @@ void MainWindow::clearRbfTarget()
     const bool wasManualTracking = m_manualTracking;
     rbfqt_set_tracked_nativeid("");
     rbfqt_clear_target();
+    g_qtPoseWorker.clearAim();
+    rbfqt_set_pose_aim(0.0f, 0.0f, 0);
     m_manualTracking = false;
     {
         QMutexLocker lk(&m_mutex);
@@ -868,6 +1203,14 @@ void MainWindow::opencvCaptureLoop()
         else if (frame.channels() == 4)
             cv::cvtColor(frame, frame, cv::COLOR_BGRA2BGR);
 
+#if defined(CAMERA_RBF_QT_MODE) && defined(SFEPS_HAVE_OPENCV)
+        // pose crop용 최신 프레임 저장
+        {
+            std::lock_guard<std::mutex> lk(g_latestFrameMutex);
+            g_latestFrame = frame.clone();
+        }
+#endif
+
         QImage img(frame.data, frame.cols, frame.rows, static_cast<int>(frame.step), QImage::Format_BGR888,
                    [](void *) {}, nullptr);
         img = img.copy();
@@ -913,6 +1256,8 @@ void MainWindow::onPwmTick()
         // sticky target이 없으면 레이저는 완전히 멈춘다.
         if (stickyXml.isEmpty()) {
             rbfqt_set_tracked_nativeid("");
+            g_qtPoseWorker.clearAim();
+            rbfqt_set_pose_aim(0.0f, 0.0f, 0);
         } else {
         // fraud 없음: 타겟 해제
         if (fraudIds.isEmpty()) {
@@ -920,6 +1265,8 @@ void MainWindow::onPwmTick()
             QMutexLocker lk(&m_mutex);
             m_fraudLaserStickyStableId.clear();
             m_fraudLaserStickyStableMissingFrames = 0;
+            g_qtPoseWorker.clearAim();
+            rbfqt_set_pose_aim(0.0f, 0.0f, 0);
         } else {
             const double kSwitchRatio = 0.85;  // 새 후보가 충분히 작을 때만 전환
             const int kMaxMissingFrames = 10; // ~330ms 허용: RTSP 지연/일시적 누락 무시
@@ -934,6 +1281,9 @@ void MainWindow::onPwmTick()
             QString bestXmlId;
             double currentArea = 1e18;
             bool currentFound = false;
+            // pose crop용 sticky bbox (정규화 [0,1])
+            double stickyX = 0.0, stickyY = 0.0, stickyW = 0.0, stickyH = 0.0;
+            bool stickyBoxFound = false;
 
             for (const QVariant &v : dets) {
                 if (!v.canConvert<QVariantMap>()) continue;
@@ -967,6 +1317,11 @@ void MainWindow::onPwmTick()
                 if (!stickyXml.isEmpty() && xmlId == stickyXml) {
                     currentArea = safeArea;
                     currentFound = true;
+                    stickyX = dm.value("x").toDouble();
+                    stickyY = dm.value("y").toDouble();
+                    stickyW = dm.value("w").toDouble();
+                    stickyH = dm.value("h").toDouble();
+                    stickyBoxFound = true;
                 }
 
                 // best candidate는 fraud=true인 객체들로만 구성
@@ -976,6 +1331,85 @@ void MainWindow::onPwmTick()
                     bestArea = safeArea;
                     bestKey = key;
                     bestXmlId = xmlId;
+                }
+            }
+
+            // ── pose aim 오버라이드 주입 (Qt 모드) ─────────────────────────────
+            // pose는 최신 프레임에서 sticky target bbox를 padding crop 하여 어깨 랜드마크를 잡는다.
+            // 결과가 stale 하지 않으면 rbfqt_compute_pwm에서 bbox_cx/bbox_cy 대신 이 값을 사용한다.
+            {
+                const int kPoseEveryTicks = 5;          // 33ms 타이머 기준 약 165ms 간격
+                const qint64 kPoseStaleMs = 800;       // pose 결과가 너무 오래되면 무시
+                const double kPosePadRatio = 0.15;     // sel bbox 대비 crop padding
+                const int kPoseJpegQuality = 80;
+                static int sPoseTick = 0;
+                sPoseTick++;
+
+                if (stickyXml.isEmpty() || !stickyBoxFound) {
+                    g_qtPoseWorker.clearAim();
+                    rbfqt_set_pose_aim(0.0f, 0.0f, 0);
+                } else {
+                    if (sPoseTick % kPoseEveryTicks == 0) {
+                        cv::Mat frameCopy;
+                        {
+                            std::lock_guard<std::mutex> lk(g_latestFrameMutex);
+                            if (!g_latestFrame.empty())
+                                frameCopy = g_latestFrame.clone();
+                        }
+
+                        if (!frameCopy.empty()) {
+                            const int l = std::max(0, std::min(W - 1, (int)std::lround(stickyX * W)));
+                            const int t = std::max(0, std::min(H - 1, (int)std::lround(stickyY * H)));
+                            const int r = std::max(l + 1, std::min(W, (int)std::lround((stickyX + stickyW) * W)));
+                            const int b = std::max(t + 1, std::min(H, (int)std::lround((stickyY + stickyH) * H)));
+                            const int objW = std::max(1, r - l);
+                            const int objH = std::max(1, b - t);
+
+                            const int padX = std::max(0, (int)std::lround(objW * kPosePadRatio));
+                            const int padY = std::max(0, (int)std::lround(objH * kPosePadRatio));
+                            const int cl = std::max(0, l - padX);
+                            const int ct = std::max(0, t - padY);
+                            const int cr = std::min(W, r + padX);
+                            const int cb = std::min(H, b + padY);
+
+                            const int cw = std::max(1, cr - cl);
+                            const int ch = std::max(1, cb - ct);
+                            if (cw > 8 && ch > 8) {
+                                cv::Mat crop = frameCopy(cv::Rect(cl, ct, cw, ch)).clone();
+                                std::vector<uchar> buf;
+                                std::vector<int> params{cv::IMWRITE_JPEG_QUALITY, kPoseJpegQuality};
+                                if (cv::imencode(".jpg", crop, buf, params)) {
+                                    const double bboxBottomY = (double)(t + objH);
+                                    g_qtPoseWorker.submit(buf,
+                                                           (double)cl, (double)ct,
+                                                           (double)cw, (double)ch,
+                                                           bboxBottomY,
+                                                           m_poseDownRatio);
+                                }
+                            }
+                        }
+                    }
+
+                    double aimU = 0.0, aimV = 0.0;
+                    qint64 aimMs = 0;
+                    const bool gotAim = g_qtPoseWorker.getAim(aimU, aimV, aimMs);
+                    const bool staleOk = gotAim && (now - aimMs) <= kPoseStaleMs;
+                    if (staleOk) {
+                        rbfqt_set_pose_aim((float)aimU, (float)aimV, 1);
+                    } else {
+                        rbfqt_set_pose_aim(0.0f, 0.0f, 0);
+                    }
+                    // 디버그: stale 통과 여부를 1초에 1번 출력
+                    static qint64 lastPoseLogMs = 0;
+                    if (now - lastPoseLogMs > 1000) {
+                        if (gotAim) {
+                            qDebug() << "[PoseAim] got aim=(" << aimU << "," << aimV << ") ageMs=" << (now - aimMs)
+                                     << " staleOk=" << staleOk << " xml=" << stickyXml;
+                        } else {
+                            qDebug() << "[PoseAim] no aim yet staleOk=false xml=" << stickyXml;
+                        }
+                        lastPoseLogMs = now;
+                    }
                 }
             }
 

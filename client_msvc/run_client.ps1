@@ -80,6 +80,14 @@ if (-not (Test-Path $caPath)) {
 [Environment]::SetEnvironmentVariable("SFEPS_PWM_HOST", "127.0.0.1",    "Process")  # SSH 터널: ssh -p 2222 -L 15566:localhost:5566 -N physical-100@192.168.0.87
 [Environment]::SetEnvironmentVariable("SFEPS_PWM_PORT", "15566",        "Process")  # 로컬 터널 포트 (Cursor가 5566 점유 중)
 
+# pose(어깨) 기반 조준점: shoulder_y + (bboxBottom - shoulder_y) * ratio
+# 0.0 → 어깨 중심, 1.0 → sticky bbox bottom
+[Environment]::SetEnvironmentVariable("SFEPS_POSE_DOWN_RATIO", "0.30", "Process")
+
+# Qt/standalone 공통: 지연 예측(칼만 predict_ms)
+# 메타데이터/프레임 지연이 크면 값을 올리세요.
+[Environment]::SetEnvironmentVariable("SFEPS_RBF_PREDICT_MS", "300", "Process")
+
 # ── 카메라 CGI 밝기/대조 제어 ──────────────────────────────────────────────────
 Set-DefaultEnv "CAMERA_CGI_USER" "admin"      # 카메라 로그인 아이디
 Set-DefaultEnv "CAMERA_CGI_PASSWORD" "CCgbdCCgbd"      # 카메라 로그인 비밀번호

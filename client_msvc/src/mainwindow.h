@@ -27,6 +27,7 @@ bool rbfqt_init(double ratio, double alpha, double predict_ms,
 void rbfqt_set_target_bbox(float l, float t, float r, float b, int W, int H);
 void rbfqt_clear_target();
 void rbfqt_set_tracked_nativeid(const char* nativeId);
+void rbfqt_set_pose_aim(float u_px, float v_px, int valid);
 bool rbfqt_compute_pwm(long long now_ms, int W, int H, int* pan, int* tilt);
 void rbfqt_process_metadata(const std::vector<ParsedMetadataObject>& objects, int W, int H);
 std::string rbfqt_find_native_id(const std::string& xmlId);
@@ -218,6 +219,9 @@ private:
     int m_tiltMin = 500;
     int m_tiltMax = 2500;
     double m_pwmRatio = 0.35;
+    // pose(어깨->아래)에서 목표 v를 만드는 비율
+    // 0이면 어깨 중심, 1이면 sticky bbox bottom까지(=어깨->bbox bottom 구간 끝)
+    double m_poseDownRatio = 0.35;
     double m_pwmAlpha = 0.5;
     double m_predictMs = 300.0;
     int m_previewRevision = 0;
