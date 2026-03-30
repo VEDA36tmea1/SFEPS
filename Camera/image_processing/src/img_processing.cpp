@@ -9,6 +9,10 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/dnn.hpp>
 
+static void saveRawHistogram(const uint16_t* buf, int width, int height,
+                              const std::string& label,
+                              const std::string& save_path);
+
 // =====================================================================
 // [RAW ISP 경로] — CV_16UC1 입력 전용
 // main에서 g_raw_mode == true 일 때만 호출됩니다.
@@ -140,6 +144,27 @@ static void applyCCM(std::vector<uint8_t>& bgr_buf, int width, int height, const
     }
 }
 
+static void applySaturationBoost(std::vector<uint8_t>& bgr_buf, int width, int height, float sat = 1.5f) {
+    for (int i = 0; i < width * height * 3; i += 3) {
+        float b = bgr_buf[i], g = bgr_buf[i+1], r = bgr_buf[i+2];
+        float gray = 0.114f * b + 0.587f * g + 0.299f * r;
+        r = gray + sat * (r - gray);
+        g = gray + sat * (g - gray);
+        b = gray + sat * (b - gray);
+        bgr_buf[i]   = (uint8_t)std::max(0.0f, std::min(255.0f, b));
+        bgr_buf[i+1] = (uint8_t)std::max(0.0f, std::min(255.0f, g));
+        bgr_buf[i+2] = (uint8_t)std::max(0.0f, std::min(255.0f, r));
+    }
+}
+
+static void applyContrast(std::vector<uint8_t>& bgr_buf, int width, int height,
+                           float contrast = 1.3f, float brightness = -20.0f) {
+    for (int i = 0; i < width * height * 3; i++) {
+        float v = bgr_buf[i] * contrast + brightness;
+        bgr_buf[i] = (uint8_t)std::max(0.0f, std::min(255.0f, v));
+    }
+}
+
 // 4. RGB Gamma (LUT 방식)
 static void applyRGBGamma(std::vector<uint8_t>& bgr_buf, int width, int height, float gamma = 2.2f) {
     uint8_t lut[256];
@@ -175,8 +200,9 @@ cv::Mat runPureISP(const cv::Mat& raw16_frame) {
 
     CCMConfig ccm_cfg;
     applyCCM(bgr, width, height, ccm_cfg);                   // CCM
-
+    applySaturationBoost(bgr, width, height, 1.8f);
     applyRGBGamma(bgr, width, height, 2.2f);                 // Gamma
+    applyContrast(bgr, width, height, 1.3f, -20.0f);
 
     cv::Mat out(height, width, CV_8UC3);
     std::copy(bgr.begin(), bgr.end(), out.data);
@@ -565,37 +591,43 @@ cv::Mat processISPAndGetBest(const cv::Mat& raw_frame_in, cv::Mat& tuning_view_o
         q.copyTo(tuning_view_out(cv::Rect((i%4)*qc, (i/4)*qr, qc, qr)));
     }
 
+    {
+        cv::Mat gray;
+        cv::cvtColor(candidates[best_idx], gray, cv::COLOR_BGR2GRAY);
+        cv::Mat gray16;
+        gray.convertTo(gray16, CV_16UC1, 4.0);
+        std::vector<uint16_t> buf(gray16.begin<uint16_t>(), gray16.end<uint16_t>());
+        saveRawHistogram(buf.data(),
+                        candidates[best_idx].cols,
+                        candidates[best_idx].rows,
+                        "Step 5 : After ShadowBoost + CLAHE (Best)",
+                        "/home/iam/SFEPS/Camera/image_processing/isp_debug/hist_05_after_clahe.png");
+    }
+
     return candidates[best_idx];
 }
-
-// =====================================================================
-// 단계별 히스토그램 저장 유틸리티
-// img_processing.cpp 상단에 추가하세요
-// =====================================================================
-
-#include <opencv2/imgproc.hpp>
-#include <opencv2/imgcodecs.hpp>
-#include <string>
-#include <vector>
-#include <cstdint>
 
 // RAW 16UC1 버퍼에서 히스토그램 이미지 저장 (공학적 스타일)
 // bins: 0~1023 범위를 256 bin으로 나눠서 그림
 static void saveRawHistogram(const uint16_t* buf, int width, int height,
                               const std::string& label,
                               const std::string& save_path) {
-    // 히스토그램 계산 (0~1023 → 256 bins)
     std::vector<int> hist(256, 0);
     int total = width * height;
+    uint16_t raw_min = 1023, raw_max = 0;
     for (int i = 0; i < total; i++) {
-        int bin = buf[i] >> 2; // 10bit → 8bit
+        int bin = buf[i] >> 2;
         if (bin >= 0 && bin < 256) hist[bin]++;
+        if (buf[i] < raw_min) raw_min = buf[i];
+        if (buf[i] > raw_max) raw_max = buf[i];
     }
+    std::cout << "[ISP] " << label
+              << " — pixel range: min=" << raw_min
+              << " max=" << raw_max << std::endl;
 
-    // 최대값 찾기 (정규화용)
     int max_val = *std::max_element(hist.begin(), hist.end());
+    if (max_val == 0) return;
 
-    // 캔버스 설정
     const int W = 900, H = 400;
     const int ml = 70, mr = 30, mt = 50, mb = 60;
     const int pw = W - ml - mr;
@@ -603,58 +635,53 @@ static void saveRawHistogram(const uint16_t* buf, int width, int height,
 
     cv::Mat canvas(H, W, CV_8UC3, cv::Scalar(255, 255, 255));
 
-    // 그리드 (옅은 회색)
     for (int v = 0; v <= 4; v++) {
         int y = mt + ph - (int)(v / 4.0f * ph);
-        cv::line(canvas, {ml, y}, {ml + pw, y},
-                 cv::Scalar(220, 220, 220), 1, cv::LINE_AA);
+        cv::line(canvas, {ml, y}, {ml + pw, y}, cv::Scalar(220,220,220), 1, cv::LINE_AA);
     }
     for (int v = 0; v <= 255; v += 64) {
         int x = ml + (int)(v / 255.0f * pw);
-        cv::line(canvas, {x, mt}, {x, mt + ph},
-                 cv::Scalar(220, 220, 220), 1, cv::LINE_AA);
+        cv::line(canvas, {x, mt}, {x, mt + ph}, cv::Scalar(220,220,220), 1, cv::LINE_AA);
     }
 
-    // 히스토그램 바 (진한 회색)
     float bw = (float)pw / 256.0f;
     for (int i = 0; i < 256; i++) {
         if (hist[i] == 0) continue;
         int x1 = ml + (int)(i * bw);
         int x2 = ml + (int)((i + 1) * bw);
         int y  = mt + ph - (int)((float)hist[i] / max_val * ph);
-        cv::rectangle(canvas, {x1, y}, {x2, mt + ph},
-                      cv::Scalar(60, 60, 60), cv::FILLED);
+        cv::rectangle(canvas, {x1, y}, {x2, mt + ph}, cv::Scalar(60,60,60), cv::FILLED);
     }
 
-    // 축
     cv::line(canvas, {ml, mt},      {ml, mt + ph},      cv::Scalar(0,0,0), 1);
     cv::line(canvas, {ml, mt + ph}, {ml + pw, mt + ph}, cv::Scalar(0,0,0), 1);
 
-    // X축 눈금 + 레이블
     for (int v = 0; v <= 255; v += 64) {
         int x = ml + (int)(v / 255.0f * pw);
         cv::line(canvas, {x, mt + ph}, {x, mt + ph + 5}, cv::Scalar(0,0,0), 1);
-        cv::putText(canvas, std::to_string(v),
-                    {x - 10, mt + ph + 20},
+        // X축 레이블을 10-bit 원래 값으로 표시
+        cv::putText(canvas, std::to_string(v * 4),
+                    {x - 12, mt + ph + 20},
                     cv::FONT_HERSHEY_SIMPLEX, 0.42, cv::Scalar(0,0,0), 1, cv::LINE_AA);
     }
-    cv::putText(canvas, "Pixel Intensity (8-bit equiv.)",
+    cv::putText(canvas, "Pixel Intensity (10-bit RAW)",
                 {ml + pw / 2 - 90, H - 12},
                 cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(80,80,80), 1, cv::LINE_AA);
 
-    // Y축 눈금 + 레이블
     for (int v = 0; v <= 4; v++) {
         int y = mt + ph - (int)(v / 4.0f * ph);
         cv::line(canvas, {ml - 5, y}, {ml, y}, cv::Scalar(0,0,0), 1);
-        std::string s = std::to_string((int)(v / 4.0f * max_val));
-        cv::putText(canvas, s, {2, y + 5},
-                    cv::FONT_HERSHEY_SIMPLEX, 0.38, cv::Scalar(0,0,0), 1, cv::LINE_AA);
+        cv::putText(canvas, std::to_string((int)(v / 4.0f * max_val)),
+                    {2, y + 5}, cv::FONT_HERSHEY_SIMPLEX, 0.38, cv::Scalar(0,0,0), 1, cv::LINE_AA);
     }
 
-    // 제목
-    cv::putText(canvas, "Histogram — " + label,
-                {ml, mt - 12},
-                cv::FONT_HERSHEY_SIMPLEX, 0.62, cv::Scalar(0,0,0), 1, cv::LINE_AA);
+    // min/max 정보 히스토그램에 표시
+    cv::putText(canvas, "Histogram : " + label,
+                {ml, mt - 12}, cv::FONT_HERSHEY_SIMPLEX, 0.62, cv::Scalar(0,0,0), 1, cv::LINE_AA);
+    cv::putText(canvas,
+                cv::format("min=%d  max=%d", raw_min, raw_max),
+                {ml + pw - 200, mt - 12},
+                cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(100,100,100), 1, cv::LINE_AA);
 
     cv::imwrite(save_path, canvas);
 }
@@ -676,7 +703,7 @@ cv::Mat runPureISP_withHistograms(const cv::Mat& raw16_frame,
     uint16_t* raw = (uint16_t*)work.data;
 
     // ── Step 0: RAW 원본 ──────────────────────────────────────────
-    saveRawHistogram(raw, W, H, "Step 0 — RAW Input",
+    saveRawHistogram(raw, W, H, "Step 0 : RAW Input",
                      save_dir + "hist_00_raw_input.png");
 
     // ── Step 1: BLC ───────────────────────────────────────────────
@@ -684,7 +711,7 @@ cv::Mat runPureISP_withHistograms(const cv::Mat& raw16_frame,
     for (int i = 0; i < W * H; i++)
         raw[i] = (raw[i] > black_level) ? raw[i] - black_level : 0;
 
-    saveRawHistogram(raw, W, H, "Step 1 — After BLC (black_level=64)",
+    saveRawHistogram(raw, W, H, "Step 1 : After BLC (black_level=64)",
                      save_dir + "hist_01_after_blc.png");
 
     // ── Step 2: AWB 게인 계산 ─────────────────────────────────────
@@ -718,7 +745,7 @@ cv::Mat runPureISP_withHistograms(const cv::Mat& raw16_frame,
         }
     }
     saveRawHistogram(awb_buf.data(), W, H,
-                     "Step 2 — After AWB (Gray World)",
+                     "Step 2 : After AWB (Gray World)",
                      save_dir + "hist_02_after_awb.png");
 
     // ── Step 3: AE 게인 계산 + 적용 + Highlight Rolloff ──────────
@@ -746,7 +773,7 @@ cv::Mat runPureISP_withHistograms(const cv::Mat& raw16_frame,
         }
     }
     saveRawHistogram(raw, W, H,
-                     "Step 3 — After AE + Highlight Rolloff",
+                     "Step 3 : After AE + Highlight Rolloff",
                      save_dir + "hist_03_after_ae_rolloff.png");
 
     // ── 이후 단계 (Demosaic → CCM → Gamma) ───────────────────────
@@ -769,10 +796,22 @@ cv::Mat runPureISP_withHistograms(const cv::Mat& raw16_frame,
 
     CCMConfig ccm_cfg;
     applyCCM(bgr, W, H, ccm_cfg);
+    applySaturationBoost(bgr, W, H, 1.8f);
     applyRGBGamma(bgr, W, H, 2.2f);
+    applyContrast(bgr, W, H, 1.3f, -20.0f);
 
     cv::Mat out(H, W, CV_8UC3);
     std::copy(bgr.begin(), bgr.end(), out.data);
+
+    {
+        cv::Mat gray;
+        cv::cvtColor(out, gray, cv::COLOR_BGR2GRAY);
+        cv::Mat gray16;
+        gray.convertTo(gray16, CV_16UC1, 4.0);
+        std::vector<uint16_t> buf(gray16.begin<uint16_t>(), gray16.end<uint16_t>());
+        saveRawHistogram(buf.data(), W, H, "Step 4 : After CCM + Gamma",
+                        save_dir + "hist_04_after_gamma.png");
+    }
 
     // 최종 결과 썸네일
     cv::Mat thumb; cv::resize(out, thumb, cv::Size(W/4, H/4));
