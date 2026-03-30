@@ -4,8 +4,6 @@
 #include <cstddef>
 #include <string>
 
-#include "analytics.h"
-
 namespace app_services_shared {
 
 constexpr int kAuthPort = 5555;
@@ -23,11 +21,6 @@ void mark_ip_authenticated(const std::string& ip);
 bool unmark_ip_authenticated(const std::string& ip);
 bool is_ip_authenticated(const std::string& ip);
 
-bool snapshots_equal(const AnalyticsProcessor::ObjectPositionSnapshot& lhs,
-                     const AnalyticsProcessor::ObjectPositionSnapshot& rhs);
-std::string format_obj_pos_line(const AnalyticsProcessor::ObjectPositionSnapshot& snapshot);
-std::string format_obj_end_line(const std::string& object_id, const char* reason);
-std::string normalize_object_id_token(const std::string& raw);
 std::string normalize_to_iso8601(std::string timestamp);
 std::string sanitize_error_field(std::string message);
 std::string join_http_url(const std::string& base, const std::string& filename);

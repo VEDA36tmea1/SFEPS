@@ -5,16 +5,61 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <iostream>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
+#include "analytics.h"
 #include "alert.h"
 #include "esp_manager.h"
 #include "service_shared.h"
 #include "transport_utils.h"
+
+namespace {
+
+bool snapshots_equal_local(const AnalyticsProcessor::ObjectPositionSnapshot& lhs,
+                           const AnalyticsProcessor::ObjectPositionSnapshot& rhs) {
+    return lhs.object_id == rhs.object_id &&
+           lhs.left == rhs.left &&
+           lhs.top == rhs.top &&
+           lhs.right == rhs.right &&
+           lhs.bottom == rhs.bottom &&
+           lhs.x == rhs.x &&
+           lhs.y == rhs.y &&
+           lhs.tag_time == rhs.tag_time;
+}
+
+std::string format_obj_pos_line_local(
+    const AnalyticsProcessor::ObjectPositionSnapshot& snapshot) {
+    char line[512];
+    const int n = std::snprintf(
+        line, sizeof(line),
+        "OBJ_POS|%s|L=%.1f|T=%.1f|R=%.1f|B=%.1f|X=%.1f|Y=%.1f|FRAUD=%s|TAG=%s\n",
+        snapshot.object_id.c_str(), snapshot.left, snapshot.top, snapshot.right, snapshot.bottom,
+        snapshot.x, snapshot.y, snapshot.is_fraud ? "Y" : "N", snapshot.tag_time.c_str());
+    if (n <= 0 || n >= static_cast<int>(sizeof(line))) return "";
+    return std::string(line, static_cast<std::size_t>(n));
+}
+
+std::string format_obj_end_line_local(const std::string& object_id, const char* reason) {
+    std::string line =
+        "OBJ_END|" + object_id + "|REASON=" + (reason ? std::string(reason) : "UNKNOWN");
+    line.push_back('\n');
+    return line;
+}
+
+std::string normalize_object_id_token_local(const std::string& raw) {
+    std::string object_id = app_services_shared::trim_copy(raw);
+    if (object_id.size() > app_services_shared::kMaxObjectIdBytes) {
+        object_id.resize(app_services_shared::kMaxObjectIdBytes);
+    }
+    return object_id;
+}
+
+}  // namespace
 
 namespace app_services_impl {
 
@@ -377,7 +422,8 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
                     if (line.empty()) continue;
 
                     if (line.rfind("SUB_POS|", 0) == 0) {
-                        const std::string requested_id = normalize_object_id_token(line.substr(8));
+                        const std::string requested_id =
+                            normalize_object_id_token_local(line.substr(8));
                         if (requested_id.empty()) continue;
 
                         std::cout << "[main.cpp] [Position] SUB_POS 수신: ip="
@@ -389,7 +435,8 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
                     }
 
                     if (line.rfind("UNSUB_POS|", 0) == 0) {
-                        const std::string requested_id = normalize_object_id_token(line.substr(10));
+                        const std::string requested_id =
+                            normalize_object_id_token_local(line.substr(10));
                         if (requested_id.empty()) continue;
                         std::cout << "[main.cpp] [Position] UNSUB_POS 수신: ip="
                                   << client.conn.ip << ", object_id=" << requested_id
@@ -443,7 +490,7 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
 
             if (is_stale) {
                 clear_esp_track_target(esp_active_object_id, "STALE");
-            } else if (!esp_has_last_sent || !snapshots_equal(esp_last_sent, snapshot)) {
+            } else if (!esp_has_last_sent || !snapshots_equal_local(esp_last_sent, snapshot)) {
                 try_publish_esp_track_pos(esp_active_object_id);
             }
         }
@@ -496,7 +543,7 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
                 const auto sent_it = obj_last_sent.find(object_id);
                 if (sent_it == obj_last_sent.end()) continue;
 
-                const std::string end_line = format_obj_end_line(object_id, "STALE");
+                const std::string end_line = format_obj_end_line_local(object_id, "STALE");
                 broadcast_obj_line(end_line);
                 obj_last_sent.erase(object_id);
                 continue;
@@ -513,7 +560,7 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
                 continue;
             }
 
-            const std::string obj_line = format_obj_pos_line(snapshot);
+            const std::string obj_line = format_obj_pos_line_local(snapshot);
             if (broadcast_obj_line(obj_line)) {
                 ObjLastSentState sent_state;
                 sent_state.updated_at = snapshot.updated_at;
@@ -525,7 +572,7 @@ void run_position_stream_service_impl(std::atomic<bool>& running,
 
         for (auto it = obj_last_sent.begin(); it != obj_last_sent.end();) {
             if (obj_ids_this_tick.find(it->first) == obj_ids_this_tick.end()) {
-                const std::string end_line = format_obj_end_line(it->first, "STALE");
+                const std::string end_line = format_obj_end_line_local(it->first, "STALE");
                 broadcast_obj_line(end_line);
                 it = obj_last_sent.erase(it);
             } else {
