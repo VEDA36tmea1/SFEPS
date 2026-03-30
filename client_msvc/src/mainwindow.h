@@ -30,6 +30,8 @@ void rbfqt_set_tracked_nativeid(const char* nativeId);
 bool rbfqt_compute_pwm(long long now_ms, int W, int H, int* pan, int* tilt);
 void rbfqt_process_metadata(const std::vector<ParsedMetadataObject>& objects, int W, int H);
 std::string rbfqt_find_native_id(const std::string& xmlId);
+std::string rbfqt_find_stable_id(const std::string& nativeId);
+std::string rbfqt_resolve_to_native_id(const std::string& displayOrXmlOrStable);
 RbfQtBBox   rbfqt_get_bbox_by_xmlid(const std::string& xmlId, int W, int H);
 #else
 #include "native_metadata_tracker.h"
@@ -137,6 +139,12 @@ signals:
     void pwmSetRequested(int pan, int tilt);
 #endif
 
+#ifdef CAMERA_RBF_QT_MODE
+    // 자동 레이저 대상이 화면 밖으로 나가 추적을 중지했을 때
+    // (Position server에 TRACK_END 보내기 용도)
+    void laserTrackStopped(const QString &xmlId);
+#endif
+
 private:
     void updateStreamStatus(const QString &status, bool connected);
     void startMetadataWorker();
@@ -171,6 +179,13 @@ private:
     QSet<QString> m_fraudXmlIds;
     // 수동 추적 활성 여부 (Track 버튼으로 시작된 경우 true → fraud 자동 전환 억제)
     bool m_manualTracking{false};
+#ifdef CAMERA_RBF_QT_MODE
+    // 부정승차 자동 레이저가 따라갈 ONVIF XML ID (fraudAutoTrackRequest→trackByXmlId 시만 설정, 추가 FRAUD는 색만)
+    QString m_fraudLaserStickyXmlId;
+    // NativeTrack이 일시적으로 스왑돼도(겹침) 안정적으로 유지하기 위한 IdStabilizer stable_id(S_xxx)
+    QString m_fraudLaserStickyStableId;
+    int m_fraudLaserStickyStableMissingFrames{0};
+#endif
 
     int m_streamLatencyMs = 0;
     int m_videoMetaDelayMs = -1;
