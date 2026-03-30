@@ -2,6 +2,12 @@
 #include <QDebug>
 #include <QAbstractSocket>
 #include <QDateTime>
+#include <QFile>
+#include <QProcessEnvironment>
+#include <QSslCertificate>
+#include <QSslConfiguration>
+#include <QSslError>
+#include <QSslSocket>
 #include <QThread>
 
 // Sensor/target scaling: incoming coordinates are reported in sensor (4K) pixels.
@@ -10,6 +16,37 @@
 #define SENSOR_HEIGHT 2160.0
 #define FULLHD_WIDTH  1920.0
 #define FULLHD_HEIGHT 1080.0
+
+namespace {
+
+bool parseEnvBool(const QProcessEnvironment &env, const QString &key, bool defaultValue)
+{
+    const QString raw = env.value(key).trimmed().toLower();
+    if (raw.isEmpty()) return defaultValue;
+    if (raw == "1" || raw == "true" || raw == "yes" || raw == "on") return true;
+    if (raw == "0" || raw == "false" || raw == "no" || raw == "off") return false;
+    return defaultValue;
+}
+
+QList<QSslCertificate> loadCaCertificates(const QString &path, QString &outError)
+{
+    QList<QSslCertificate> certs;
+    if (path.trimmed().isEmpty()) return certs;
+
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) {
+        outError = QString("open failed (%1): %2").arg(path, f.errorString());
+        return certs;
+    }
+
+    certs = QSslCertificate::fromData(f.readAll(), QSsl::Pem);
+    if (certs.isEmpty()) {
+        outError = QString("no valid PEM certificate found in %1").arg(path);
+    }
+    return certs;
+}
+
+}  // namespace
 
 PositionManager::PositionManager(QObject *parent) : QObject(parent) {}
 
@@ -54,6 +91,13 @@ void PositionManager::attachPosSocketSignals()
         emit positionDisconnected();
         scheduleReconnect();
     });
+    if (QSslSocket *ssl = qobject_cast<QSslSocket *>(posSocket)) {
+        connect(ssl, &QSslSocket::sslErrors, this, [](const QList<QSslError> &errors) {
+            for (const QSslError &err : errors) {
+                qWarning() << "[PositionManager][POS] sslError:" << err.errorString();
+            }
+        });
+    }
 }
 
 void PositionManager::onPosReadyRead()
@@ -227,12 +271,13 @@ void PositionManager::connectPositionServer(const QString &host, int port)
         if (posSocket->state() != QAbstractSocket::UnconnectedState) posSocket->disconnectFromHost();
         posSocket->deleteLater();
     }
-    posSocket = new QTcpSocket(this);
-    attachPosSocketSignals();
-    // immediate connect attempt
-    if (posSocket->state() == QAbstractSocket::UnconnectedState) {
-        posSocket->connectToHost(host, static_cast<quint16>(port));
+    if (resolveTlsEnabled()) {
+        posSocket = new QSslSocket(this);
+    } else {
+        posSocket = new QTcpSocket(this);
     }
+    attachPosSocketSignals();
+    connectCurrentSocket();
 }
 
 void PositionManager::scheduleReconnect()
@@ -244,7 +289,7 @@ void PositionManager::scheduleReconnect()
             if (!posSocket) return;
             if (posSocket->state() == QAbstractSocket::UnconnectedState) {
                 qDebug() << "[PositionManager] Reconnect attempt (delay_ms=" << m_reconnectDelayMs << ") to" << lastPosHost << lastPosPort;
-                posSocket->connectToHost(lastPosHost, static_cast<quint16>(lastPosPort));
+                connectCurrentSocket();
             }
             // increase delay for next time (exponential backoff)
             m_reconnectDelayMs = qMin(m_reconnectDelayMs * 2, m_reconnectMaxMs);
@@ -280,6 +325,50 @@ void PositionManager::flushQueuedCommands()
             qDebug() << "[PositionManager] Flushed queued pos command:" << cmd;
         }
     }
+}
+
+bool PositionManager::resolveTlsEnabled() const
+{
+    const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    const bool clientTlsEnabled = parseEnvBool(env, "SFEPS_CLIENT_TLS_ENABLE", false);
+    return parseEnvBool(env, "SFEPS_POS_TLS_ENABLE", clientTlsEnabled);
+}
+
+void PositionManager::connectCurrentSocket()
+{
+    if (!posSocket) return;
+    if (posSocket->state() != QAbstractSocket::UnconnectedState) return;
+
+    if (QSslSocket *ssl = qobject_cast<QSslSocket *>(posSocket)) {
+        const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        ssl->abort();
+        ssl->setPeerVerifyMode(QSslSocket::VerifyPeer);
+
+        const QString caPath = env.value("SFEPS_CLIENT_CA_FILE").trimmed();
+        QString caErr;
+        const QList<QSslCertificate> certs = loadCaCertificates(caPath, caErr);
+        if (!certs.isEmpty()) {
+            QSslConfiguration cfg = ssl->sslConfiguration();
+            cfg.setProtocol(QSsl::TlsV1_2OrLater);
+            cfg.setPeerVerifyMode(QSslSocket::VerifyPeer);
+            cfg.setCaCertificates(certs);
+            ssl->setSslConfiguration(cfg);
+        } else if (!caPath.isEmpty()) {
+            qWarning() << "[PositionManager][POS] CA load failed:" << caErr;
+        }
+
+        const QString serverName = env.value("SFEPS_CLIENT_TLS_SERVER_NAME").trimmed();
+        if (!serverName.isEmpty()) {
+            ssl->setPeerVerifyName(serverName);
+        }
+
+        qDebug() << "[PositionManager] Connecting position server (TLS)" << lastPosHost << ":" << lastPosPort;
+        ssl->connectToHostEncrypted(lastPosHost, static_cast<quint16>(lastPosPort));
+        return;
+    }
+
+    qDebug() << "[PositionManager] Connecting position server (Plain)" << lastPosHost << ":" << lastPosPort;
+    posSocket->connectToHost(lastPosHost, static_cast<quint16>(lastPosPort));
 }
 
 void PositionManager::sendPositionCommand(const QString &msg)

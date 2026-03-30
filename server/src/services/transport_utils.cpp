@@ -129,8 +129,10 @@ bool accept_client(const ListenerBundle& bundle,
         }
 
         const std::string client_ip = peer_ip_to_string(peer_addr);
-        std::cout << "[main.cpp] [" << service_tag << "] Plain 연결 시도: ip="
-                  << client_ip << ", fd=" << client_fd << std::endl;
+        if (std::strcmp(service_tag, "VideoCatalog") != 0) {
+            std::cout << "[main.cpp] [" << service_tag << "] Plain 연결 시도: ip="
+                      << client_ip << ", fd=" << client_fd << std::endl;
+        }
         if (!is_ip_allowed(allowlist, client_ip)) {
             std::cout << "[main.cpp] [" << service_tag
                       << "] Plain 연결 허용목록 거부: ip=" << client_ip
@@ -159,8 +161,10 @@ bool accept_client(const ListenerBundle& bundle,
     }
 
     const std::string client_ip = peer_ip_to_string(peer_addr);
-    std::cout << "[main.cpp] [" << service_tag << "] TLS 연결 시도: ip=" << client_ip
-              << ", fd=" << client_fd << std::endl;
+    if (std::strcmp(service_tag, "VideoCatalog") != 0) {
+        std::cout << "[main.cpp] [" << service_tag << "] TLS 연결 시도: ip=" << client_ip
+                  << ", fd=" << client_fd << std::endl;
+    }
     if (!is_ip_allowed(allowlist, client_ip)) {
         std::cout << "[main.cpp] [" << service_tag << "] TLS 연결 허용목록 거부: ip="
                   << client_ip << std::endl;

@@ -50,6 +50,10 @@ std::string sanitize_alert_field(std::string value) {
     return value;
 }
 
+const char* bool_to_yn(bool value) {
+    return value ? "Y" : "N";
+}
+
 std::string join_http_url(const std::string& base, const std::string& filename) {
     std::string normalized_base = base;
     while (!normalized_base.empty() && normalized_base.back() == '/') {
@@ -113,6 +117,7 @@ int main() {
               << sec_cfg.fraud_image_http_base_url
               << ", video_retention_sec=" << sec_cfg.video_retention_sec
               << ", video_max_storage_bytes=" << sec_cfg.video_max_storage_bytes
+              << ", video_storage_resume_bytes=" << sec_cfg.video_storage_resume_bytes
               << ", pending_image_retention_sec=" << sec_cfg.pending_image_retention_sec
               << ", fraud_image_retention_sec=" << sec_cfg.fraud_image_retention_sec << std::endl;
 
@@ -141,12 +146,23 @@ int main() {
         });
     analytics.setOutlineDecisionCallback(
         [&sec_cfg](const AnalyticsProcessor::OutlineDecisionPayload& payload) {
+            std::cout << "[main.cpp] [OUTLINE_DECISION] object_id=" << payload.object_id
+                      << ", card_age_text=" << payload.card_age_text << ", age=" << payload.age
+                      << ", fraud=" << bool_to_yn(payload.is_fraud)
+                      << ", tag_time=" << payload.tag_time << std::endl;
+
             if (payload.card_age_text == "0") {
+                std::cout << "[main.cpp] [OUTLINE_DECISION_SKIP] object_id=" << payload.object_id
+                          << ", reason=card_age_text_0, tag_time=" << payload.tag_time
+                          << std::endl;
                 return;
             }
 
             FinalizedFraudImageInfo fraud_image_info;
             if (!finalize_outline_image_for_object(payload, &fraud_image_info)) {
+                std::cout << "[main.cpp] [OUTLINE_DECISION_SKIP] object_id=" << payload.object_id
+                          << ", reason=finalize_failed_or_pending_missing, tag_time="
+                          << payload.tag_time << std::endl;
                 return;
             }
             if (sec_cfg.fraud_image_http_base_url.empty()) {
@@ -169,10 +185,22 @@ int main() {
                                   "|TAG=" + sanitize_alert_field(fraud_image_info.tag_time) +
                                   "|NAME=" + sanitize_alert_field(fraud_image_info.filename);
             message.push_back('\n');
-            send_alert_to_clients(message);
-            std::cout << "[main.cpp] [RFID_IMAGE_REF_SEND] object_id="
+            const std::size_t clients_before_send = alert_client_count();
+            std::cout << "[main.cpp] [RFID_IMAGE_REF_SEND_ATTEMPT] 전송 시도: object_id="
                       << fraud_image_info.object_id << ", tag_time=" << fraud_image_info.tag_time
-                      << ", name=" << fraud_image_info.filename << ", url=" << url << std::endl;
+                      << ", clients_before=" << clients_before_send
+                      << std::endl;
+            if (clients_before_send == 0) {
+                std::cerr
+                    << "[main.cpp] [RFID_IMAGE_REF_SEND_DROP] 전송 중단: 사유=alert 클라이언트 없음, object_id="
+                          << fraud_image_info.object_id
+                          << ", tag_time=" << fraud_image_info.tag_time << std::endl;
+            }
+            send_alert_to_clients(message);
+            std::cout << "[main.cpp] [RFID_IMAGE_REF_SEND] 전송 요청 완료: object_id="
+                      << fraud_image_info.object_id << ", tag_time=" << fraud_image_info.tag_time
+                      << ", clients_before=" << clients_before_send
+                      << std::endl;
         });
     if (!analytics.start()) {
         std::cerr << "[Fatal] AnalyticsProcessor 시작 실패(fail-closed)." << std::endl;
@@ -207,7 +235,8 @@ int main() {
     std::thread t_file_cleanup(run_file_cleanup_worker, std::ref(g_running),
                                std::string(VIDEO_SAVE_DIR),
                                static_cast<long>(sec_cfg.video_retention_sec),
-                               sec_cfg.video_max_storage_bytes);
+                               sec_cfg.video_max_storage_bytes,
+                               sec_cfg.video_storage_resume_bytes);
     std::thread t_pending_image_cleanup(run_pending_image_cleanup_worker, std::ref(g_running),
                                         std::string(pending_image_directory_path()),
                                         static_cast<long>(sec_cfg.pending_image_retention_sec));

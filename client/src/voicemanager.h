@@ -61,6 +61,7 @@ private:
     QTcpSocket *m_socket = nullptr;
     SocketForwardDevice *m_forwardDevice = nullptr;
     bool m_active = false;
+    quint16 m_currentPort = 5556;
 };
 
 #endif // VOICEMANAGER_H

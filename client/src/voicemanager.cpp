@@ -15,6 +15,16 @@ static bool parseEnvBool(const QProcessEnvironment &env, const QString &key, boo
     return defaultValue;
 }
 
+static quint16 parseEnvPort(const QProcessEnvironment &env, const QString &key, quint16 defaultValue)
+{
+    const QString raw = env.value(key).trimmed();
+    if (raw.isEmpty()) return defaultValue;
+    bool ok = false;
+    const int parsed = raw.toInt(&ok);
+    if (!ok || parsed < 1 || parsed > 65535) return defaultValue;
+    return static_cast<quint16>(parsed);
+}
+
 // 서버 주소/포트 (Audio_Speaker_Unit·서버와 동일 포트)
 static const char * const AUDIO_SERVER_HOST = "192.168.0.101";
 static const quint16 AUDIO_SERVER_PORT = 5556;
@@ -60,6 +70,8 @@ void VoiceManager::startRecording()
         env.value("FRAUD_SERVER_HOST", QString::fromUtf8(AUDIO_SERVER_HOST))
     );
     const bool tlsEnabled = parseEnvBool(env, "SFEPS_CLIENT_TLS_ENABLE", false);
+    m_currentPort = tlsEnabled ? parseEnvPort(env, "SFEPS_AUDIO_TLS_PORT", 6556)
+                               : parseEnvPort(env, "AUDIO_SERVER_PORT", AUDIO_SERVER_PORT);
 
     // Recreate socket if switching between plaintext and TLS
     const bool currentIsSsl = (qobject_cast<QSslSocket *>(m_socket) != nullptr);
@@ -102,16 +114,16 @@ void VoiceManager::startRecording()
             const QString serverName = env.value("SFEPS_CLIENT_TLS_SERVER_NAME").trimmed();
             if (!serverName.isEmpty()) ssl->setPeerVerifyName(serverName);
 
-            qDebug() << "Connecting to audio server (TLS)" << host << ":" << AUDIO_SERVER_PORT;
-            ssl->connectToHostEncrypted(host, AUDIO_SERVER_PORT);
+            qDebug() << "Connecting to audio server (TLS)" << host << ":" << m_currentPort;
+            ssl->connectToHostEncrypted(host, m_currentPort);
         }
     } else {
-        qDebug() << "Connecting to audio server (Plain)" << host << ":" << AUDIO_SERVER_PORT;
-        m_socket->connectToHost(host, AUDIO_SERVER_PORT);
+        qDebug() << "Connecting to audio server (Plain)" << host << ":" << m_currentPort;
+        m_socket->connectToHost(host, m_currentPort);
     }
     m_active = true;
     emit activeChanged();
-    qDebug() << "Connecting to audio server..." << host << ":" << AUDIO_SERVER_PORT << "(RAW streaming)";
+    qDebug() << "Connecting to audio server..." << host << ":" << m_currentPort << "(RAW streaming)";
 }
 
 void VoiceManager::onSocketConnected()
@@ -127,7 +139,7 @@ void VoiceManager::onSocketError(QAbstractSocket::SocketError err)
     if (!m_active) return;
     qDebug() << "Audio socket error:" << m_socket->errorString();
     stopAndSendData();
-    emit errorOccurred("서버 연결 실패 (Audio Port " + QString::number(AUDIO_SERVER_PORT) + ")");
+    emit errorOccurred("서버 연결 실패 (Audio Port " + QString::number(m_currentPort) + ")");
 }
 
 void VoiceManager::stopAndSendData()

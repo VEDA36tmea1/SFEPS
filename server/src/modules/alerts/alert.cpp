@@ -33,6 +33,10 @@ struct AlertDispatchStats {
     size_t fail_count = 0;
 };
 
+size_t total_clients_locked() {
+    return g_plain_clients.size() + g_tls_clients.size();
+}
+
 bool matches_target_ip(const std::string& client_ip, const std::string* target_ip) {
     return target_ip == nullptr || client_ip == *target_ip;
 }
@@ -88,11 +92,15 @@ void dispatch_plain_alerts(const std::string& msg,
         }
         ++stats.target_count;
         if (!send_all_plain(it->fd, msg.data(), msg.size())) {
-            std::cout << "[alert.cpp] [Alert] " << fail_prefix << " (" << describe_plain_peer(*it)
+            const std::string peer = describe_plain_peer(*it);
+            std::cout << "[alert.cpp] [Alert] " << fail_prefix << " (" << peer
                       << ") 오류=" << errno << " (" << std::strerror(errno) << ")" << std::endl;
             close(it->fd);
             it = g_plain_clients.erase(it);
             ++stats.fail_count;
+            std::cout << "[main.cpp] [Alert] 클라이언트 연결 해제: 종류=plain, " << peer
+                      << ", 사유=전송실패, 총_클라이언트=" << total_clients_locked()
+                      << std::endl;
             continue;
         }
         ++stats.sent_count;
@@ -111,11 +119,15 @@ void dispatch_tls_alerts(const std::string& msg,
         }
         ++stats.target_count;
         if (!send_all_tls(it->conn, msg.data(), msg.size())) {
-            std::cout << "[alert.cpp] [Alert] " << fail_prefix << " (" << describe_tls_peer(*it)
+            const std::string peer = describe_tls_peer(*it);
+            std::cout << "[alert.cpp] [Alert] " << fail_prefix << " (" << peer
                       << ") 오류=" << errno << " (" << std::strerror(errno) << ")" << std::endl;
             close_tls_client(it->conn);
             it = g_tls_clients.erase(it);
             ++stats.fail_count;
+            std::cout << "[main.cpp] [Alert] 클라이언트 연결 해제: 종류=tls, " << peer
+                      << ", 사유=전송실패, 총_클라이언트=" << total_clients_locked()
+                      << std::endl;
             continue;
         }
         ++stats.sent_count;
@@ -132,16 +144,23 @@ bool add_alert_plain_client(int fd, const std::string& client_ip) {
     client.fd = fd;
     client.client_ip = client_ip;
     g_plain_clients.push_back(std::move(client));
+    std::cout << "[main.cpp] [Alert] 클라이언트 연결됨: 종류=plain, fd=" << fd
+              << ", ip=" << client_ip << ", 총_클라이언트=" << total_clients_locked()
+              << std::endl;
     return true;
 }
 
 bool add_alert_tls_client(TlsClientConnection&& client, const std::string& client_ip) {
     if (client.fd < 0 || client.ssl == nullptr) return false;
     std::lock_guard<std::mutex> lock(g_alert_clients_mutex);
+    const int fd = client.fd;
     TlsAlertClient state;
     state.conn = std::move(client);
     state.client_ip = client_ip;
     g_tls_clients.emplace_back(std::move(state));
+    std::cout << "[main.cpp] [Alert] 클라이언트 연결됨: 종류=tls, fd=" << fd
+              << ", ip=" << client_ip << ", 총_클라이언트=" << total_clients_locked()
+              << std::endl;
     return true;
 }
 
@@ -153,11 +172,17 @@ std::size_t alert_client_count() {
 void close_alert_client_connections() {
     std::lock_guard<std::mutex> lock(g_alert_clients_mutex);
     for (auto& client : g_plain_clients) {
+        std::cout << "[main.cpp] [Alert] 클라이언트 연결 해제: 종류=plain, fd=" << client.fd
+                  << ", ip=" << client.client_ip
+                  << ", 사유=서비스종료" << std::endl;
         close(client.fd);
     }
     g_plain_clients.clear();
 
     for (auto& client : g_tls_clients) {
+        std::cout << "[main.cpp] [Alert] 클라이언트 연결 해제: 종류=tls, fd=" << client.conn.fd
+                  << ", ip=" << client.client_ip
+                  << ", 사유=서비스종료" << std::endl;
         close_tls_client(client.conn);
     }
     g_tls_clients.clear();
@@ -183,7 +208,8 @@ void send_alert_to_clients(const std::string& msg) {
                   << std::endl;
     } else {
         std::cout << "[alert.cpp] [Alert] 클라이언트 전송 완료: 성공=" << stats.sent_count
-                  << ", 실패=" << stats.fail_count << ", payload='" << msg << "'" << std::endl;
+                  << ", 실패=" << stats.fail_count << ", payload_len=" << msg.size()
+                  << std::endl;
     }
 }
 
@@ -203,5 +229,5 @@ void send_alert_to_ip_clients(const std::string& ip, const std::string& msg) {
 
     std::cout << "[alert.cpp] [Alert] 대상 전송 완료: ip=" << ip
               << ", 성공=" << stats.sent_count << ", 실패=" << stats.fail_count
-              << ", payload='" << msg << "'" << std::endl;
+              << ", payload_len=" << msg.size() << std::endl;
 }

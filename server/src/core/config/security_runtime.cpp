@@ -79,6 +79,8 @@ SecurityRuntimeOptions load_security_runtime_options() {
         load_env_size_t("SFEPS_VIDEO_RETENTION_SEC", 86400, 1, kConfigLogPrefix);
     cfg.video_max_storage_bytes =
         load_env_size_t("SFEPS_VIDEO_MAX_STORAGE_BYTES", 5368709120ULL, 1, kConfigLogPrefix);
+    cfg.video_storage_resume_bytes =
+        load_env_size_t("SFEPS_VIDEO_STORAGE_RESUME_BYTES", 3221225472ULL, 1, kConfigLogPrefix);
     cfg.pending_image_retention_sec =
         load_env_size_t("SFEPS_PENDING_IMAGE_RETENTION_SEC", 120, 1, kConfigLogPrefix);
     cfg.fraud_image_retention_sec =
@@ -189,6 +191,12 @@ bool validate_security_runtime_options(const SecurityRuntimeOptions& cfg, std::s
     }
     if (cfg.alert_allow_ips.empty()) {
         err = "missing required allowlist: SFEPS_ALERT_ALLOW_IPS (fail-closed)";
+        return false;
+    }
+    if (cfg.video_storage_resume_bytes > cfg.video_max_storage_bytes) {
+        err =
+            "invalid storage config: SFEPS_VIDEO_STORAGE_RESUME_BYTES must be <= "
+            "SFEPS_VIDEO_MAX_STORAGE_BYTES";
         return false;
     }
 
