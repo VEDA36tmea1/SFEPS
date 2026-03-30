@@ -39,7 +39,10 @@ private:
     QByteArray buffer;
     bool useTls = false;
     QString host;
-    int port = 5559;
+    int port = 5559; // current port (depends on useTls)
+    int tlsPort = 6559;
+    int plainPort = 5559;
+    bool tlsAttemptInProgress = false;
     bool snapshotInProgress = false;
 };
 

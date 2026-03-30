@@ -176,11 +176,17 @@ void FraudManager::connectToServer(const QString &host, int port)
 {
     lastHost = host;
     lastPort = port;
+    m_currentHost = host;
+    m_forcePlainAfterTlsFail = false; // new connection cycle -> try TLS again
     m_alertTlsEnabled = resolveAlertTlsEnabled();
     const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
 
+    // Ports for TLS->Plain fallback.
+    m_plainPort = env.value("FRAUD_SERVER_PORT", QString::number(5557)).toInt();
+    m_tlsPort = env.value("SFEPS_ALERT_TLS_PORT", QString::number(6557)).toInt();
+
     // Recreate socket if type mismatches desired mode
-    const bool needSsl = m_alertTlsEnabled;
+    const bool needSsl = (m_alertTlsEnabled && !m_forcePlainAfterTlsFail);
     bool currentIsSsl = (qobject_cast<QSslSocket*>(socket) != nullptr);
     if (needSsl != currentIsSsl) {
         if (socket->state() != QAbstractSocket::UnconnectedState) {
@@ -195,8 +201,17 @@ void FraudManager::connectToServer(const QString &host, int port)
         attachSocketSignals();
     }
 
-    if (socket->state() == QAbstractSocket::ConnectedState) return;
-    qDebug() << "[FraudManager] Connecting to" << host << ":" << port << (needSsl ? "(TLS)" : "(Plain)");
+    if (socket->state() == QAbstractSocket::ConnectedState) {
+        if (!needSsl) return;
+        if (QSslSocket *ssl = qobject_cast<QSslSocket*>(socket)) {
+            if (ssl->isEncrypted()) return;
+        }
+    }
+
+    // When TLS is preferred, connect TLS first and fallback to plain on TLS failure.
+    const int tlsTargetPort = (port > 0) ? port : m_tlsPort;
+    qDebug() << "[FraudManager] Connecting to" << host << ":" << (needSsl ? tlsTargetPort : port)
+             << (needSsl ? "(TLS)" : "(Plain)");
 
     if (needSsl) {
         QSslSocket *ssl = qobject_cast<QSslSocket*>(socket);
@@ -217,11 +232,19 @@ void FraudManager::connectToServer(const QString &host, int port)
             const QString serverName = env.value("SFEPS_CLIENT_TLS_SERVER_NAME").trimmed();
             if (!serverName.isEmpty()) ssl->setPeerVerifyName(serverName);
 
-            ssl->connectToHostEncrypted(host, static_cast<quint16>(port));
+            m_tlsInProgress = true;
+            m_tlsFallbackUsed = false;
+            m_skipRetryOnDisconnect = false;
+            lastPort = tlsTargetPort;
+            ssl->connectToHostEncrypted(host, static_cast<quint16>(tlsTargetPort));
             return;
         }
     }
 
+    m_tlsInProgress = false;
+    m_tlsFallbackUsed = false;
+    m_skipRetryOnDisconnect = false;
+    lastPort = port;
     socket->connectToHost(host, port);
 }
 
@@ -235,6 +258,11 @@ void FraudManager::onConnected()
 void FraudManager::onDisconnected()
 {
     qDebug() << "[FraudManager] Disconnected from fraud alert server. Retrying in 1s...";
+    if (m_skipRetryOnDisconnect) {
+        // TLS->Plain transport switch 중에는 서버다운으로 취급하지 않음.
+        m_skipRetryOnDisconnect = false;
+        return;
+    }
     retryTimer->start();
     emit serverDisconnected();
 }
@@ -251,6 +279,29 @@ void FraudManager::onSocketError(QAbstractSocket::SocketError socketError)
 {
     Q_UNUSED(socketError);
     qWarning() << "[FraudManager] socket error:" << socket->errorString();
+
+    // TLS->Plain fallback: TLS handshake/transport error가 나면 평문으로 재시도.
+    if (m_tlsInProgress && !m_tlsFallbackUsed) {
+        qWarning() << "[FraudManager] TLS failed -> fallback to plain" << m_currentHost << ":" << m_plainPort;
+
+        m_tlsInProgress = false;
+        m_tlsFallbackUsed = true;
+        m_forcePlainAfterTlsFail = true;
+        m_skipRetryOnDisconnect = true;
+
+        if (retryTimer && retryTimer->isActive()) retryTimer->stop();
+
+        if (socket) {
+            socket->abort();
+            socket->deleteLater();
+        }
+
+        socket = new QTcpSocket(this);
+        attachSocketSignals();
+        socket->connectToHost(m_currentHost, m_plainPort);
+        lastHost = m_currentHost;
+        lastPort = m_plainPort;
+    }
 }
 
 void FraudManager::onSslErrors(const QList<QSslError> &errors)

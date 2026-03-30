@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QTcpSocket>
+#include <QSslSocket>
 #include <QTimer>
 #include <QByteArray>
 #include <QVariant>
@@ -42,6 +43,11 @@ private:
     void flushQueuedCommands();
 
     QTcpSocket *posSocket = nullptr;
+    bool m_posTlsPrefer = false;
+    quint16 m_posTlsPort = 6558;
+    quint16 m_posPlainPort = 5558;
+    bool m_tlsFallbackUsed = false;
+    bool m_fallbackInProgress = false;
     QByteArray posRecvBuffer;
     QStringList m_pendingCommands;
     bool m_parseScheduled = false;

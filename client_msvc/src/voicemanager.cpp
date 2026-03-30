@@ -15,6 +15,16 @@ static bool parseEnvBool(const QProcessEnvironment &env, const QString &key, boo
     return defaultValue;
 }
 
+static quint16 parseEnvPort(const QProcessEnvironment &env, const QString &key, quint16 defaultValue)
+{
+    const QString raw = env.value(key).trimmed();
+    if (raw.isEmpty()) return defaultValue;
+    bool ok = false;
+    const int parsed = raw.toInt(&ok);
+    if (!ok || parsed < 1 || parsed > 65535) return defaultValue;
+    return static_cast<quint16>(parsed);
+}
+
 // 서버 주소/포트 (Audio_Speaker_Unit·서버와 동일 포트)
 static const char * const AUDIO_SERVER_HOST = "192.168.0.101";
 static const quint16 AUDIO_SERVER_PORT = 5556;
@@ -36,6 +46,25 @@ VoiceManager::VoiceManager(QObject *parent) : QObject(parent)
     connect(m_audioSource, &QAudioSource::stateChanged, this, &VoiceManager::handleStateChanged);
     connect(m_socket, &QTcpSocket::connected, this, &VoiceManager::onSocketConnected);
     connect(m_socket, &QTcpSocket::errorOccurred, this, &VoiceManager::onSocketError);
+
+    m_tlsConnectTimeoutTimer = new QTimer(this);
+    m_tlsConnectTimeoutTimer->setSingleShot(true);
+    connect(m_tlsConnectTimeoutTimer, &QTimer::timeout, this, [this]() {
+        if (!m_tlsConnectInProgress || m_tlsFallbackUsed) return;
+        qWarning() << "[VoiceManager] TLS connect timeout -> fallback to plain";
+        // Reuse the socket error path semantics: switch to plain but keep recording.
+        if (m_socket) m_socket->abort();
+        m_tlsConnectInProgress = false;
+        m_tlsFallbackUsed = true;
+
+        if (m_socket) m_socket->deleteLater();
+        m_socket = new QTcpSocket(this);
+        m_forwardDevice->deleteLater();
+        m_forwardDevice = new SocketForwardDevice(m_socket, this);
+        connect(m_socket, &QTcpSocket::connected, this, &VoiceManager::onSocketConnected);
+        connect(m_socket, &QTcpSocket::errorOccurred, this, &VoiceManager::onSocketError);
+        m_socket->connectToHost(m_currentHost, m_plainPort);
+    });
 }
 
 VoiceManager::~VoiceManager()
@@ -59,7 +88,12 @@ void VoiceManager::startRecording()
         "AUDIO_SERVER_HOST",
         env.value("FRAUD_SERVER_HOST", QString::fromUtf8(AUDIO_SERVER_HOST))
     );
+    m_currentHost = host;
     const bool tlsEnabled = parseEnvBool(env, "SFEPS_CLIENT_TLS_ENABLE", false);
+
+    // Ports: plain=5556, tls=6556 (env override 지원)
+    m_tlsPort = parseEnvPort(env, "SFEPS_AUDIO_TLS_PORT", 6556);
+    m_plainPort = parseEnvPort(env, "AUDIO_SERVER_PORT", AUDIO_SERVER_PORT);
 
     // Recreate socket if switching between plaintext and TLS
     const bool currentIsSsl = (qobject_cast<QSslSocket *>(m_socket) != nullptr);
@@ -75,47 +109,73 @@ void VoiceManager::startRecording()
         m_forwardDevice = new SocketForwardDevice(m_socket, this);
         connect(m_socket, &QTcpSocket::connected, this, &VoiceManager::onSocketConnected);
         connect(m_socket, &QTcpSocket::errorOccurred, this, &VoiceManager::onSocketError);
+        if (QSslSocket *ssl = qobject_cast<QSslSocket *>(m_socket)) {
+            // Only start streaming once the TLS handshake is completed.
+            connect(ssl, &QSslSocket::encrypted, this, &VoiceManager::onSocketConnected);
+        }
     }
 
     m_socket->abort();
+
+    // TLS preferred: TLS->Plain fallback
     if (tlsEnabled) {
         QSslSocket *ssl = qobject_cast<QSslSocket *>(m_socket);
-        if (ssl) {
-            ssl->setPeerVerifyMode(QSslSocket::VerifyPeer);
-            const QString caPath = env.value("SFEPS_CLIENT_CA_FILE").trimmed();
-            if (!caPath.isEmpty()) {
-                QFile f(caPath);
-                if (f.open(QIODevice::ReadOnly)) {
-                    const QList<QSslCertificate> certs = QSslCertificate::fromData(f.readAll(), QSsl::Pem);
-                    if (!certs.isEmpty()) {
-                        QSslConfiguration cfg = ssl->sslConfiguration();
-                        cfg.setCaCertificates(certs);
-                        ssl->setSslConfiguration(cfg);
-                    } else {
-                        qWarning() << "[VoiceManager] No valid CA certificates in" << caPath;
-                    }
+        if (!ssl) return;
+
+        ssl->setPeerVerifyMode(QSslSocket::VerifyPeer);
+        const QString caPath = env.value("SFEPS_CLIENT_CA_FILE").trimmed();
+        if (!caPath.isEmpty()) {
+            QFile f(caPath);
+            if (f.open(QIODevice::ReadOnly)) {
+                const QList<QSslCertificate> certs = QSslCertificate::fromData(f.readAll(), QSsl::Pem);
+                if (!certs.isEmpty()) {
+                    QSslConfiguration cfg = ssl->sslConfiguration();
+                    cfg.setCaCertificates(certs);
+                    ssl->setSslConfiguration(cfg);
                 } else {
-                    qWarning() << "[VoiceManager] Failed to open CA file" << caPath << f.errorString();
+                    qWarning() << "[VoiceManager] No valid CA certificates in" << caPath;
                 }
+            } else {
+                qWarning() << "[VoiceManager] Failed to open CA file" << caPath << f.errorString();
             }
-
-            const QString serverName = env.value("SFEPS_CLIENT_TLS_SERVER_NAME").trimmed();
-            if (!serverName.isEmpty()) ssl->setPeerVerifyName(serverName);
-
-            qDebug() << "Connecting to audio server (TLS)" << host << ":" << AUDIO_SERVER_PORT;
-            ssl->connectToHostEncrypted(host, AUDIO_SERVER_PORT);
         }
+
+        const QString serverName = env.value("SFEPS_CLIENT_TLS_SERVER_NAME").trimmed();
+        if (!serverName.isEmpty()) ssl->setPeerVerifyName(serverName);
+
+        m_tlsConnectInProgress = true;
+        m_tlsFallbackUsed = false;
+        if (m_tlsConnectTimeoutTimer->isActive()) m_tlsConnectTimeoutTimer->stop();
+        m_tlsConnectTimeoutTimer->start(3000);
+
+        qDebug() << "Connecting to audio server (TLS)" << host << ":" << m_tlsPort;
+        ssl->connectToHostEncrypted(host, m_tlsPort);
     } else {
-        qDebug() << "Connecting to audio server (Plain)" << host << ":" << AUDIO_SERVER_PORT;
-        m_socket->connectToHost(host, AUDIO_SERVER_PORT);
+        m_tlsConnectInProgress = false;
+        m_tlsFallbackUsed = false;
+        if (m_tlsConnectTimeoutTimer->isActive()) m_tlsConnectTimeoutTimer->stop();
+
+        qDebug() << "Connecting to audio server (Plain)" << host << ":" << m_plainPort;
+        m_socket->connectToHost(host, m_plainPort);
     }
+
     m_active = true;
     emit activeChanged();
-    qDebug() << "Connecting to audio server..." << host << ":" << AUDIO_SERVER_PORT << "(RAW streaming)";
+    qDebug() << "Connecting to audio server..." << host << ":"
+             << (tlsEnabled ? m_tlsPort : m_plainPort) << "(RAW streaming)";
 }
 
 void VoiceManager::onSocketConnected()
 {
+    if (QSslSocket *ssl = qobject_cast<QSslSocket *>(m_socket)) {
+        // For TLS sockets: wait until handshake completes.
+        if (!ssl->isEncrypted()) return;
+        // TLS handshake succeeded.
+        m_tlsConnectInProgress = false;
+        m_tlsFallbackUsed = false;
+        if (m_tlsConnectTimeoutTimer->isActive()) m_tlsConnectTimeoutTimer->stop();
+    }
+
     m_forwardDevice->open(QIODevice::WriteOnly);
     m_audioSource->start(m_forwardDevice);
     qDebug() << "Recording started. Streaming RAW PCM to server...";
@@ -126,12 +186,39 @@ void VoiceManager::onSocketError(QAbstractSocket::SocketError err)
     Q_UNUSED(err);
     if (!m_active) return;
     qDebug() << "Audio socket error:" << m_socket->errorString();
+
+    // If TLS connect attempt failed: fallback to plaintext and keep streaming.
+    if (m_tlsConnectInProgress && !m_tlsFallbackUsed) {
+        qWarning() << "[VoiceManager] TLS failed -> fallback to plain" << m_currentHost << ":" << m_plainPort;
+        m_tlsConnectInProgress = false;
+        m_tlsFallbackUsed = true;
+        if (m_tlsConnectTimeoutTimer->isActive()) m_tlsConnectTimeoutTimer->stop();
+
+        // Switch socket to plain TCP.
+        if (m_socket) {
+            m_socket->abort();
+            m_socket->deleteLater();
+        }
+        if (m_forwardDevice) m_forwardDevice->deleteLater();
+
+        m_socket = new QTcpSocket(this);
+        m_forwardDevice = new SocketForwardDevice(m_socket, this);
+        connect(m_socket, &QTcpSocket::connected, this, &VoiceManager::onSocketConnected);
+        connect(m_socket, &QTcpSocket::errorOccurred, this, &VoiceManager::onSocketError);
+        m_socket->connectToHost(m_currentHost, m_plainPort);
+        return;
+    }
+
     stopAndSendData();
-    emit errorOccurred("서버 연결 실패 (Audio Port " + QString::number(AUDIO_SERVER_PORT) + ")");
+    emit errorOccurred("서버 연결 실패 (Audio Port " + QString::number(m_plainPort) + ")");
 }
 
 void VoiceManager::stopAndSendData()
 {
+    if (m_tlsConnectTimeoutTimer && m_tlsConnectTimeoutTimer->isActive()) {
+        m_tlsConnectTimeoutTimer->stop();
+    }
+    m_tlsConnectInProgress = false;
     if (m_audioSource->state() != QAudio::StoppedState)
         m_audioSource->stop();
     if (m_forwardDevice->isOpen())
