@@ -1634,6 +1634,7 @@ int main(int argc, char** argv)
     int remote_id_port = 5565;
     bool remote_id_enable = true;
     TrackerMode trackerMode = TrackerMode::Native;  // 기본: Native (DeepSort는 --tracker-mode deepsort)
+    bool dual_bbox_view = false;  // RAW vs EMA 스무딩 bbox 동시 비교 (--dual-bbox 또는 SFEPS_DUAL_BBOX_VIEW=1)
 
     for (int i = 1; i < argc; ++i)
     {
@@ -1660,7 +1661,10 @@ int main(int argc, char** argv)
             if (mode == "deepsort") trackerMode = TrackerMode::DeepSort;
             else                    trackerMode = TrackerMode::Native;
         }
+        else if (arg == "--dual-bbox") dual_bbox_view = true;
     }
+    if (const char* de = std::getenv("SFEPS_DUAL_BBOX_VIEW"))
+        if (de[0] != '\0' && std::strcmp(de, "0") != 0) dual_bbox_view = true;
 
     std::signal(SIGINT, signal_handler);
 #ifndef _WIN32
@@ -1768,6 +1772,11 @@ int main(int argc, char** argv)
     std::thread cap_thread(capture_thread_fn);
 
     cv::namedWindow("camera_RBF", cv::WINDOW_NORMAL);
+    if (dual_bbox_view)
+    {
+        cv::namedWindow("camera_RBF_raw", cv::WINDOW_NORMAL);
+        std::cerr << "[view] dual bbox: camera_RBF_raw=RAW(녹색), camera_RBF=EMA(노란색)\n";
+    }
     // OpenCV highgui 스레드를 시작해서 Windows에서 창 생성이 늦는 문제를 완화한다.
     cv::startWindowThread();
     cv::setMouseCallback("camera_RBF", on_mouse, &g_last_frame);
@@ -2086,6 +2095,9 @@ int main(int argc, char** argv)
         // DeepSORT 비동기 지연으로 인한 프레임 점프, to_ltrb() 칼만 예측값의
         // 순간 튐을 EMA로 감쇠시킨다. 새 ID가 처음 나타날 때는 초기화(직결),
         // 이후 프레임부터 EMA 적용. ID가 사라지면 버퍼에서 제거.
+        cv::Mat frame_raw;
+        if (dual_bbox_view)
+            frame_raw = frame.clone();
         {
             std::set<std::string> active_ids;
             for (const auto& obj : objs)
@@ -2171,6 +2183,19 @@ int main(int argc, char** argv)
                 else
                     ++it;
             }
+        }
+        if (dual_bbox_view)
+        {
+            for (const auto& obj : objs)
+            {
+                cv::Rect raw_r;
+                if (!compute_rect_from_obj(obj, W, H, raw_r)) continue;
+                cv::rectangle(frame_raw, raw_r, cv::Scalar(0, 255, 0), 2);
+                cv::putText(frame_raw, obj.id.c_str(), cv::Point(raw_r.x, std::max(0, raw_r.y - 5)),
+                            cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 1);
+            }
+            cv::putText(frame_raw, "RAW (no EMA smooth)", cv::Point(10, H - 12),
+                        cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(0, 255, 0), 1);
         }
 
         // selected rect
@@ -2569,6 +2594,8 @@ int main(int argc, char** argv)
             std::cerr << "[FPS] " << fps << "\n";
         }
 
+        if (dual_bbox_view)
+            cv::imshow("camera_RBF_raw", frame_raw);
         cv::imshow("camera_RBF", frame);
         int key = cv::waitKey(1) & 0xFF;
         if (key == 27 || key == 'q')
