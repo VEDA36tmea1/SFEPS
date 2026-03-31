@@ -1098,6 +1098,26 @@ QString MainWindow::resolveStableIdFromXmlId(const QString &xmlId) const
     return {};
 }
 
+QString MainWindow::currentTrackedXmlForEnd() const
+{
+#ifdef CAMERA_RBF_QT_MODE
+    QMutexLocker lk(&m_mutex);
+    // 1순위: 수동 추적 중이면, 수동으로 선택한 stable(S_xxx) → xmlId 매핑 사용
+    if (m_manualTracking && !m_manualTrackDisplayId.isEmpty()) {
+        const auto it = m_stableToXmlId.find(m_manualTrackDisplayId);
+        if (it != m_stableToXmlId.end() && !it.value().isEmpty())
+            return it.value();
+        // 매핑이 없어도, stickyXml이 있으면 그걸로라도 END를 보낸다.
+        if (!m_fraudLaserStickyXmlId.isEmpty())
+            return m_fraudLaserStickyXmlId;
+    }
+    // 2순위: 자동(fraud) sticky 대상이 있으면 그 XML ID 사용
+    if (!m_fraudLaserStickyXmlId.isEmpty())
+        return m_fraudLaserStickyXmlId;
+#endif
+    return {};
+}
+
 void MainWindow::trackByXmlId(const QString &xmlId,
                               float fallbackL, float fallbackT,
                               float fallbackR, float fallbackB)
@@ -1179,9 +1199,9 @@ void MainWindow::clearRbfTarget()
 {
 #ifdef CAMERA_RBF_QT_MODE
     // 수동 Untrack 버튼으로 호출되는 경우엔,
-    // 수동 종료 이후에도 "이미 잡혀있는 fraud sticky target"을 다시 이어서 추적할 수 있게
-    // m_fraudLaserSticky*는 유지한다.
+    // Untrack 시에는 sticky(자동 레이저 대상)도 반드시 끊어서 레이저가 재점화되지 않게 한다.
     const bool wasManualTracking = m_manualTracking;
+    QString stickyXmlToStop;
     rbfqt_set_tracked_nativeid("");
     rbfqt_clear_target();
     g_qtPoseWorker.clearAim();
@@ -1190,8 +1210,8 @@ void MainWindow::clearRbfTarget()
     m_manualTrackDisplayId.clear();
     {
         QMutexLocker lk(&m_mutex);
-        if (!wasManualTracking) {
-            // 자동 추적 중지(clearRbfTarget이 간접 호출되는 경우)엔 sticky도 정리한다.
+        if (wasManualTracking) {
+            stickyXmlToStop = m_fraudLaserStickyXmlId;
             m_fraudLaserStickyXmlId.clear();
             m_fraudLaserStickyStableId.clear();
         }
@@ -1201,6 +1221,10 @@ void MainWindow::clearRbfTarget()
         m_trackMissingFrames = 0;
         m_trackRefStableId.clear();
         m_trackRefXmlId.clear();
+    }
+    // manual Untrack이면, sticky 끊김을 서버/라즈베리 모두에 TRACK_END로 통지한다.
+    if (wasManualTracking && !stickyXmlToStop.isEmpty()) {
+        emit laserTrackStopped(stickyXmlToStop);
     }
     // UI 즉시 off (onPwmTick 다음 tick을 기다리지 않고 바로 사라지게)
     if (m_poseAimValid) {
@@ -1479,6 +1503,13 @@ void MainWindow::onPwmTick()
     const int W = m_frameW.load() > 0 ? m_frameW.load() : 1920;
     const int H = m_frameH.load() > 0 ? m_frameH.load() : 1080;
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    // SFEPS_POSE_ENABLE=0 이면 pose worker 완전 OFF, bbox-only 모드
+    static bool sPoseEnabled = []() {
+        bool ok = false;
+        const int v = qEnvironmentVariableIntValue("SFEPS_POSE_ENABLE", &ok);
+        // 환경변수 없으면 기본 ON, 값이 0일 때만 OFF
+        return !ok || v != 0;
+    }();
     auto setPoseOverlay = [this](double u, double v, bool valid) {
         const bool changed = (m_poseAimValid != valid)
                              || (std::fabs(m_poseAimU - u) > 1e-3)
@@ -1636,8 +1667,8 @@ void MainWindow::onPwmTick()
             // ── pose aim 오버라이드 주입 (Qt 모드) ─────────────────────────────
             // pose는 최신 프레임에서 sticky target bbox를 padding crop 하여 어깨 랜드마크를 잡는다.
             // 결과가 stale 하지 않으면 rbfqt_compute_pwm에서 bbox_cx/bbox_cy 대신 이 값을 사용한다.
-            {
-                const int kPoseEveryTicks = 5;          // 33ms 타이머 기준 약 165ms 간격
+            if (sPoseEnabled) {
+                const int kPoseEveryTicks = 1;          // 33ms 타이머 기준 약 165ms 간격
                 const qint64 kPoseStaleMs = 800;       // pose 결과가 너무 오래되면 무시
                 const double kPosePadRatio = 0.15;     // sel bbox 대비 crop padding
                 const int kPoseJpegQuality = 80;
@@ -1764,6 +1795,21 @@ void MainWindow::onPwmTick()
                         }
                         lastPoseLogMs = now;
                     }
+                }
+            } else {
+                // pose 비활성 모드: 항상 bbox 기반으로만 조준
+                if (stickyBoxFound) {
+                    const double bboxCx = (stickyX + stickyW * 0.5) * W;
+                    const double bboxCy = (stickyY + stickyH * m_pwmRatio) * H;
+                    g_qtPoseWorker.clearAim();
+                    rbfqt_set_pose_aim(0.0f, 0.0f, 0);
+                    setPoseOverlay(0.0, 0.0, false);
+                    setRbfTarget(bboxCx, bboxCy, true);
+                } else {
+                    g_qtPoseWorker.clearAim();
+                    rbfqt_set_pose_aim(0.0f, 0.0f, 0);
+                    setPoseOverlay(0.0, 0.0, false);
+                    setRbfTarget(0.0, 0.0, false);
                 }
             }
 
@@ -1924,7 +1970,7 @@ void MainWindow::onPwmTick()
             const double bboxCy = (by + bh * m_pwmRatio) * H;
             setRbfTarget(bboxCx, bboxCy, true);
 
-            if (sManualPoseTick % kPoseEveryTicks == 0) {
+            if (sPoseEnabled && (sManualPoseTick % kPoseEveryTicks == 0)) {
                 cv::Mat frameCopy;
                 {
                     std::lock_guard<std::mutex> lk(g_latestFrameMutex);
@@ -1960,9 +2006,9 @@ void MainWindow::onPwmTick()
 
             double aimU = 0.0, aimV = 0.0;
             qint64 aimMs = 0;
-            const bool gotAim = g_qtPoseWorker.getAim(aimU, aimV, aimMs);
+            const bool gotAim = sPoseEnabled ? g_qtPoseWorker.getAim(aimU, aimV, aimMs) : false;
             const bool staleOk = gotAim && (now - aimMs) <= kPoseStaleMs;
-            if (staleOk) {
+            if (sPoseEnabled && staleOk) {
                 // bbox 대비 급점프 pose aim 차단 + EMA 스무딩
                 const double kPoseJumpBasePx = 16.0;
                 const double kPoseJumpScale = 2.5;
@@ -2012,7 +2058,7 @@ void MainWindow::onPwmTick()
             }
             static qint64 lastManualPoseLogMs = 0;
             if (now - lastManualPoseLogMs > 1000) {
-                if (gotAim) {
+                if (sPoseEnabled && gotAim) {
                     const qint64 poseRttMs = g_qtPoseWorker.getPoseRttMs();
                     qDebug() << "[PoseAim][manual] aim=(" << aimU << "," << aimV
                              << ") ageMs=" << (now - aimMs) << " poseRttMs=" << poseRttMs

@@ -93,9 +93,15 @@ if (-not (Test-Path $caPath)) {
 # 1) Windows를 ESP8266_AP에 먼저 연결해야 함 (Qt가 Wi-Fi 연결 자체를 수행하진 않음)
 # 2) ESP에서 TCP 서버를 열어야 함 (예: AT+CIPSERVER=1,5566)
 
-# pose(어깨) 기반 조준점: shoulder_y + (bboxBottom - shoulder_y) * ratio
+# ── Pose(어깨) 기반 조준점 및 사용 여부 ────────────────────────────────────────────
 # 0.0 → 어깨 중심, 1.0 → sticky bbox bottom
-[Environment]::SetEnvironmentVariable("SFEPS_POSE_DOWN_RATIO", "0.30", "Process")
+[Environment]::SetEnvironmentVariable("SFEPS_POSE_DOWN_RATIO", "0.25", "Process")
+
+# Pose 사용 여부 토글 (true: MediaPipe 포즈 사용, false: 완전 OFF, bbox만 사용)
+# 필요할 때 여기만 true/false로 바꾸고 스크립트를 다시 실행하면 됨.
+$usePose = $true
+$poseEnable = if ($usePose) { "1" } else { "0" }
+[Environment]::SetEnvironmentVariable("SFEPS_POSE_ENABLE", $poseEnable, "Process")
 
 # Qt/standalone 공통: 지연 예측(칼만 predict_ms)
 # 메타데이터/프레임 지연이 크면 값을 올리세요.

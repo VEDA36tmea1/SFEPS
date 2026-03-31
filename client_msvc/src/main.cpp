@@ -210,10 +210,17 @@ int main(int argc, char *argv[]) {
 
   // 앱 종료 시: 현재 추적 중인 객체가 있으면 TRACK_END 한 번 보내고 정리
   QObject::connect(&app, &QCoreApplication::aboutToQuit, [&]() {
-      const QString xmlId = fraudManager.activeTrackingId();
+      QString xmlId;
+#ifdef SFEPS_HAVE_OPENCV
+      // 우선 videoBackend가 알고 있는 현재 추적 대상(XML) 기준으로 종료
+      xmlId = videoBackend.currentTrackedXmlForEnd();
+#endif
+      // fallback: FraudManager의 activeTrackingId (자동 fraud 추적용)
+      if (xmlId.isEmpty())
+          xmlId = fraudManager.activeTrackingId();
       if (xmlId.isEmpty())
           return;
-      qDebug() << "[Main] aboutToQuit: sending TRACK_END for activeTrackingId=" << xmlId;
+      qDebug() << "[Main] aboutToQuit: sending TRACK_END for xmlId=" << xmlId;
       positionManager.sendPositionCommand(QStringLiteral("TRACK_END|%1").arg(xmlId));
       pwmTransmitter.sendTrackEnd(xmlId);
   });
