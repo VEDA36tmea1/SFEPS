@@ -65,26 +65,18 @@
 └─────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────┐
-│  Windows PC (Qt 관제 클라이언트)                                     │
+│  Windows PC (Qt 관제 + 카메라 분석 통합 노드)                         │
 │                                                                      │
-│  client_msvc/                                                        │
-│  ├── VoiceManager  (QAudioSource → TCP 5556 스트리밍)               │
-│  ├── FraudManager  (부정승차 알림 수신)                              │
-│  ├── PositionManager (레이저 좌표 TCP 5565 송신)                     │
-│  └── MainWindow    (Qt GUI)                                          │
-└─────────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────────┐
-│  Ubuntu PC (카메라 분석 노드)                                        │
-│                                                                      │
-│  Camera/get_metadata/ (camera_RBF)                                   │
-│  ├── ONVIF 메타데이터 수신 (XML → ParsedMetadataObject)             │
-│  ├── RTSP 스트림 캡처 (GStreamer/FFmpeg)                             │
-│  ├── DeepSORT Python 워커 (ID 안정화)                               │
-│  ├── MediaPipe Pose 워커 (어깨 랜드마크 → 1200mm 지점)             │
-│  ├── RBF TPS 보간 (픽셀→PWM)                                        │
-│  ├── KalmanBbox2D (카메라 딜레이 보상 예측)                         │
-│  └── TCP → 서버 position_service (SET_PWM 전송)                     │
+│  Client/src/videobackend.cpp + camera_RBF(Qt mode)                  │
+│  ├── ONVIF 메타데이터 수신 (RTSPClient/XMLParser)                    │
+│  ├── rbfqt_process_metadata(...) 로 tracker/ID 갱신                  │
+│  ├── rbfqt_compute_pwm(...) 33ms 주기 호출                           │
+│  ├── DeepSORT/IdStabilizer/KalmanBbox2D (camera_RBF 내부 로직)      │
+│  ├── QtPoseWorker + MediaPipe (어깨 랜드마크 기반 aim 계산)          │
+│  ├── VoiceManager (QAudioSource → TCP 5556 스트리밍)                 │
+│  ├── FraudManager (부정승차 알림 수신)                               │
+│  ├── PositionManager (레이저 좌표 TCP 5565 송신)                      │
+│  └── MainWindow (Qt GUI)                                             │
 └─────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -104,21 +96,23 @@
 ┌─────────────────────────────────────────────────────────────────────┐
 │  ONVIF IP 카메라                                                      │
 │  RTSP 스트림 + 메타데이터(ONVIF WS Event)                            │
-│  → Ubuntu PC camera_RBF 프로세스로 전달                             │
+│  → Windows Qt Client(videobackend + camera_RBF Qt mode)로 전달      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 ### SW 레이어 다이어그램
 ```
-[Qt 클라이언트]         [Ubuntu 카메라 분석]         [라즈베리파이 서버]
-     │                         │                              │
-  VoiceManager             camera_RBF.cpp                rfid_monitor
-  QAudioSource ──TCP 5556──► audio_service             audio_service
-  PositionManager──TCP 5565─►position_service◄──────── (libalsa)
-  FraudManager              SET_PWM 명령                alert_service
-     │                         │                              │
-[Qt WebSocket]          [STM32 ESP-8266]             [RC522 커널 드라이버]
-  GUI 관제화면          [서보 PWM 제어]              /dev/rc522 → UDS
+[Windows Qt Client(통합)]                  [라즈베리파이 서버]
+        │                                          │
+  videobackend.cpp                                 rfid_monitor
+  + camera_RBF(Qt mode)                            audio_service
+  (rbfqt_process_metadata / compute_pwm)           alert_service
+        │                                          │
+  VoiceManager ───────── TCP 5556 ────────────────► audio_service
+  PositionManager ────── TCP 5565 ────────────────► position_service
+        │
+[STM32 ESP-8266]
+  [서보 PWM 제어]
 ```
 
 ---
@@ -343,32 +337,27 @@ if (snd_pcm_writei(...) == -EPIPE) {
 ONVIF 카메라
     │ RTSP 스트림 + 메타데이터 XML
     ▼
-camera_RBF.cpp (Ubuntu)
+Windows Qt Client (Client/src/videobackend.cpp)
     │
-    ├── ONVIF bbox 파싱 (ParsedMetadataObject)
-    │      left, top, right, bottom (normalized 0~1)
+    ├── ONVIF bbox 파싱 (RTSPClient + XMLParser)
+    │      → applyNativeDetections(...)
+    │      → rbfqt_process_metadata(humans, W, H)
     │
-    ├── DeepSORT Python 워커 (비동기)
-    │      JPEG + bbox → Python 프로세스 pipe
-    │      → stable track_id 반환 (ID 흔들림 방지)
+    ├── camera_RBF Qt mode 내부 로직
+    │      DeepSORT + IdStabilizer + KalmanBbox2D
     │
-    ├── IdStabilizer (Hungarian 알고리즘)
-    │      IoU + 코사인 유사도 → stable_id 매핑
-    │
-    ├── KalmanBbox2D (카메라 딜레이 보상)
-    │      update(cx, cy, w, h, dt)  ← 매 프레임
-    │      predict(dt_ahead=300ms)   ← 카메라 딜레이만큼 예측
-    │      cx + vx*dt, cy + vy*dt
-    │
-    ├── MediaPipe Pose 워커 (비동기, 3프레임마다)
-    │      어깨 landmark (11=L, 12=R) 중심 → shoulder_x, shoulder_y
+    ├── QtPoseWorker (videobackend 내 비동기 워커)
+    │      mediapipe_pose_worker.py 호출
+    │      어깨 landmark(11,12) 기반 aim 계산
     │      target_v = shoulder_y + (bbox_bottom - shoulder_y) × ratio
     │
-    ├── RBF TPS 보간 (Z=1200mm 캘리브레이션 기반)
-    │      pixel (u, v) → rbf_pan.eval(u,v) → PWM pan
-    │                   → rbf_tilt.eval(u,v) → PWM tilt
+    ├── rbfqt_compute_pwm(now,W,H,&pan,&tilt) (33ms tick)
+    │      RBF TPS 보간 + 예측 + 스무딩
     │
-    └── SET_PWM,PAN=...,TILT=... → TCP 5555 → ESP8266 → STM32 USART1
+    └── emit pwmSetRequested(pan, tilt)
+                 │
+                 ├── TCP 5565: server position_service
+                 └── TCP 5555: ESP8266 → STM32 USART1
                                                               │
                                                     servo_driver.c
                                                     TIM1(PA8) Y축
@@ -469,7 +458,8 @@ target_v = bbox_top + bbox_height * ratio  # 개인별 1200mm 지점
                        rc522_uds_daemon.cpp (UDS 데몬)  Server_examples/
                        rfid_monitor.cpp (서버 수신)      server/src/modules/
                        
-③ 카메라 분석        ← camera_RBF.cpp (ONVIF bbox)    Camera/get_metadata/
+③ 카메라 분석        ← videobackend.cpp + rbfqt        Client/src/
+                       camera_RBF.cpp(Qt mode 라이브러리) Camera/get_metadata/
                        XMLParser.cpp (메타데이터 파싱)
                        DeepSORT (ID 안정화)
                        IdStabilizer (Hungarian 매핑)
