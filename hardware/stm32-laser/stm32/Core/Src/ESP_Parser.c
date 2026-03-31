@@ -2,10 +2,12 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
-static esp_laser_set_fn s_laser_set = NULL;
-static esp_tcp_send_fn s_tcp_send = NULL;
-static esp_dbg_tx_fn s_dbg_tx = NULL;
+static esp_laser_set_fn  s_laser_set = NULL;
+static esp_tcp_send_fn   s_tcp_send  = NULL;
+static esp_dbg_tx_fn     s_dbg_tx    = NULL;
+static esp_servo_set_fn  s_servo_set = NULL;
 
 static void trim_left(const char **p)
 {
@@ -37,9 +39,36 @@ static void copy_reason(char *out, size_t out_sz, const char *line)
   if (!r)
     return;
   r += strlen("REASON=");
-
-  /* REASON은 보통 '|' 앞까지 */
   copy_until_stop(out, out_sz, r, '|');
+}
+
+/* "KEY=<value>" 파싱 헬퍼: value를 정수(us)로 반환, 실패 시 def 반환 */
+static uint32_t parse_key_uint(const char *line, const char *key, uint32_t def)
+{
+  const char *p = strstr(line, key);
+  if (!p)
+    return def;
+  p += strlen(key);
+  char *end = NULL;
+  unsigned long v = strtoul(p, &end, 10);
+  if (end == p)
+    return def;
+  return (uint32_t)v;
+}
+
+/* PWM 범위 클램프 (800~2200 us) */
+#ifndef PWM_US_MIN
+#define PWM_US_MIN 800u
+#endif
+#ifndef PWM_US_MAX
+#define PWM_US_MAX 2200u
+#endif
+
+static uint32_t clamp_us(uint32_t v)
+{
+  if (v < PWM_US_MIN) return PWM_US_MIN;
+  if (v > PWM_US_MAX) return PWM_US_MAX;
+  return v;
 }
 
 void ESP_Parser_SetCallbacks(esp_parser_callbacks_t *cb)
@@ -47,8 +76,9 @@ void ESP_Parser_SetCallbacks(esp_parser_callbacks_t *cb)
   if (!cb)
     return;
   s_laser_set = cb->laser_set;
-  s_tcp_send = cb->tcp_send;
-  s_dbg_tx = cb->dbg_tx;
+  s_tcp_send  = cb->tcp_send;
+  s_dbg_tx    = cb->dbg_tx;
+  s_servo_set = cb->servo_set;
 }
 
 uint8_t ESP_Parser_HandleIpdLine(const char *line)
@@ -64,14 +94,12 @@ uint8_t ESP_Parser_HandleIpdLine(const char *line)
   char obj_id[64];
   char reason[96];
 
-  /* TRACK_START|<object_id> */
-  /* "TRACK_START|" length = 12 */
+  /* ── TRACK_START|<object_id> ─────────────────────────────────────────── */
   if (strncmp(p, "TRACK_START|", 12) == 0)
   {
     const char *id_p = p + 12;
     copy_until_stop(obj_id, sizeof(obj_id), id_p, '|');
 
-    /* 안전하게 아이디 파싱이 안 되면 그냥 무시 */
     if (obj_id[0] == '\0')
       return 1;
 
@@ -81,29 +109,47 @@ uint8_t ESP_Parser_HandleIpdLine(const char *line)
     if (s_tcp_send)
     {
       char resp[128];
-      /* 서버 응답 형식은 예시이며(ACK 접두), 서버가 다른 포맷을 요구하면 여기서만 수정하면 됩니다. */
       snprintf(resp, sizeof(resp), "TRACK_START_ACK|%s\n", obj_id);
       s_tcp_send(resp);
     }
     if (s_dbg_tx)
     {
-      char line[160];
-      snprintf(line, sizeof(line), "[TRACK] START id=%s (PB0 ON if not manual)\r\n", obj_id);
-      s_dbg_tx(line);
+      char dbg[160];
+      snprintf(dbg, sizeof(dbg), "[TRACK] START id=%s → laser ON\r\n", obj_id);
+      s_dbg_tx(dbg);
     }
     return 1;
   }
 
-  /* TRACK_POS|<object_id>|L=...|T=...|... */
-  /* "TRACK_POS|" 길이 = 10 */
-  if (strncmp(p, "TRACK_POS|", 10) == 0)
+  /* ── SET_PWM,PAN=<us>,TILT=<us> ──────────────────────────────────────── */
+  /* Qt PwmTransmitter 표준 포맷: "SET_PWM,PAN=1290,TILT=1390\n"           */
+  if (strncmp(p, "SET_PWM", 7) == 0)
   {
-    /* 지금 단계에서는 ACK/서보 구동은 요청사항이 아니므로 "인식만" 처리
-     * (매 프레임 호출되므로 USART2 디버그 출력은 하지 않음 — 원문은 WiFi 에코로 확인) */
+    uint32_t pan  = parse_key_uint(p, "PAN=",  1500u);
+    uint32_t tilt = parse_key_uint(p, "TILT=", 1500u);
+    pan  = clamp_us(pan);
+    tilt = clamp_us(tilt);
+
+    if (s_servo_set)
+      s_servo_set(pan, tilt);   /* PAN → PA0/TIM2_CH1, TILT → PA8/TIM1_CH1 */
+
+    if (s_dbg_tx)
+    {
+      char dbg[80];
+      snprintf(dbg, sizeof(dbg), "[PWM] PAN=%lu TILT=%lu us\r\n",
+               (unsigned long)pan, (unsigned long)tilt);
+      s_dbg_tx(dbg);
+    }
     return 1;
   }
 
-  /* TRACK_END|<object_id>|REASON=<...> */
+  /* ── TRACK_POS|<id>|... (매 프레임 수신, 처리 없음 — 인식만) ────────── */
+  if (strncmp(p, "TRACK_POS|", 10) == 0)
+  {
+    return 1;
+  }
+
+  /* ── TRACK_END|<object_id>|REASON=<...> ──────────────────────────────── */
   if (strncmp(p, "TRACK_END|", 10) == 0)
   {
     const char *id_p = p + 10;
@@ -117,25 +163,26 @@ uint8_t ESP_Parser_HandleIpdLine(const char *line)
     {
       char resp[160];
       if (reason[0] != '\0')
-        snprintf(resp, sizeof(resp), "TRACK_END_ACK|%s|REASON=%s\n", obj_id[0] ? obj_id : "UNKNOWN", reason);
+        snprintf(resp, sizeof(resp), "TRACK_END_ACK|%s|REASON=%s\n",
+                 obj_id[0] ? obj_id : "UNKNOWN", reason);
       else
-        snprintf(resp, sizeof(resp), "TRACK_END_ACK|%s\n", obj_id[0] ? obj_id : "UNKNOWN");
+        snprintf(resp, sizeof(resp), "TRACK_END_ACK|%s\n",
+                 obj_id[0] ? obj_id : "UNKNOWN");
       s_tcp_send(resp);
     }
     if (s_dbg_tx)
     {
-      char line[200];
+      char dbg[200];
       if (reason[0] != '\0')
-        snprintf(line, sizeof(line), "[TRACK] END id=%s REASON=%s (PB0 OFF if not manual)\r\n",
+        snprintf(dbg, sizeof(dbg), "[TRACK] END id=%s REASON=%s → laser OFF\r\n",
                  obj_id[0] ? obj_id : "UNKNOWN", reason);
       else
-        snprintf(line, sizeof(line), "[TRACK] END id=%s (PB0 OFF if not manual)\r\n",
+        snprintf(dbg, sizeof(dbg), "[TRACK] END id=%s → laser OFF\r\n",
                  obj_id[0] ? obj_id : "UNKNOWN");
-      s_dbg_tx(line);
+      s_dbg_tx(dbg);
     }
     return 1;
   }
 
   return 0;
 }
-

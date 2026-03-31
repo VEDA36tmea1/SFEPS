@@ -126,35 +126,61 @@ void PwmTransmitter::tryReconnect()
     doConnect();
 }
 
+// ── 공통 raw 전송 헬퍼 ──────────────────────────────────────────────────────
+void PwmTransmitter::sendRaw(const QByteArray &data)
+{
+    if (!m_enabled) return;
+
+    if (m_mode == Mode::RaspberryPi) {
+        if (!m_tcpSocket ||
+            m_tcpSocket->state() != QAbstractSocket::ConnectedState)
+            return;
+        m_tcpSocket->write(data);
+    } else {
+        if (!m_udpSocket || m_host.isEmpty()) return;
+        m_udpSocket->writeDatagram(data, QHostAddress(m_host),
+                                   static_cast<quint16>(m_port));
+    }
+}
+
+void PwmTransmitter::sendTrackStart(const QString &objectId)
+{
+    const QByteArray data =
+        QStringLiteral("TRACK_START|%1\n").arg(objectId).toUtf8();
+    qDebug() << "[PwmTransmitter] →" << data.trimmed();
+    sendRaw(data);
+}
+
+void PwmTransmitter::sendTrackEnd(const QString &objectId)
+{
+    const QByteArray data =
+        QStringLiteral("TRACK_END|%1\n").arg(objectId).toUtf8();
+    qDebug() << "[PwmTransmitter] →" << data.trimmed();
+    sendRaw(data);
+}
+
 void PwmTransmitter::sendPwm(int pan, int tilt)
 {
     if (!m_enabled) return;
 
+    if (m_mode == Mode::RaspberryPi &&
+        (!m_tcpSocket || m_tcpSocket->state() != QAbstractSocket::ConnectedState)) {
+        static qint64 lastWarnMs = 0;
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (now - lastWarnMs > 5000) {
+            qWarning() << "[PwmTransmitter] Not connected, dropping PWM."
+                       << "(서버 실행: python3 set_pwm_server.py --port" << m_port << ")";
+            lastWarnMs = now;
+        }
+        return;
+    }
+    if (m_mode == Mode::Esp8266 && (!m_udpSocket || m_host.isEmpty())) {
+        qWarning() << "[PwmTransmitter] ESP8266 UDP not configured";
+        return;
+    }
+
     const QByteArray data =
         QStringLiteral("SET_PWM,PAN=%1,TILT=%2\n").arg(pan).arg(tilt).toUtf8();
-
-    if (m_mode == Mode::RaspberryPi) {
-        if (!m_tcpSocket ||
-            m_tcpSocket->state() != QAbstractSocket::ConnectedState) {
-            static qint64 lastWarnMs = 0;
-            const qint64 now = QDateTime::currentMSecsSinceEpoch();
-            if (now - lastWarnMs > 5000) {
-                qWarning() << "[PwmTransmitter] Not connected to Raspberry Pi, dropping PWM."
-                           << "(Raspi에서 실행: python3 set_pwm_server.py --port" << m_port << ")";
-                lastWarnMs = now;
-            }
-            return;
-        }
-        m_tcpSocket->write(data);
-        emit pwmSent(pan, tilt);
-
-    } else {
-        if (!m_udpSocket || m_host.isEmpty()) {
-            qWarning() << "[PwmTransmitter] ESP8266 UDP not configured";
-            return;
-        }
-        m_udpSocket->writeDatagram(data, QHostAddress(m_host),
-                                   static_cast<quint16>(m_port));
-        emit pwmSent(pan, tilt);
-    }
+    sendRaw(data);
+    emit pwmSent(pan, tilt);
 }

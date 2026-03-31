@@ -4,9 +4,13 @@
         {
             "name": "default",
             "hidden": true,
+            "displayName": "ARM GCC + Ninja (STM32는 MSVC로 빌드 불가)",
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/build/${presetName}",
-		    "toolchainFile": "${sourceDir}/cmake/gcc-arm-none-eabi.cmake",
+            "toolchainFile": "${sourceDir}/cmake/gcc-arm-none-eabi.cmake",
+            "environment": {
+                "PATH": "C:/ST/STM32CubeCLT_1.21.0/Ninja/bin;$penv{PATH};C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja;C:/Program Files/Microsoft Visual Studio/2022/Professional/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja;C:/Program Files/Microsoft Visual Studio/2022/Enterprise/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja;$env{LOCALAPPDATA}/Microsoft/WinGet/Packages/Ninja-build.Ninja_Microsoft.Winget.Source_8wekyb3d8bbwe"
+            },
             "cacheVariables": {
             }
         },

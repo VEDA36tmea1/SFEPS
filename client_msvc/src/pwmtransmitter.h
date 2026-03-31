@@ -38,6 +38,10 @@ public:
 
 public slots:
     void sendPwm(int pan, int tilt);
+    // TRACK_START|<id>\n → STM32 레이저 ON
+    void sendTrackStart(const QString &objectId);
+    // TRACK_END|<id>\n   → STM32 레이저 OFF
+    void sendTrackEnd(const QString &objectId);
 
 signals:
     void connectedChanged();
@@ -66,6 +70,7 @@ private:
 
     void setupTcpSocket();
     void doConnect();
+    void sendRaw(const QByteArray &data);
 };
 
 #endif // PWMTRANSMITTER_H
