@@ -139,6 +139,8 @@ public:
     double rbfTargetU() const { return m_rbfTargetU; }
     double rbfTargetV() const { return m_rbfTargetV; }
     bool rbfTargetValid() const { return m_rbfTargetValid; }
+    // 앱 종료 등에서 TRACK_END를 보내기 위한 현재 추적 대상 XML ID 조회
+    QString currentTrackedXmlForEnd() const;
 #endif
 
 signals:
