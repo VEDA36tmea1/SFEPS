@@ -647,6 +647,8 @@ Page {
                                         if (videoDisplay.selectedDetection !== "") {
                                             var targetId = String(videoDisplay.selectedDetection)
                                             positionManager.sendPositionCommand("TRACK_START|" + targetId)
+                                            // STM32 레이저 ON
+                                            pwmTransmitter.sendTrackStart(targetId)
                                             // RBF PWM 자동 추적 시작 (매 tick bbox 갱신)
                                             videoBackend.trackByNativeId(targetId)
                                             currentTrackedId = targetId
@@ -685,6 +687,8 @@ Page {
                                     onClicked: {
                                         if (currentTrackedId !== "") {
                                             positionManager.sendPositionCommand("TRACK_END|" + currentTrackedId)
+                                            // STM32 레이저 OFF
+                                            pwmTransmitter.sendTrackEnd(currentTrackedId)
                                             // RBF PWM 추적 해제
                                             videoBackend.clearRbfTarget()
                                             currentTrackedId = ""
