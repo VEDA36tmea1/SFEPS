@@ -302,6 +302,13 @@ static void UART_NotifyAtSent(void)
   at_echo_until_tick = HAL_GetTick() + 2500u;
 }
 
+/* ESP_Parser → servo 콜백: PAN/TILT 순서를 Servo_SetAllUs(ch1=TILT, ch2=PAN)에 맞게 변환 */
+static void Esp_SetServoPwm(uint32_t pan_us, uint32_t tilt_us)
+{
+  Servo_SetAllUs(tilt_us, pan_us);   /* ch1=PA8(TILT/TIM1), ch2=PA0(PAN/TIM2) */
+  last_uart_tick = HAL_GetTick();    /* AUTO 모드 hold 타이머 갱신 */
+}
+
 /* IBVS PID 축 초기화 (PAN/TILT 공통) */
 static void IbvsPid_AxisInit(IbvsPidAxis *a, float kp, float ki, float kd, float initial_us)
 {
@@ -541,8 +548,11 @@ int main(void)
   {
     esp_parser_callbacks_t esp_cb = {0};
     esp_cb.laser_set = PB0_SetLaser;
-    esp_cb.tcp_send = Wifi_QueueTcpPayload;
-    esp_cb.dbg_tx = UART_TxPc; /* TRACK_START/END 수신 시 PC 시리얼에 [TRACK] ... 출력 */
+    esp_cb.tcp_send  = Wifi_QueueTcpPayload;
+    esp_cb.dbg_tx    = UART_TxPc;
+    /* SET_PWM,PAN=x,TILT=y → Servo_SetAllUs(tilt, pan)
+     * Servo_SetAllUs(ch1_us, ch2_us): ch1=TILT(PA8/TIM1), ch2=PAN(PA0/TIM2) */
+    esp_cb.servo_set = Esp_SetServoPwm;  /* PAN/TILT 순서 변환 래퍼 */
     ESP_Parser_SetCallbacks(&esp_cb);
   }
 

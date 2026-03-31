@@ -25,7 +25,8 @@ set(CMAKE_PROJECT_NAME stm32_laser)
 set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 
 # Core project settings
-project(${CMAKE_PROJECT_NAME})
+# C++를 사용하지 않으므로 CXX 탐색을 막아 Windows 환경 오류를 줄인다.
+project(${CMAKE_PROJECT_NAME} LANGUAGES C ASM)
 message("Build type: " ${CMAKE_BUILD_TYPE})
 
 
