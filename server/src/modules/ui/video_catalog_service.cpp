@@ -713,7 +713,6 @@ void run_video_catalog_service_impl(std::atomic<bool>& running,
         close_client(client.conn);
     }
     close_listener_bundle(listeners);
-    std::cout << "[main.cpp] [VideoCatalog] 종료." << std::endl;
 }
 
 }  // namespace app_services_impl

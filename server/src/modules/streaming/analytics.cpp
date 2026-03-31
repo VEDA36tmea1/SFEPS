@@ -1,10 +1,10 @@
 #include "analytics.h"
 
-#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <string_view>
 #include <vector>
@@ -18,7 +18,7 @@ namespace {
 constexpr const char* kAnalyticsInsertQuery =
     "INSERT INTO analytics_logs (object_id, card_age_text, age, is_fraud, created_at) "
     "VALUES (?, ?, ?, ?, NOW())";
-constexpr const char* kAnalyticsLogPrefix = "[analytics.cpp]";
+constexpr const char* kAnalyticsLogPrefix = "analytics.cpp";
 constexpr auto kOutlineRfidGracePeriod = std::chrono::seconds(1);
 
 struct ParsedEventForAnalytics {
@@ -102,6 +102,20 @@ std::vector<ParsedEventForAnalytics> parse_events_for_analytics(const std::strin
     return parsed_events;
 }
 
+void print_section_log(const std::string& title, const std::vector<std::string>& lines) {
+    std::cout << "[" << title << "]" << std::endl;
+    for (const auto& line : lines) {
+        std::cout << line << std::endl;
+    }
+    std::cout << "--------------------" << std::endl;
+}
+
+void log_enterline_trigger(const std::string& object_id) {
+    print_section_log("진입 감지", {
+        "ID   : " + object_id,
+    });
+}
+
 struct CardAgeDecision {
     const char* canonical_text;
     int bucket;
@@ -137,7 +151,7 @@ int age_bucket_from_age(std::string_view raw) {
     if (age_number < 0) return kAgeBucketUnknown;
 
     if (age_number < 20) return kAgeBucketYouth;
-    if (age_number < 60) return kAgeBucketAdult;
+    if (age_number < 65) return kAgeBucketAdult;
     return kAgeBucketSenior;
 }
 
@@ -151,11 +165,31 @@ CardAgeDecision evaluate_card_age(std::string_view raw) {
 }
 
 bool is_fraud_by_age_mismatch(const CardAgeDecision& card_age, std::string_view age) {
-    const int camera_bucket = age_bucket_from_age(age);
-    if (!card_age.known || camera_bucket == kAgeBucketUnknown) {
+    if (!card_age.known) {
         return true;
     }
-    return card_age.bucket != camera_bucket;
+
+    const int age_number = extract_first_number(age);
+    if (age_number >= 0) {
+        if (age_number < 20) {
+            return card_age.bucket != kAgeBucketYouth && card_age.bucket != kAgeBucketAdult;
+        }
+        if (age_number >= 65) {
+            return card_age.bucket != kAgeBucketAdult && card_age.bucket != kAgeBucketSenior;
+        }
+    }
+
+    const int camera_bucket = age_bucket_from_age(age);
+    if (camera_bucket == kAgeBucketUnknown) {
+        return true;
+    }
+    if (camera_bucket == kAgeBucketYouth) {
+        return card_age.bucket != kAgeBucketYouth && card_age.bucket != kAgeBucketAdult;
+    }
+    if (camera_bucket == kAgeBucketSenior) {
+        return card_age.bucket != kAgeBucketAdult && card_age.bucket != kAgeBucketSenior;
+    }
+    return card_age.bucket != kAgeBucketAdult;
 }
 
 std::string fraud_flag(bool is_fraud) {
@@ -163,26 +197,7 @@ std::string fraud_flag(bool is_fraud) {
 }
 
 std::string generate_weighted_random_age() {
-    static thread_local std::mt19937 rng(std::random_device{}());
-    static const std::vector<int> weighted_ages = [] {
-        std::vector<int> values;
-        for (int age = 10; age <= 70; ++age) {
-            int repeat = 1;
-            if (age >= 20 && age <= 45) {
-                repeat = 3;
-            } else if (age >= 60) {
-                repeat = 2;
-            }
-
-            for (int i = 0; i < repeat; ++i) {
-                values.push_back(age);
-            }
-        }
-        return values;
-    }();
-    std::uniform_int_distribution<std::size_t> distribution(0, weighted_ages.size() - 1);
-
-    return std::to_string(weighted_ages[distribution(rng)]);
+    return "33";
 }
 
 std::string normalize_rule_name(std::string_view raw) {
@@ -223,16 +238,10 @@ bool AnalyticsProcessor::prepareStatements() {
     if (conn == nullptr) return false;
 
     analyticsInsertStmt = mysql_stmt_init(conn);
-    if (analyticsInsertStmt == nullptr) {
-        std::cerr << "[Analytics DB Error] analytics_logs insert용 mysql_stmt_init() 실패"
-                  << std::endl;
-        return false;
-    }
+    if (analyticsInsertStmt == nullptr) return false;
 
     if (mysql_stmt_prepare(analyticsInsertStmt, kAnalyticsInsertQuery,
                            std::strlen(kAnalyticsInsertQuery)) != 0) {
-        std::cerr << "[Analytics DB Error] prepare 실패: "
-                  << mysql_stmt_error(analyticsInsertStmt) << std::endl;
         mysql_stmt_close(analyticsInsertStmt);
         analyticsInsertStmt = nullptr;
         return false;
@@ -252,14 +261,10 @@ bool AnalyticsProcessor::start() {
     if (running.load()) return true;
 
     conn = mysql_init(nullptr);
-    if (conn == nullptr) {
-        std::cerr << "[Analytics] mysql_init 실패." << std::endl;
-        return false;
-    }
+    if (conn == nullptr) return false;
 
     if (mysql_real_connect(conn, host.c_str(), user.c_str(), pass.c_str(), db.c_str(), 0, nullptr, 0) ==
         nullptr) {
-        std::cerr << "[Analytics] DB 연결 오류: " << mysql_error(conn) << std::endl;
         mysql_close(conn);
         conn = nullptr;
         return false;
@@ -274,7 +279,6 @@ bool AnalyticsProcessor::start() {
 
     running = true;
     worker = std::thread(&AnalyticsProcessor::workerLoop, this);
-    std::cout << "[analytics.cpp] [Analytics] 시작됨." << std::endl;
     return true;
 }
 
@@ -308,7 +312,6 @@ void AnalyticsProcessor::stop() {
         mysql_close(conn);
         conn = nullptr;
     }
-    std::cout << "[analytics.cpp] [Analytics] 종료." << std::endl;
 }
 
 void AnalyticsProcessor::setTrackPosCallback(TrackPosCallback callback) {
@@ -389,12 +392,7 @@ void AnalyticsProcessor::pruneExpiredPendingLocked(std::chrono::steady_clock::ti
 
     if (expired == 0) return;
 
-    const std::uint64_t total_expired = dropped_pending_expired_count.fetch_add(expired) + expired;
-    if (should_sample(total_expired, drop_log_interval)) {
-        std::cout << "[analytics.cpp] [Drop] 만료된 pending object id 제거: 만료 수=" << expired
-                  << ", total_expired=" << total_expired
-                  << ", pending_remaining=" << pending_queue.size() << std::endl;
-    }
+    dropped_pending_expired_count.fetch_add(expired);
 }
 
 void AnalyticsProcessor::finalizePendingObjectLocked(
@@ -424,11 +422,7 @@ void AnalyticsProcessor::finalizePendingObjectLocked(
 
     if (q.size() >= max_queue_size) {
         q.pop();
-        const std::uint64_t dropped = ++dropped_queue_count;
-        if (should_sample(dropped, drop_log_interval)) {
-            std::cout << "[analytics.cpp] [Drop] analytics 큐 초과: 최대="
-                      << max_queue_size << ", dropped_count=" << dropped << std::endl;
-        }
+        ++dropped_queue_count;
     }
     q.push(record);
     should_notify_worker = true;
@@ -476,14 +470,6 @@ void AnalyticsProcessor::flushReadyAwaitingOutlinesLocked(
         awaiting_outline_queue.pop_front();
         finalizePendingObjectLocked(
             final_out, now, outbound_alerts, outbound_outline_decisions, should_notify_worker);
-
-        std::cout << "[analytics.cpp] ---------------- FLOW ----------------" << std::endl;
-        std::cout << "[analytics.cpp] [FLOW] ID=" << final_out.object_id << std::endl;
-        std::cout << "[analytics.cpp] [FLOW] 2. OUTLINE card_age_text="
-                  << final_out.card_age_text << " (유예 만료 확정), age=" << final_out.age
-                  << ", fraud=" << fraud_flag(final_out.is_fraud)
-                  << ", tag_time=" << final_out.outline_tag_time << std::endl;
-        std::cout << "[analytics.cpp] [FLOW] -------------------------------------" << std::endl;
     }
 }
 
@@ -507,6 +493,7 @@ void AnalyticsProcessor::pruneExpiredStateLocked(std::chrono::steady_clock::time
             ++it;
         }
     }
+
 }
 
 void AnalyticsProcessor::publishRaw(const std::string& raw) {
@@ -527,11 +514,12 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
 
     if (parsed_objects.empty() && parsed_events.empty()) return;
 
+    const auto now = std::chrono::steady_clock::now();
     std::size_t accepted_enter_count = 0;
     bool line_limit_hit = false;
     bool should_notify_worker = false;
-    const auto now = std::chrono::steady_clock::now();
     std::vector<std::string> outbound_alerts;
+    std::vector<std::string> outbound_enterline_ids;
     std::vector<TrackPosPayload> outbound_track_pos;
     std::vector<OutlineDecisionPayload> outbound_outline_decisions;
 
@@ -562,6 +550,18 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
             return info.left >= 0.0f && info.top >= 0.0f &&
                    info.right >= info.left && info.bottom >= info.top;
         };
+        const auto is_current_frame_object = [&](const LatestObjectInfo& info) {
+            return info.tag_time == tag_time;
+        };
+        const auto object_center = [](const LatestObjectInfo& info) {
+            const double center_x =
+                (info.x >= 0.0f) ? static_cast<double>(info.x)
+                                 : static_cast<double>(info.left + info.right) * 0.5;
+            const double center_y =
+                (info.y >= 0.0f) ? static_cast<double>(info.y)
+                                 : static_cast<double>(info.top + info.bottom) * 0.5;
+            return std::pair<double, double> {center_x, center_y};
+        };
         const auto is_source_in_use = [&](const std::string& source_object_id,
                                           const std::string& ignore_event_id) {
             if (source_object_id.empty()) return false;
@@ -576,11 +576,16 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
             out_source_object_id.clear();
             if (event_object_id.empty()) return false;
 
+            const LatestObjectInfo* reference_info = nullptr;
             const auto exact_it = latest_objects.find(event_object_id);
             if (exact_it != latest_objects.end() && has_valid_bbox(exact_it->second)) {
-                out_source_object_id = event_object_id;
-                bbox_aliases_by_event_id[event_object_id] = EventBBoxAlias {out_source_object_id, now};
-                return true;
+                reference_info = &exact_it->second;
+                if (is_current_frame_object(exact_it->second)) {
+                    out_source_object_id = event_object_id;
+                    bbox_aliases_by_event_id[event_object_id] =
+                        EventBBoxAlias {out_source_object_id, now};
+                    return true;
+                }
             }
 
             const auto alias_it = bbox_aliases_by_event_id.find(event_object_id);
@@ -588,37 +593,69 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
                 const auto latest_alias_it = latest_objects.find(alias_it->second.source_object_id);
                 if (latest_alias_it != latest_objects.end() && has_valid_bbox(latest_alias_it->second)) {
                     alias_it->second.updated_at = now;
-                    out_source_object_id = alias_it->second.source_object_id;
-                    return true;
+                    if (is_current_frame_object(latest_alias_it->second)) {
+                        out_source_object_id = alias_it->second.source_object_id;
+                        return true;
+                    }
+                    if (reference_info == nullptr) {
+                        reference_info = &latest_alias_it->second;
+                    }
                 }
             }
 
-            std::vector<std::string> candidates;
+            std::vector<std::pair<std::string, const LatestObjectInfo*>> candidates;
             candidates.reserve(parsed_objects.size());
             for (const auto& parsed_object : parsed_objects) {
                 if (parsed_object.id.empty()) continue;
                 const auto latest_it = latest_objects.find(parsed_object.id);
                 if (latest_it == latest_objects.end()) continue;
                 if (!has_valid_bbox(latest_it->second)) continue;
-                candidates.push_back(parsed_object.id);
+                if (!is_current_frame_object(latest_it->second)) continue;
+                candidates.push_back({parsed_object.id, &latest_it->second});
             }
             if (candidates.empty()) return false;
 
             std::string selected_source_object_id;
-            for (const auto& candidate_id : candidates) {
-                if (!is_source_in_use(candidate_id, event_object_id)) {
-                    selected_source_object_id = candidate_id;
-                    break;
+            if (reference_info != nullptr) {
+                const auto [ref_x, ref_y] = object_center(*reference_info);
+                double best_distance_sq = std::numeric_limits<double>::max();
+                for (const auto& candidate : candidates) {
+                    if (is_source_in_use(candidate.first, event_object_id)) continue;
+                    const auto [candidate_x, candidate_y] = object_center(*candidate.second);
+                    const double dx = candidate_x - ref_x;
+                    const double dy = candidate_y - ref_y;
+                    const double distance_sq = (dx * dx) + (dy * dy);
+                    if (distance_sq < best_distance_sq) {
+                        best_distance_sq = distance_sq;
+                        selected_source_object_id = candidate.first;
+                    }
                 }
-            }
-            if (selected_source_object_id.empty()) {
-                selected_source_object_id = candidates.front();
+                if (selected_source_object_id.empty()) {
+                    for (const auto& candidate : candidates) {
+                        const auto [candidate_x, candidate_y] = object_center(*candidate.second);
+                        const double dx = candidate_x - ref_x;
+                        const double dy = candidate_y - ref_y;
+                        const double distance_sq = (dx * dx) + (dy * dy);
+                        if (distance_sq < best_distance_sq) {
+                            best_distance_sq = distance_sq;
+                            selected_source_object_id = candidate.first;
+                        }
+                    }
+                }
+            } else {
+                for (const auto& candidate : candidates) {
+                    if (!is_source_in_use(candidate.first, event_object_id)) {
+                        selected_source_object_id = candidate.first;
+                        break;
+                    }
+                }
+                if (selected_source_object_id.empty()) {
+                    selected_source_object_id = candidates.front().first;
+                }
             }
 
             out_source_object_id = selected_source_object_id;
             bbox_aliases_by_event_id[event_object_id] = EventBBoxAlias {out_source_object_id, now};
-            std::cout << "[analytics.cpp] [BBoxAlias] event_id=" << event_object_id
-                      << " -> source_id=" << out_source_object_id << std::endl;
             return true;
         };
         const auto fill_bbox_from_source = [&](const std::string& source_object_id,
@@ -665,57 +702,51 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
             if (!event.is_active) continue;
 
             const std::string rule_name = normalize_rule_name(event.rule_name);
-            std::string object_id = trim_copy(event.object_id);
-            if (object_id.empty()) continue;
-            if (object_id.size() > kMaxObjectIdBytes) {
-                object_id.resize(kMaxObjectIdBytes);
+            std::string event_object_id = trim_copy(event.object_id);
+            if (event_object_id.empty()) continue;
+            if (event_object_id.size() > kMaxObjectIdBytes) {
+                event_object_id.resize(kMaxObjectIdBytes);
             }
 
             const bool is_outline_rule = (rule_name == outline_rule_name);
+            std::string source_object_id;
+            std::string tracked_object_id = event_object_id;
+            if (resolve_source_object_id(event_object_id, source_object_id) &&
+                !source_object_id.empty()) {
+                tracked_object_id = source_object_id;
+            }
 
             if (rule_name == enter_rule_name) {
                 if (accepted_enter_count >= max_lines_per_batch) {
                     line_limit_hit = true;
                     continue;
                 }
-                if (pending_object_ids.find(object_id) != pending_object_ids.end()) continue;
-                if (matched_objects.find(object_id) != matched_objects.end()) continue;
+                if (pending_object_ids.find(tracked_object_id) != pending_object_ids.end()) continue;
+                if (matched_objects.find(tracked_object_id) != matched_objects.end()) continue;
 
                 if (pending_queue.size() >= max_pending_size) {
                     const std::string dropped_id = pending_queue.front().object_id;
                     pending_queue.pop_front();
                     pending_object_ids.erase(dropped_id);
-
-                    const std::uint64_t dropped = ++dropped_pending_overflow_count;
-                    if (should_sample(dropped, drop_log_interval)) {
-                        std::cout << "[analytics.cpp] [Drop] pending object 큐 초과: 최대="
-                                  << max_pending_size << ", dropped_count=" << dropped << std::endl;
-                    }
+                    ++dropped_pending_overflow_count;
                 }
 
                 PendingObject pending;
-                pending.object_id = object_id;
+                pending.object_id = tracked_object_id;
                 pending.card_age_text = "0";
                 pending.age = generate_weighted_random_age();
                 pending.enter_tag_time = event.tag_time;
                 pending.is_fraud = true;
                 pending.created_at = now;
 
-                std::string source_object_id;
-                if (resolve_source_object_id(object_id, source_object_id)) {
+                if (!source_object_id.empty()) {
                     fill_bbox_from_source(source_object_id, pending);
                 }
 
                 pending_queue.push_back(std::move(pending));
-                pending_object_ids.insert(object_id);
+                pending_object_ids.insert(tracked_object_id);
+                outbound_enterline_ids.push_back(tracked_object_id);
                 ++accepted_enter_count;
-                std::cout << "[analytics.cpp] ---------------- FLOW ----------------" << std::endl;
-                std::cout << "[analytics.cpp] [FLOW] ID=" << object_id << std::endl;
-                std::cout << "[analytics.cpp] [FLOW] 1. ENTERLINE card_age_text=0 (카드값 대기), age="
-                          << pending_queue.back().age << ", tag_time=" << event.tag_time
-                          << std::endl;
-                std::cout << "[analytics.cpp] [FLOW] -------------------------------------"
-                          << std::endl;
                 continue;
             }
 
@@ -724,17 +755,17 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
             PendingObject final_out;
             bool found = false;
 
-            auto matched_it = matched_objects.find(object_id);
+            auto matched_it = matched_objects.find(tracked_object_id);
             if (matched_it != matched_objects.end()) {
                 final_out = matched_it->second;
                 matched_objects.erase(matched_it);
                 found = true;
             } else {
                 for (auto it = pending_queue.begin(); it != pending_queue.end(); ++it) {
-                    if (it->object_id == object_id) {
+                    if (it->object_id == tracked_object_id) {
                         final_out = *it;
                         pending_queue.erase(it);
-                        pending_object_ids.erase(object_id);
+                        pending_object_ids.erase(tracked_object_id);
                         found = true;
                         break;
                     }
@@ -742,11 +773,11 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
             }
 
             if (!found) {
-                const auto finalized_it = finalized_decisions.find(object_id);
+                const auto finalized_it = finalized_decisions.find(tracked_object_id);
                 if (finalized_it != finalized_decisions.end()) {
                     continue;
                 } else {
-                    final_out.object_id = object_id;
+                    final_out.object_id = tracked_object_id;
                     final_out.card_age_text = "0";
                     final_out.age = generate_weighted_random_age();
                     final_out.is_fraud = true;
@@ -755,12 +786,18 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
             }
 
             final_out.outline_tag_time = event.tag_time;
-            std::string source_object_id = final_out.source_object_id;
-            if (source_object_id.empty()) {
-                resolve_source_object_id(object_id, source_object_id);
+            if (final_out.source_object_id.empty() && !source_object_id.empty()) {
+                final_out.source_object_id = source_object_id;
             }
-            if (!source_object_id.empty()) {
-                fill_bbox_from_source(source_object_id, final_out);
+            if (final_out.source_object_id.empty()) {
+                std::string resolved_source_object_id;
+                if (resolve_source_object_id(event_object_id, resolved_source_object_id) &&
+                    !resolved_source_object_id.empty()) {
+                    final_out.source_object_id = resolved_source_object_id;
+                }
+            }
+            if (!final_out.source_object_id.empty()) {
+                fill_bbox_from_source(final_out.source_object_id, final_out);
             }
 
             const bool should_wait_for_late_rfid =
@@ -768,28 +805,11 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
             if (should_wait_for_late_rfid) {
                 final_out.created_at = now;
                 awaiting_outline_queue.push_back(final_out);
-                std::cout << "[analytics.cpp] ---------------- FLOW ----------------" << std::endl;
-                std::cout << "[analytics.cpp] [FLOW] ID=" << final_out.object_id << std::endl;
-                std::cout << "[analytics.cpp] [FLOW] 2. OUTLINE card_age_text=0 (RFID 후행 대기), age="
-                          << final_out.age << ", tag_time=" << final_out.outline_tag_time
-                          << std::endl;
-                std::cout << "[analytics.cpp] [FLOW] -------------------------------------"
-                          << std::endl;
                 continue;
             }
 
             finalizePendingObjectLocked(
                 final_out, now, outbound_alerts, outbound_outline_decisions, should_notify_worker);
-
-            std::cout << "[analytics.cpp] ---------------- FLOW ----------------" << std::endl;
-            std::cout << "[analytics.cpp] [FLOW] ID=" << final_out.object_id << std::endl;
-            std::cout << "[analytics.cpp] [FLOW] 2. OUTLINE card_age_text="
-                      << final_out.card_age_text
-                      << (final_out.card_age_text == "0" ? " (카드값 미전달)" : " (카드값 전달됨)")
-                      << ", age=" << final_out.age << ", fraud=" << fraud_flag(final_out.is_fraud)
-                      << ", tag_time=" << final_out.outline_tag_time << std::endl;
-            std::cout << "[analytics.cpp] [FLOW] -------------------------------------"
-                      << std::endl;
 
             if (final_out.is_fraud) {
                 ActiveFraudTrack& active_track = active_fraud_tracks[final_out.object_id];
@@ -825,13 +845,12 @@ void AnalyticsProcessor::publishRaw(const std::string& raw) {
     }
 
     if (line_limit_hit) {
-        const std::uint64_t dropped = ++dropped_line_limit_count;
-        if (should_sample(dropped, drop_log_interval)) {
-            std::cout << "[analytics.cpp] [Drop] human object id 제한 초과: 최대="
-                      << max_lines_per_batch << ", dropped_count=" << dropped << std::endl;
-        }
+        ++dropped_line_limit_count;
     }
 
+    for (const auto& object_id : outbound_enterline_ids) {
+        log_enterline_trigger(object_id);
+    }
     for (const auto& msg : outbound_alerts) {
         send_alert_to_clients(msg);
     }
@@ -857,9 +876,6 @@ void AnalyticsProcessor::onRfidRead(const std::string& card_age_text_raw) {
     const auto now = std::chrono::steady_clock::now();
     std::string paired_object_id;
     std::string paired_tag_time;
-    std::string paired_card_age_text;
-    std::string paired_age;
-    bool paired_is_fraud = false;
     bool paired_from_late_outline = false;
     bool should_notify_worker = false;
     std::vector<std::string> outbound_alerts;
@@ -893,9 +909,6 @@ void AnalyticsProcessor::onRfidRead(const std::string& card_age_text_raw) {
             pending.is_fraud = is_fraud_by_age_mismatch(card_age, pending.age);
             paired_object_id = pending.object_id;
             paired_tag_time = pending.enter_tag_time;
-            paired_card_age_text = pending.card_age_text;
-            paired_age = pending.age;
-            paired_is_fraud = pending.is_fraud;
             if (paired_from_late_outline && !pending.outline_tag_time.empty()) {
                 finalizePendingObjectLocked(
                     pending, now, late_outbound_alerts, late_outbound_outline_decisions,
@@ -921,27 +934,8 @@ void AnalyticsProcessor::onRfidRead(const std::string& card_age_text_raw) {
         return;
     }
 
-    std::cout << "[analytics.cpp] [Matcher] RFID 카드 매칭: object_id=" << paired_object_id
-              << ", card_age_text=" << paired_card_age_text << ", age=" << paired_age
-              << ", fraud=" << fraud_flag(paired_is_fraud) << ", tag_time=" << paired_tag_time
-              << std::endl;
-
-    if (paired_from_late_outline) {
-        std::cout << "[analytics.cpp] [Matcher] 지연 RFID 보정 완료: object_id=" << paired_object_id
-                  << ", outline_tag_time="
-                  << (late_outbound_outline_decisions.empty()
-                          ? ""
-                          : late_outbound_outline_decisions.front().tag_time)
-                  << std::endl;
-    }
-
     static std::uint64_t paired_count = 0;
     ++paired_count;
-    if (should_sample(paired_count, std::max<std::size_t>(1000, drop_log_interval))) {
-        std::cout << "[analytics.cpp] [Matcher] RFID enterline 매칭됨: object_id="
-                  << paired_object_id << ", card_age_text=" << card_age.canonical_text
-                  << ", paired_count=" << paired_count << std::endl;
-    }
     if (rfid_paired_callback && !paired_object_id.empty()) {
         rfid_paired_callback(paired_object_id, paired_tag_time);
     }
@@ -961,11 +955,7 @@ void AnalyticsProcessor::onRfidRead(const std::string& card_age_text_raw) {
 bool AnalyticsProcessor::insertAnalyticsRow(const FraudRecord& record) {
     if (conn == nullptr || analyticsInsertStmt == nullptr) return false;
 
-    if (mysql_stmt_reset(analyticsInsertStmt) != 0) {
-        std::cerr << "[Analytics DB Error] stmt reset 실패: "
-                  << mysql_stmt_error(analyticsInsertStmt) << std::endl;
-        return false;
-    }
+    if (mysql_stmt_reset(analyticsInsertStmt) != 0) return false;
 
     MYSQL_BIND params[4];
     std::memset(params, 0, sizeof(params));
@@ -994,17 +984,9 @@ bool AnalyticsProcessor::insertAnalyticsRow(const FraudRecord& record) {
     params[3].buffer = &fraud_value;
     params[3].is_unsigned = 0;
 
-    if (mysql_stmt_bind_param(analyticsInsertStmt, params) != 0) {
-        std::cerr << "[Analytics DB Error] stmt bind 실패: "
-                  << mysql_stmt_error(analyticsInsertStmt) << std::endl;
-        return false;
-    }
+    if (mysql_stmt_bind_param(analyticsInsertStmt, params) != 0) return false;
 
-    if (mysql_stmt_execute(analyticsInsertStmt) != 0) {
-        std::cerr << "[Analytics DB Error] stmt execute 실패: "
-                  << mysql_stmt_error(analyticsInsertStmt) << std::endl;
-        return false;
-    }
+    if (mysql_stmt_execute(analyticsInsertStmt) != 0) return false;
 
     return true;
 }
@@ -1027,12 +1009,7 @@ void AnalyticsProcessor::workerLoop() {
 
         for (const auto& record : batch) {
             if (!record.is_fraud) continue;
-
-            if (!insertAnalyticsRow(record)) {
-                std::cerr << "[Analytics DB Error] fraud row insert 실패: object_id="
-                          << record.object_id << ", card_age_text=" << record.card_age_text
-                          << std::endl;
-            }
+            insertAnalyticsRow(record);
         }
     }
 }

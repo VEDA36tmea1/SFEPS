@@ -132,9 +132,6 @@ void RfidMonitor::run_loop() {
             continue;
         }
 
-        std::cout << "[rfid_monitor.cpp] " << ">> [RFID] 데몬 연결 성공! 데이터 수신 대기 중..."
-                  << std::endl;
-
         char buffer[4096];
         std::string line_buffer;
 
@@ -176,9 +173,6 @@ void RfidMonitor::run_loop() {
                             std::string now = get_current_datetime();
                             (void)device_id;
                             (void)tag_timestamp;
-                            std::cout << "[rfid_monitor.cpp] " << ">>> [RFID 태그] UID: " << uid
-                                      << " (" << card_age_text << ") 시간: " << now << std::endl;
-
                             if (uid.empty() || card_age_text.empty()) {
                                 std::cerr << "[rfid_monitor.cpp] "
                                           << "[RFID 경고] 필수 필드 누락: uid_비었음="
@@ -218,5 +212,4 @@ void RfidMonitor::run_loop() {
         if (m_running) std::this_thread::sleep_for(std::chrono::seconds(1));
     }  // 바깥 while 끝
 
-    std::cout << "[rfid_monitor.cpp] [RFID] monitor 종료." << std::endl;
 }

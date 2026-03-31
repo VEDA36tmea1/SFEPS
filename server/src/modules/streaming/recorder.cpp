@@ -329,8 +329,6 @@ bool RTSPRecorder::connect_and_record() {
         return false;
     }
     
-    std::cout << "[recorder.cpp] " << "[System] Connected! Video Stream Index: " << video_stream_idx << std::endl;
-
     if (!open_output_file(input_ctx->streams[video_stream_idx]->codecpar)) return false;
 
     AVPacket pkt;
@@ -430,5 +428,4 @@ void RTSPRecorder::run() {
             waited += chunk;
         }
     }
-    std::cout << "[recorder.cpp] [Recorder] 종료." << std::endl;
 }
