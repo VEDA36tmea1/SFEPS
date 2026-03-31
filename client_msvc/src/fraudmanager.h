@@ -55,6 +55,10 @@ public slots:
     // PositionManager의 currentSubscribedIdChanged에 연결하여 추적 상태 동기화
     void setActiveTrackingId(const QString &id);
 
+public:
+    // 현재 추적 중인 객체 ID 조회 (빈 문자열이면 미추적)
+    QString activeTrackingId() const { return m_activeTrackingId; }
+
 private slots:
     void onReadyRead();
     void onConnected();

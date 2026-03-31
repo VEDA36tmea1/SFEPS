@@ -1224,6 +1224,25 @@ void MainWindow::setLaserTrackingEnabled(bool enabled)
     m_laserTrackingEnabled = enabled;
 #ifdef CAMERA_RBF_QT_MODE
     if (!enabled) {
+        // 자동(fraud) 추적 중이었다면, 토글 OFF 시 하드웨어/서버에 TRACK_END를 한 번 보내준다.
+        {
+            QString xmlToStop;
+            {
+                QMutexLocker lk(&m_mutex);
+                if (!m_manualTracking && !m_fraudLaserStickyXmlId.isEmpty()) {
+                    xmlToStop = m_fraudLaserStickyXmlId;
+                }
+            }
+            if (!xmlToStop.isEmpty()) {
+                // laserTrackStopped → PositionManager TRACK_END, PwmTransmitter TRACK_END
+                emit laserTrackStopped(xmlToStop);
+            }
+        }
+
+        // 토글 OFF 시에는 추적 관련 상태를 완전히 초기화해서,
+        // 다시 ON 하더라도 이전 타겟으로 자동 복귀하지 않도록 한다.
+        clearRbfTarget();
+
         // 레이저/pose 추정을 멈추되, rbfqt_set_tracked_nativeid 자체는 유지해
         // 토글을 다시 ON했을 때 즉시 SET_PWM 계산이 재개되게 한다.
         g_qtPoseWorker.clearAim();

@@ -202,7 +202,21 @@ int main(int argc, char *argv[]) {
                    }
 #endif
                    });
+
+  // 자동/수동 구분 없이 laserTrackStopped → 라즈베리파이에 TRACK_END 전달
+  QObject::connect(&videoBackend, &MainWindow::laserTrackStopped,
+                   &pwmTransmitter, &PwmTransmitter::sendTrackEnd);
 #endif
+
+  // 앱 종료 시: 현재 추적 중인 객체가 있으면 TRACK_END 한 번 보내고 정리
+  QObject::connect(&app, &QCoreApplication::aboutToQuit, [&]() {
+      const QString xmlId = fraudManager.activeTrackingId();
+      if (xmlId.isEmpty())
+          return;
+      qDebug() << "[Main] aboutToQuit: sending TRACK_END for activeTrackingId=" << xmlId;
+      positionManager.sendPositionCommand(QStringLiteral("TRACK_END|%1").arg(xmlId));
+      pwmTransmitter.sendTrackEnd(xmlId);
+  });
 
   const QString alertHost = env.value("FRAUD_SERVER_HOST", "192.168.0.101");
   const bool directStreamMode = parseEnvBool(env, "SFEPS_DIRECT_STREAM_MODE", false);
