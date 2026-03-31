@@ -116,11 +116,8 @@ void run_image_retention_cleanup_worker(std::atomic<bool>& running_flag,
                     if (age < retention_sec) continue;
 
                     const fs::path removed_path = entry.path();
-                    if (fs::remove(removed_path)) {
-                        std::cout << "[main.cpp] [" << log_key << "] removed=" << removed_path
-                                  << ", age_sec=" << age
-                                  << ", retention_sec=" << retention_sec << std::endl;
-                    }
+                    (void)age;
+                    if (fs::remove(removed_path)) {}
                 }
             }
         } catch (const std::exception&) {
@@ -135,7 +132,7 @@ void run_image_retention_cleanup_worker(std::atomic<bool>& running_flag,
             waited += chunk;
         }
     }
-    std::cout << "[main.cpp] [" << log_key << "] 종료." << std::endl;
+    (void)log_key;
 }
 } // namespace
 
@@ -197,7 +194,6 @@ void run_file_cleanup_worker(std::atomic<bool>& running_flag,
             waited += chunk;
         }
     }
-    std::cout << "[main.cpp] [VIDEO_RETENTION_CLEANUP] 종료." << std::endl;
 }
 
 void run_fraud_image_cleanup_worker(std::atomic<bool>& running_flag,

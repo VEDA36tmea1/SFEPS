@@ -81,6 +81,7 @@ release/
 # 개별 실행 파일 (예: Camera/get_metadata 빌드 산출물)
 Camera/get_metadata/app
 Camera/get_metadata/camera_client
+Camera/image_processing/camera_client
 Camera/image_processing/*.jpg
 Camera/get_metadata/camera_RBF
 Camera/get_metadata/src/*.png

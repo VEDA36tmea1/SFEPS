@@ -44,9 +44,6 @@ bool start_listener_bundle(ListenerBundle& bundle,
             }
             std::cerr << "[main.cpp] [" << service_tag << "] plaintext 리스너 비활성화."
                       << std::endl;
-        } else {
-            std::cout << "[main.cpp] [" << service_tag << "] plaintext 포트 리스닝 시작: "
-                      << plain_port << std::endl;
         }
     }
 
@@ -67,9 +64,6 @@ bool start_listener_bundle(ListenerBundle& bundle,
                 close_listener_bundle(bundle);
                 return false;
             }
-        } else {
-            std::cout << "[main.cpp] [" << service_tag << "] TLS 포트 리스닝 시작: " << tls_port
-                      << std::endl;
         }
     }
 

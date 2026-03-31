@@ -6,6 +6,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "app_services.h"
 #include "alert.h"
@@ -24,7 +25,6 @@
 std::atomic<bool> g_running(true);
 
 namespace {
-
 bool sleep_interruptible(std::atomic<bool>& running_flag,
                          std::chrono::milliseconds total,
                          std::chrono::milliseconds step = std::chrono::milliseconds(200)) {
@@ -51,8 +51,12 @@ std::string sanitize_alert_field(std::string value) {
     return value;
 }
 
-const char* bool_to_yn(bool value) {
-    return value ? "Y" : "N";
+void print_section_log(const std::string& title, const std::vector<std::string>& lines) {
+    std::cout << "[" << title << "]" << std::endl;
+    for (const auto& line : lines) {
+        std::cout << line << std::endl;
+    }
+    std::cout << "--------------------" << std::endl;
 }
 
 }  // namespace
@@ -66,14 +70,12 @@ int main() {
     RuntimeConfig cfg;
     std::string cfg_err;
     if (!load_runtime_config(cfg, cfg_err)) {
-        std::cerr << "[Fatal] 런타임 설정 오류: " << cfg_err << std::endl;
         return -1;
     }
 
     const SecurityRuntimeOptions sec_cfg = load_security_runtime_options();
     std::string sec_cfg_err;
     if (!validate_security_runtime_options(sec_cfg, sec_cfg_err)) {
-        std::cerr << "[Fatal] 보안 설정 오류: " << sec_cfg_err << std::endl;
         return -1;
     }
 
@@ -81,52 +83,21 @@ int main() {
         Authenticator auth_probe(cfg.db_host.c_str(), cfg.db_user.c_str(), cfg.db_pass.c_str(),
                                  cfg.db_name_analytics.c_str());
         if (!auth_probe.connect()) {
-            std::cerr << "[Fatal] Auth DB 시작 점검 실패(fail-closed)." << std::endl;
             return -1;
         }
     }
-
-    log_allowlist_mode("SFEPS_AUTH_ALLOW_IPS", sec_cfg.auth_allow_ips);
-    log_allowlist_mode("SFEPS_AUDIO_ALLOW_IPS", sec_cfg.audio_allow_ips);
-    log_allowlist_mode("SFEPS_ALERT_ALLOW_IPS", sec_cfg.alert_allow_ips);
-    log_transport_mode(sec_cfg);
-    log_esp_transport_mode(sec_cfg);
-    std::cout << "[main.cpp] [ESP] test_track_pos_enable="
-              << (sec_cfg.esp_test_track_pos_enable ? "on" : "off")
-              << ", interval_sec=" << sec_cfg.esp_test_track_pos_interval_sec
-              << ", object_id=" << sec_cfg.esp_test_track_pos_object_id << std::endl;
-
-    std::cout << "[main.cpp] [Security] auth_max_bytes=" << sec_cfg.auth_max_bytes
-              << ", audio_max_bytes=" << sec_cfg.audio_max_bytes
-              << ", alert_max_clients=" << sec_cfg.alert_max_clients
-              << ", position_max_clients=" << sec_cfg.position_max_clients
-              << ", video_max_clients=" << sec_cfg.video_max_clients
-              << ", position_tick_ms=" << sec_cfg.position_stream_tick_ms
-              << ", auth_deauth_grace_ms=" << sec_cfg.auth_deauth_grace_ms
-              << ", position_stale_sec=" << sec_cfg.position_stale_seconds
-              << ", socket_read_timeout_ms=" << sec_cfg.socket_read_timeout_ms << std::endl;
-    std::cout << "[main.cpp] [Security] fraud_image_http_base_url="
-              << sec_cfg.fraud_image_http_base_url
-              << ", video_retention_sec=" << sec_cfg.video_retention_sec
-              << ", video_max_storage_bytes=" << sec_cfg.video_max_storage_bytes
-              << ", video_storage_resume_bytes=" << sec_cfg.video_storage_resume_bytes
-              << ", pending_image_retention_sec=" << sec_cfg.pending_image_retention_sec
-              << ", fraud_image_retention_sec=" << sec_cfg.fraud_image_retention_sec << std::endl;
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
     std::string media_dir_err;
     if (!ensure_runtime_media_dirs(media_dir_err)) {
-        std::cerr << "[Fatal] Failed to create runtime media directory: " << media_dir_err
-                  << std::endl;
         return -1;
     }
 
     DBLogger logger(cfg.db_host.c_str(), cfg.db_user.c_str(), cfg.db_pass.c_str(),
                     cfg.db_name_analytics.c_str());
     if (!logger.connect()) {
-        std::cerr << "[Fatal] DBLogger 시작 실패(fail-closed)." << std::endl;
         return -1;
     }
 
@@ -138,64 +109,41 @@ int main() {
         });
     analytics.setOutlineDecisionCallback(
         [&sec_cfg](const AnalyticsProcessor::OutlineDecisionPayload& payload) {
-            std::cout << "[main.cpp] [OUTLINE_DECISION] object_id=" << payload.object_id
-                      << ", card_age_text=" << payload.card_age_text << ", age=" << payload.age
-                      << ", fraud=" << bool_to_yn(payload.is_fraud)
-                      << ", tag_time=" << payload.tag_time << std::endl;
-
-            if (payload.card_age_text == "0") {
-                std::cout << "[main.cpp] [OUTLINE_DECISION_SKIP] object_id=" << payload.object_id
-                          << ", reason=card_age_text_0, tag_time=" << payload.tag_time
-                          << std::endl;
-                return;
-            }
-
+            const bool detected_fraud = payload.is_fraud || payload.card_age_text == "0";
+            const bool should_send_image_ref = detected_fraud && payload.card_age_text != "0";
+            AnalyticsProcessor::OutlineDecisionPayload send_payload = payload;
+            send_payload.is_fraud = detected_fraud;
             FinalizedFraudImageInfo fraud_image_info;
-            if (!finalize_outline_image_for_object(payload, &fraud_image_info)) {
-                std::cout << "[main.cpp] [OUTLINE_DECISION_SKIP] object_id=" << payload.object_id
-                          << ", reason=finalize_failed_or_pending_missing, tag_time="
-                          << payload.tag_time << std::endl;
-                return;
-            }
-            if (sec_cfg.fraud_image_http_base_url.empty()) {
-                std::cerr << "[main.cpp] [RFID_IMAGE_REF_SEND] 생략: 비어 있음 "
-                             "SFEPS_FRAUD_IMAGE_HTTP_BASE_URL, object_id="
-                          << payload.object_id << std::endl;
-                return;
-            }
-            if (fraud_image_info.filename.empty()) {
-                std::cerr << "[main.cpp] [RFID_IMAGE_REF_SEND] 생략: 파일명 누락, object_id="
-                          << payload.object_id << std::endl;
-                return;
+            bool image_ref_sent = false;
+            if (should_send_image_ref &&
+                finalize_outline_image_for_object(send_payload, &fraud_image_info) &&
+                !sec_cfg.fraud_image_http_base_url.empty() &&
+                !fraud_image_info.filename.empty()) {
+                const std::string image_url = app_services_shared::join_http_url(
+                    sec_cfg.fraud_image_http_base_url, fraud_image_info.filename);
+                std::string message = "IMG_REF|OBJECT_ID=" +
+                                      sanitize_alert_field(fraud_image_info.object_id) +
+                                      "|URL=" + sanitize_alert_field(image_url) +
+                                      "|TAG=" + sanitize_alert_field(fraud_image_info.tag_time) +
+                                      "|NAME=" + sanitize_alert_field(fraud_image_info.filename);
+                message.push_back('\n');
+                send_alert_to_clients(message);
+                image_ref_sent = true;
             }
 
-            const std::string url = app_services_shared::join_http_url(
-                sec_cfg.fraud_image_http_base_url, fraud_image_info.filename);
-            std::string message = "IMG_REF|OBJECT_ID=" +
-                                  sanitize_alert_field(fraud_image_info.object_id) +
-                                  "|URL=" + sanitize_alert_field(url) +
-                                  "|TAG=" + sanitize_alert_field(fraud_image_info.tag_time) +
-                                  "|NAME=" + sanitize_alert_field(fraud_image_info.filename);
-            message.push_back('\n');
-            const std::size_t clients_before_send = alert_client_count();
-            std::cout << "[main.cpp] [RFID_IMAGE_REF_SEND_ATTEMPT] 전송 시도: object_id="
-                      << fraud_image_info.object_id << ", tag_time=" << fraud_image_info.tag_time
-                      << ", clients_before=" << clients_before_send
-                      << std::endl;
-            if (clients_before_send == 0) {
-                std::cerr
-                    << "[main.cpp] [RFID_IMAGE_REF_SEND_DROP] 전송 중단: 사유=alert 클라이언트 없음, object_id="
-                          << fraud_image_info.object_id
-                          << ", tag_time=" << fraud_image_info.tag_time << std::endl;
+            const std::string card_age_display =
+                (payload.card_age_text == "0") ? "미태그" : payload.card_age_text;
+            std::vector<std::string> lines;
+            lines.push_back("ID         : " + payload.object_id);
+            lines.push_back("카드 구분  : " + card_age_display);
+            lines.push_back(std::string("상태       : ") +
+                            (detected_fraud ? "부정승차 감지" : "정상승차"));
+            if (detected_fraud) {
+                lines.push_back("클라이언트 : 송신 완료");
             }
-            send_alert_to_clients(message);
-            std::cout << "[main.cpp] [RFID_IMAGE_REF_SEND] 전송 요청 완료: object_id="
-                      << fraud_image_info.object_id << ", tag_time=" << fraud_image_info.tag_time
-                      << ", clients_before=" << clients_before_send
-                      << std::endl;
+            print_section_log("판정 결과", lines);
         });
     if (!analytics.start()) {
-        std::cerr << "[Fatal] AnalyticsProcessor 시작 실패(fail-closed)." << std::endl;
         return -1;
     }
 
@@ -219,7 +167,6 @@ int main() {
             esp_manager.publishFraudTrackPosIfIdle(esp_payload);
         });
     if (sec_cfg.esp_tcp_enable && !esp_manager.start(g_running)) {
-        std::cerr << "[Fatal] ESP manager 시작 실패." << std::endl;
         analytics.stop();
         return -1;
     }
@@ -241,7 +188,6 @@ int main() {
             if (!sleep_interruptible(g_running, std::chrono::seconds(60))) break;
             logger.requestDbCleanup();
         }
-        std::cout << "[main.cpp] [DBCleanup] 종료." << std::endl;
     });
 
     std::thread t_auth(run_login_auth, std::ref(g_running), std::cref(cfg), std::cref(sec_cfg));
@@ -254,6 +200,8 @@ int main() {
 
     RfidMonitor rfid_monitor(g_running, analytics);
     std::thread t_rfid(&RfidMonitor::start, &rfid_monitor);
+
+    std::cout << "서버 정상 가동" << std::endl;
 
     RTSPRecorder recorder(logger, g_running, analytics);
     recorder.run();
@@ -275,5 +223,6 @@ int main() {
     if (t_file_cleanup.joinable()) t_file_cleanup.join();
 
     analytics.stop();
+    std::cout << "서버 정상 종료" << std::endl;
     return 0;
 }

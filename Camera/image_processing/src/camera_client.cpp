@@ -587,8 +587,17 @@ bool runFullPipeline(const cv::Mat& frame,
         return false;
     }
 
-    if (!cv::imwrite(out_path, best_frame)) {
+    const std::string temp_out_path = out_path + ".tmp.jpg";
+    std::remove(temp_out_path.c_str());
+
+    if (!cv::imwrite(temp_out_path, best_frame)) {
         err = "cv::imwrite failed";
+        return false;
+    }
+
+    if (std::rename(temp_out_path.c_str(), out_path.c_str()) != 0) {
+        std::remove(temp_out_path.c_str());
+        err = "rename failed";
         return false;
     }
     return true;

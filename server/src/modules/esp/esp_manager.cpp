@@ -73,8 +73,6 @@ bool EspManager::start(std::atomic<bool>& app_running_flag) {
     accept_thread_ = std::thread(&EspManager::acceptLoop, this);
     startup_ready_thread_ = std::thread(&EspManager::sendStartupReadyAfterDelay, this);
 
-    std::cout << "[esp_manager.cpp] [ESP] 리스닝 시작: " << config_.bind_ip << ":"
-              << config_.port << ", max_clients=" << config_.max_clients << std::endl;
     return true;
 }
 
@@ -284,14 +282,10 @@ void EspManager::sendStartupReadyAfterDelay() {
     startup_ready_announced_ = true;
     std::lock_guard<std::mutex> lock(clients_mutex_);
     if (clients_.empty()) {
-        std::cout << "[esp_manager.cpp] [ESP] 시작 준비 메시지 대기열 등록됨(연결된 클라이언트 없음)."
-                  << std::endl;
         return;
     }
 
     broadcastLineLocked(kStartupReadyMessage, std::strlen(kStartupReadyMessage), true);
-
-    std::cout << "[esp_manager.cpp] [ESP] 시작 준비 메시지 전송 완료." << std::endl;
 }
 
 void EspManager::acceptLoop() {

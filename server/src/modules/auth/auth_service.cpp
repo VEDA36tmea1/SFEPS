@@ -56,11 +56,6 @@ void run_login_auth_impl(std::atomic<bool>& running,
                   << "Login service will continue without auth DB log writes." << std::endl;
     }
 
-    std::cout << "[AuthFlow][4] run_login_auth 시작. "
-              << "plaintext=" << (sec_cfg.app_plaintext_enable ? "on" : "off")
-              << ", tls=" << (sec_cfg.app_tls_enable ? "on" : "off")
-              << ", auth_tls_port=" << sec_cfg.auth_tls_port << std::endl;
-
     ListenerBundle listeners;
     if (!start_listener_bundle(listeners,
                                sec_cfg,
@@ -72,14 +67,6 @@ void run_login_auth_impl(std::atomic<bool>& running,
                                true)) {
         running = false;
         return;
-    }
-
-    if (sec_cfg.app_plaintext_enable && listeners.plain_server_fd >= 0) {
-        std::cout << "[AuthFlow][4] auth plaintext listener ready on " << kAuthPort << std::endl;
-    }
-    if (sec_cfg.app_tls_enable && listeners.tls_server.listen_fd >= 0) {
-        std::cout << "[AuthFlow][4] auth TLS listener ready on " << sec_cfg.auth_tls_port
-                  << std::endl;
     }
 
     std::unordered_map<std::string, AttemptState> attempts;

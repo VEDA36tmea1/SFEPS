@@ -263,16 +263,12 @@ void dedupe_paths(std::vector<fs::path>& paths) {
 void prune_pending_images(const std::string& object_id,
                           const std::vector<fs::path>& paths,
                           const char* reason_key) {
+    (void)object_id;
+    (void)reason_key;
     for (const auto& path : paths) {
         if (!is_existing_regular_file(path)) continue;
         std::error_code remove_ec;
-        if (fs::remove(path, remove_ec)) {
-            std::cout << "[main.cpp] [" << reason_key << "] object_id=" << object_id
-                      << ", removed=" << path << std::endl;
-            continue;
-        }
-        std::cerr << "[main.cpp] [" << reason_key << "] object_id=" << object_id
-                  << ", path=" << path << ", reason=" << remove_ec.message() << std::endl;
+        fs::remove(path, remove_ec);
     }
 }
 
@@ -305,14 +301,8 @@ void snapshot_rfid_image_for_object(const std::string& object_id, const std::str
         ("capture_" + safe_tag + "_" + safe_object_id + "_" + sanitize_filename_token(req_id) +
          ".jpg"));
 
-    std::cout << "[main.cpp] [CAM_TRIGGER_SEND] object_id=" << object_id
-              << ", tag_time=" << tag_time << ", req_id=" << req_id
-              << ", out=" << out_path << std::endl;
-
     std::string send_err;
     if (!request_camera_capture(req_id, object_id, tag_time, out_path, send_err)) {
-        std::cerr << "[main.cpp] [CAM_TRIGGER_SEND_FAIL] object_id=" << object_id
-                  << ", req_id=" << req_id << ", reason=" << send_err << std::endl;
         return;
     }
 
@@ -345,11 +335,7 @@ bool finalize_outline_image_for_object(
     }
 
     if (had_registry_path && !is_existing_regular_file(registry_path)) {
-        const bool ready = wait_for_regular_file(registry_path);
-        if (ready) {
-            std::cout << "[main.cpp] [RFID_IMAGE_WAIT_READY] object_id=" << payload.object_id
-                      << ", path=" << registry_path << std::endl;
-        }
+        wait_for_regular_file(registry_path);
     }
 
     std::vector<fs::path> object_pending_paths =
@@ -365,20 +351,11 @@ bool finalize_outline_image_for_object(
     }
 
     if (pending_path.empty()) {
-        std::cout << "[main.cpp] [RFID_IMAGE_FALLBACK_MISS] object_id=" << payload.object_id
-                  << ", tag_time=" << payload.tag_time
-                  << ", had_registry=" << (had_registry_path ? "1" : "0") << std::endl;
         return false;
     }
 
     erase_registry_path_if_matches(payload.object_id, registry_path);
-
-    if (used_fallback) {
-        std::cout << "[main.cpp] [RFID_IMAGE_FALLBACK_HIT] object_id=" << payload.object_id
-                  << ", selected=" << pending_path
-                  << ", candidate_count=" << object_pending_paths.size()
-                  << ", tag_time=" << payload.tag_time << std::endl;
-    }
+    (void)used_fallback;
 
     std::vector<fs::path> duplicate_paths;
     duplicate_paths.reserve(object_pending_paths.size() + 1);
@@ -396,21 +373,13 @@ bool finalize_outline_image_for_object(
     if (!payload.is_fraud) {
         std::error_code remove_ec;
         if (fs::remove(pending_path, remove_ec)) {
-            std::cout << "[main.cpp] [RFID_IMAGE_DELETE] object_id=" << payload.object_id
-                      << ", path=" << pending_path << ", tag_time=" << payload.tag_time
-                      << std::endl;
             prune_pending_images(payload.object_id, duplicate_paths, "RFID_IMAGE_FALLBACK_PRUNE");
             return false;
         }
 
         try {
-            const fs::path moved = move_file_to_dir(pending_path, fs::path(kEventImageFailedDir));
-            std::cerr << "[main.cpp] [RFID_IMAGE_DELETE] 대기 이미지 삭제 실패, 이동 경로="
-                      << " 실패 디렉터리: object_id=" << payload.object_id << ", moved=" << moved
-                      << ", 오류=" << remove_ec.message() << std::endl;
-        } catch (const std::exception& e) {
-            std::cerr << "[main.cpp] [RFID_IMAGE_DELETE] 실패: object_id=" << payload.object_id
-                      << ", path=" << pending_path << ", 오류=" << e.what() << std::endl;
+            move_file_to_dir(pending_path, fs::path(kEventImageFailedDir));
+        } catch (const std::exception&) {
         }
         prune_pending_images(payload.object_id, duplicate_paths, "RFID_IMAGE_FALLBACK_PRUNE");
         return false;
@@ -418,8 +387,6 @@ bool finalize_outline_image_for_object(
 
     try {
         const fs::path kept = move_file_to_dir(pending_path, fs::path(kEventImageFraudDir));
-        std::cout << "[main.cpp] [RFID_IMAGE_KEEP] object_id=" << payload.object_id
-                  << ", tag_time=" << payload.tag_time << std::endl;
         if (out_fraud_image_info != nullptr) {
             out_fraud_image_info->object_id = payload.object_id;
             out_fraud_image_info->tag_time = payload.tag_time;
@@ -428,16 +395,10 @@ bool finalize_outline_image_for_object(
         }
         prune_pending_images(payload.object_id, duplicate_paths, "RFID_IMAGE_FALLBACK_PRUNE");
         return true;
-    } catch (const std::exception& keep_err) {
+    } catch (const std::exception&) {
         try {
-            const fs::path failed = move_file_to_dir(pending_path, fs::path(kEventImageFailedDir));
-            std::cerr << "[main.cpp] [RFID_IMAGE_KEEP] 사기 디렉터리 보관 실패, 실패 디렉터리로 이동"
-                      << ": object_id=" << payload.object_id << ", moved=" << failed
-                      << ", 오류=" << keep_err.what() << std::endl;
-        } catch (const std::exception& failed_err) {
-            std::cerr << "[main.cpp] [RFID_IMAGE_KEEP] 실패: object_id=" << payload.object_id
-                      << ", path=" << pending_path << ", 오류=" << keep_err.what()
-                      << ", 실패_오류=" << failed_err.what() << std::endl;
+            move_file_to_dir(pending_path, fs::path(kEventImageFailedDir));
+        } catch (const std::exception&) {
         }
     }
     return false;
