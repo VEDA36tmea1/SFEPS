@@ -399,8 +399,14 @@ Page {
                 videoBackend.setLaserTrackingEnabled(false)
             // Tracking 토글 OFF 시: 즉시 추적/송신을 종료한다.
             if (currentTrackedId !== "") {
-                positionManager.sendPositionCommand("TRACK_END|" + currentTrackedId)
-                pwmTransmitter.sendTrackEnd(currentTrackedId)
+                var stableId = String(currentTrackedId)
+                var xmlId = ""
+                if (videoBackend && videoBackend.resolveXmlIdFromStableId)
+                    xmlId = String(videoBackend.resolveXmlIdFromStableId(stableId))
+                if (xmlId === "") xmlId = stableId
+
+                positionManager.sendPositionCommand("TRACK_END|" + xmlId)
+                pwmTransmitter.sendTrackEnd(xmlId)
                 currentTrackedId = ""
                 visualTrackedId = ""
                 videoDisplay.externalTrackedId = ""
@@ -663,14 +669,23 @@ Page {
                                     }
                                     onClicked: {
                                         if (videoDisplay.selectedDetection !== "") {
-                                            var targetId = String(videoDisplay.selectedDetection)
-                                            positionManager.sendPositionCommand("TRACK_START|" + targetId)
-                                            // STM32 레이저 ON
-                                            pwmTransmitter.sendTrackStart(targetId)
-                                            // RBF PWM 자동 추적 시작 (매 tick bbox 갱신)
-                                            videoBackend.trackByNativeId(targetId)
-                                            currentTrackedId = targetId
-                                            visualTrackedId = targetId
+                                            // selectedDetection은 화면에 표시되는 displayId로, S_xxx(stable)를 기대한다.
+                                            var stableId = String(videoDisplay.selectedDetection)
+                                            var xmlId = ""
+                                            if (videoBackend && videoBackend.resolveXmlIdFromStableId)
+                                                xmlId = String(videoBackend.resolveXmlIdFromStableId(stableId))
+                                            if (xmlId === "") xmlId = stableId
+
+                                            // Position server에는 xmlId 기준으로 TRACK을 시작한다.
+                                            positionManager.sendPositionCommand("TRACK_START|" + xmlId)
+                                            // STM32 레이저 ON (id는 ACK/로그용이므로 stable/xml 중 무엇을 보내도 무방)
+                                            pwmTransmitter.sendTrackStart(xmlId)
+
+                                            // RBF PWM 자동 추적 시작 (매 tick bbox 갱신) - 내부는 stable 기준
+                                            videoBackend.trackByNativeId(stableId)
+
+                                            currentTrackedId = stableId
+                                            visualTrackedId = stableId
                                             videoDisplay.externalTrackedId = visualTrackedId
                                         }
                                     }
@@ -704,9 +719,15 @@ Page {
                                     }
                                     onClicked: {
                                         if (currentTrackedId !== "") {
-                                            positionManager.sendPositionCommand("TRACK_END|" + currentTrackedId)
+                                            var stableId2 = String(currentTrackedId)
+                                            var xmlId2 = ""
+                                            if (videoBackend && videoBackend.resolveXmlIdFromStableId)
+                                                xmlId2 = String(videoBackend.resolveXmlIdFromStableId(stableId2))
+                                            if (xmlId2 === "") xmlId2 = stableId2
+
+                                            positionManager.sendPositionCommand("TRACK_END|" + xmlId2)
                                             // STM32 레이저 OFF
-                                            pwmTransmitter.sendTrackEnd(currentTrackedId)
+                                            pwmTransmitter.sendTrackEnd(xmlId2)
                                             // RBF PWM 추적 해제
                                             videoBackend.clearRbfTarget()
                                             currentTrackedId = ""

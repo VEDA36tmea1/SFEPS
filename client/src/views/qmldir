@@ -1,7 +1,0 @@
-module src.views
-LoginView 1.0 LoginView.qml
-MonitoringView 1.0 MonitoringView.qml
-DetailView 1.0 DetailView.qml
-AnalyticsView 1.0 AnalyticsView.qml
-SettingsView 1.0 SettingsView.qml
-ArchiveView 1.0 ArchiveView.qml

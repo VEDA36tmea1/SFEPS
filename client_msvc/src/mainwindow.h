@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QMutex>
+#include <QHash>
 #include <QSet>
 #include <QTimer>
 #include <QDateTime>
@@ -97,6 +98,10 @@ public:
     Q_INVOKABLE void clearRbfTarget();
     // Laser Tracking 토글: ON일 때만 pose 추정/SET_PWM 계산 수행
     Q_INVOKABLE void setLaserTrackingEnabled(bool enabled);
+
+    // stable(S_xxx) <-> xmlId(서버 ONVIF XML ID) 매핑 조회
+    Q_INVOKABLE QString resolveXmlIdFromStableId(const QString &stableId) const;
+    Q_INVOKABLE QString resolveStableIdFromXmlId(const QString &xmlId) const;
 
     // Fraud 알림: xmlId 추가/삭제 (bbox 색상 빨간색 표시 및 자동 전환 트리거)
     Q_INVOKABLE void addFraudXmlId(const QString &xmlId);
@@ -195,6 +200,12 @@ private:
     QString m_externalTrackedId;
     // Fraud 알림으로 표시된 XML ID 세트 (빨간 bbox + 자동 추적 후보)
     QSet<QString> m_fraudXmlIds;
+    // stable(S_xxx) 기준으로 유지되는 부정승차 표시용 세트
+    QSet<QString> m_fraudStableIds;
+
+    // stable(S_xxx) ↔ xmlId(서버 XML ID) 매핑 테이블
+    QHash<QString, QString> m_stableToXmlId;
+    QHash<QString, QString> m_xmlToStableId;
     // 수동 추적 활성 여부 (Track 버튼으로 시작된 경우 true → fraud 자동 전환 억제)
     bool m_manualTracking{false};
     // 수동 Track 버튼으로 선택된 displayId (S_xxx / N_xxx) – pose worker bbox 탐색에 사용
@@ -206,6 +217,19 @@ private:
     QString m_fraudLaserStickyStableId;
     int m_fraudLaserStickyStableMissingFrames{0};
 #endif
+
+    // ── IoU 기반 추적 기준 ──────────────────────────────────────────────
+    // 추적 시작 시점의 기준 bbox (정규화 0~1 좌표)
+    double  m_trackRefX{0.0};
+    double  m_trackRefY{0.0};
+    double  m_trackRefW{0.0};
+    double  m_trackRefH{0.0};
+    // 추적 시작 시점의 ID 힌트 (있으면 1순위로 비교, 없어도 무방)
+    QString m_trackRefStableId;
+    QString m_trackRefXmlId;
+    bool    m_hasTrackRef{false};
+    // 기준 박스와 IoU ≥ threshold인 객체를 못 찾은 연속 프레임 수
+    int     m_trackMissingFrames{0};
 
     int m_streamLatencyMs = 0;
     int m_videoMetaDelayMs = -1;
