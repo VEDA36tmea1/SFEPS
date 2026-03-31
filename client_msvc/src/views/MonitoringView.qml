@@ -183,6 +183,11 @@ Page {
             boardingAgeByObject[key] = nextBucket
         }
 
+        // Event Log 항목은 Fraud 값이 Y(=true)인 경우에만 생성
+        if (!fraud) {
+            return true
+        }
+
         monitoringEventModel.insert(0, {
             eventId: normalizedObjectId,
             eventType: "FARE EVASION DETECTED",
