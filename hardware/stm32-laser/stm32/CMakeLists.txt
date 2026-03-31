@@ -80,10 +80,14 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Inc
 )
 
+# WiFi 모드 선택 (0=CLIENT, 1=SERVER)
+set(WIFI_WORK_MODE "0" CACHE STRING "ESP WiFi mode: 0(client), 1(server)")
+
 # Add project symbols (macros)
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     USE_HAL_DRIVER
     STM32F401xE
+    WIFI_WORK_MODE=${WIFI_WORK_MODE}
 )
 
 # Remove wrong libob.a library dependency when using cpp files

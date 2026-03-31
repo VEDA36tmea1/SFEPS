@@ -69,7 +69,7 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("positionManager", &positionManager);
 
     // PwmTransmitter: camera_RBF에서 수신한 PWM 값을 하드웨어로 송신
-    // 환경변수: SFEPS_PWM_MODE (raspi|stm), SFEPS_PWM_HOST, SFEPS_PWM_PORT
+    // 환경변수: SFEPS_PWM_MODE (raspi|stm|both), SFEPS_PWM_HOST, SFEPS_PWM_PORT
     PwmTransmitter pwmTransmitter;
     engine.rootContext()->setContextProperty("pwmTransmitter", &pwmTransmitter);
 
@@ -90,10 +90,18 @@ int main(int argc, char *argv[]) {
   videoBackend.setLiveFrameProvider(liveFrameProvider);
   // RBF 계산된 PWM → PwmTransmitter (Raspberry Pi / ESP8266) 직접 전송
   QObject::connect(&videoBackend, &MainWindow::pwmSetRequested,
-                   &pwmTransmitter, &PwmTransmitter::sendPwm);
+                   [&pwmTransmitter, &videoBackend](int pan, int tilt) {
+#ifdef SFEPS_HAVE_OPENCV
+                       if (!videoBackend.laserTrackingEnabled()) return;
+#endif
+                       pwmTransmitter.sendPwm(pan, tilt);
+                   });
   // 동시에 PositionManager를 통해 서버(5558)에도 통보 (모니터링/로깅 용도)
   QObject::connect(&videoBackend, &MainWindow::pwmSetRequested, &positionManager,
-                   [&positionManager](int pan, int tilt) {
+                   [&positionManager, &videoBackend](int pan, int tilt) {
+#ifdef SFEPS_HAVE_OPENCV
+                       if (!videoBackend.laserTrackingEnabled()) return;
+#endif
                        positionManager.sendPositionCommand(
                            QStringLiteral("SET_PWM,PAN=%1,TILT=%2").arg(pan).arg(tilt));
                    });
@@ -119,22 +127,36 @@ int main(int argc, char *argv[]) {
   };
 
   // ── PwmTransmitter 초기화 ───────────────────────────────────────────────
-  // SFEPS_PWM_MODE : "raspi" (기본, TCP) | "stm" (ESP8266, UDP)
-  // SFEPS_PWM_HOST : PWM 수신 장치 IP    (기본: 192.168.0.100)
-  // SFEPS_PWM_PORT : PWM 수신 포트       (기본: 5566)
+  // SFEPS_PWM_MODE : "raspi" (TCP) | "stm" (ESP8266 UDP) | "both" (동시 전송)
+  // SFEPS_PWM_HOST/SFEPS_PWM_PORT: 1차 타겟 (raspi/both에서는 Raspberry Pi TCP)
+  // SFEPS_PWM_STM_HOST/SFEPS_PWM_STM_PORT: both 모드의 2차 타겟 (ESP8266 UDP)
+  // SFEPS_PWM_STM_TRANSPORT: "udp"(기본) | "tcp" (ESP8266 AP + TCP 서버 사용 시)
   {
       const QString pwmMode = env.value("SFEPS_PWM_MODE", "raspi").trimmed();
       const QString pwmHost = env.value("SFEPS_PWM_HOST", "192.168.0.100").trimmed();
       const int     pwmPort = parseEnvPort(env, "SFEPS_PWM_PORT", 5566);
+      const QString pwmStmHost = env.value("SFEPS_PWM_STM_HOST", "192.168.4.1").trimmed();
+      const int     pwmStmPort = parseEnvPort(env, "SFEPS_PWM_STM_PORT", 4210);
+      const QString pwmStmTransport = env.value("SFEPS_PWM_STM_TRANSPORT", "udp").trimmed();
       qDebug() << "[Main] PwmTransmitter mode=" << pwmMode
                << " host=" << pwmHost << " port=" << pwmPort;
       pwmTransmitter.setMode(pwmMode);
+      pwmTransmitter.setStmTransport(pwmStmTransport);
+      if (pwmMode.compare("both", Qt::CaseInsensitive) == 0) {
+          qDebug() << "[Main] PwmTransmitter secondary(ESP8266)=" << pwmStmHost << ":" << pwmStmPort;
+          pwmTransmitter.connectSecondaryTarget(pwmStmHost, pwmStmPort);
+      }
       pwmTransmitter.connectTarget(pwmHost, pwmPort);
   }
 
   // camera_RBF.cpp --qt-mode 에서 역방향으로 수신한 PWM → PwmTransmitter로 송신
   QObject::connect(&positionManager, &PositionManager::pwmReceived,
-                   &pwmTransmitter,  &PwmTransmitter::sendPwm);
+                   [&pwmTransmitter, &videoBackend](int pan, int tilt) {
+#ifdef SFEPS_HAVE_OPENCV
+                       if (!videoBackend.laserTrackingEnabled()) return;
+#endif
+                       pwmTransmitter.sendPwm(pan, tilt);
+                   });
 
   // 부정승차(isFraud)마다 XML ID를 세트에 넣어 빨간 bbox (추적 중이어도 processFraud가 항상 emit)
   QObject::connect(&fraudManager, &FraudManager::fraudDetected,
@@ -169,9 +191,16 @@ int main(int argc, char *argv[]) {
   // 자동 레이저 대상이 화면 밖으로 나가 추적을 중지했을 때,
   // Position server에 TRACK_END를 보내서 해당 객체 구독/추적을 종료한다.
   QObject::connect(&videoBackend, &MainWindow::laserTrackStopped,
-                   [&positionManager](const QString &xmlId) {
+                   [&positionManager, &videoBackend](const QString &xmlId) {
                        if (xmlId.isEmpty()) return;
                        positionManager.sendPositionCommand(QStringLiteral("TRACK_END|%1").arg(xmlId));
+                   // 빨간 bbox(fraud 표시)는 TRACK_END만으로는 안 꺼질 수 있어,
+                   // 추적 종료된 xmlId를 fraud 목록에서도 제거한다.
+#ifdef SFEPS_HAVE_OPENCV
+                   if (videoBackend.laserTrackingEnabled()) {
+                       videoBackend.removeFraudXmlId(xmlId);
+                   }
+#endif
                    });
 #endif
 

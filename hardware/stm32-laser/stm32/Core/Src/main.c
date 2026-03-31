@@ -57,6 +57,20 @@
 #define WIFI_SERVER_PORT         5565
 #define WIFI_RECONNECT_INTERVAL  5000u   /* ms 단위: 5초마다 상태 체크 */
 #define WIFI_CMD_TIMEOUT         10000u  /* AT 응답 타임아웃 10초 */
+
+/* ESP 동작 모드 분기
+ * - CLIENT: 기존 동작 유지 (라즈베리 TCP 서버로 CIPSTART 재접속)
+ * - SERVER: ESP가 TCP 서버로 대기 (부팅 시 CIPMUX=1, CIPSERVER=1,<port>)
+ *
+ * 빌드 시 바꾸려면:
+ *   -DWIFI_WORK_MODE=1   (SERVER)
+ */
+#define WIFI_MODE_CLIENT         0
+#define WIFI_MODE_SERVER         1
+#ifndef WIFI_WORK_MODE
+#define WIFI_WORK_MODE           WIFI_MODE_CLIENT
+#endif
+#define WIFI_LISTEN_PORT         5566
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -163,6 +177,7 @@ static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 static void Wifi_SendLine(const char *line);
 static void Wifi_MaybeReconnect(void);
+static void Wifi_InitByMode(void);
 static void IbvsPid_Init(void);
 static void IbvsPid_Update(float dt_sec);
 /* USER CODE END PFP */
@@ -225,11 +240,13 @@ static void PB0_ToggleOnButton(void)
   HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);
 }
 
-/* PB0를 레이저 enable 핀으로 직접 on/off */
+/* PB0를 레이저 enable 핀으로 직접 on/off (TRACK 명령용: 강제 적용)
+ * - 이전에는 B1 수동 오버라이드가 켜지면 TRACK이 PB0를 못 바꿨는데,
+ *   요구사항: TRACK_START/END는 항상 레이저 ON/OFF가 되어야 함. */
 static void PB0_SetLaser(uint8_t on)
 {
-  if (laser_manual_override)
-    return;
+  /* TRACK_START/END가 오면 수동 오버라이드를 해제하고 명령을 적용 */
+  laser_manual_override = 0;
   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, on ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 
@@ -429,9 +446,43 @@ static void Wifi_SendLine(const char *line)
   HAL_UART_Transmit(&huart1, (const uint8_t *)crlf, 2, 100);
 }
 
+/* 부팅 시 ESP 동작 모드별 초기화 */
+static void Wifi_InitByMode(void)
+{
+#if (WIFI_WORK_MODE == WIFI_MODE_SERVER)
+  /* 서버 모드: 다중 연결 + TCP 서버 오픈 */
+  {
+    char cmd[48];
+    Wifi_SendLine("AT+CIPMUX=1");
+    HAL_Delay(120);
+
+    (void)snprintf(cmd, sizeof(cmd), "AT+CIPSERVER=1,%d", WIFI_LISTEN_PORT);
+    Wifi_SendLine(cmd);
+    HAL_Delay(120);
+
+    Wifi_SendLine("AT+CIFSR");
+    HAL_Delay(120);
+
+    {
+      const char *msg = "WiFi mode=SERVER (CIPMUX=1, CIPSERVER ON)\r\n";
+      HAL_UART_Transmit(&huart2, (const uint8_t *)msg, (uint16_t)strlen(msg), 50);
+    }
+  }
+#else
+  {
+    const char *msg = "WiFi mode=CLIENT (CIPSTART reconnect)\r\n";
+    HAL_UART_Transmit(&huart2, (const uint8_t *)msg, (uint16_t)strlen(msg), 50);
+  }
+#endif
+}
+
 /* 주기적으로 TCP 서버(라즈베리) 재접속 시도 */
 static void Wifi_MaybeReconnect(void)
 {
+#if (WIFI_WORK_MODE == WIFI_MODE_SERVER)
+  /* 서버 모드에서는 CIPSTART 재접속 로직을 사용하지 않음 */
+  return;
+#else
   uint32_t now = HAL_GetTick();
 
   /* 연결 시도 중인데 응답이 너무 오래 없으면 실패로 간주 */
@@ -468,6 +519,7 @@ static void Wifi_MaybeReconnect(void)
       wifi_reconnect_msg_shown = 1;
     }
   }
+#endif
 }
 /* USER CODE END 0 */
 
@@ -555,6 +607,10 @@ int main(void)
     esp_cb.servo_set = Esp_SetServoPwm;  /* PAN/TILT 순서 변환 래퍼 */
     ESP_Parser_SetCallbacks(&esp_cb);
   }
+  /* ESP TCP 모드 초기화:
+   * - CLIENT: 기존 재접속 로직 사용
+   * - SERVER: 부팅 시 CIPMUX/CIPSERVER 자동 전송 */
+  Wifi_InitByMode();
 
   /* IBVS PID 초기화 (호스트에서 픽셀 오차를 보내는 경우에 사용) */
   IbvsPid_Init();

@@ -395,6 +395,19 @@ Page {
     onLaserTrackingEnabledChanged: {
         if (!laserTrackingEnabled && videoDisplay) {
             videoDisplay.setSelectedDetection("")
+            if (videoBackend)
+                videoBackend.setLaserTrackingEnabled(false)
+            // Tracking 토글 OFF 시: 즉시 추적/송신을 종료한다.
+            if (currentTrackedId !== "") {
+                positionManager.sendPositionCommand("TRACK_END|" + currentTrackedId)
+                pwmTransmitter.sendTrackEnd(currentTrackedId)
+                currentTrackedId = ""
+                visualTrackedId = ""
+                videoDisplay.externalTrackedId = ""
+            }
+        } else if (laserTrackingEnabled && videoBackend) {
+            // 토글 ON 시: 다시 SET_PWM/pose 추정을 허용한다.
+            videoBackend.setLaserTrackingEnabled(true)
         }
     }
 

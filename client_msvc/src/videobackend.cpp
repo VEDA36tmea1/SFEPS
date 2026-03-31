@@ -78,11 +78,13 @@ struct QtPoseWorker
     double reqCropX{0}, reqCropY{0}, reqCropW{0}, reqCropH{0};
     double reqBboxBottomY{0};  // padding 제외 bbox bottom (원본 frame 픽셀)
     double reqRatioDown{0.35};
+    qint64 reqSubmitWallMs{0}; // submit() 시각 (wall clock)
 
     std::mutex resMutex;
     bool aimValid{false};
     double aimU{0}, aimV{0};
     qint64 aimWallMs{0};
+    qint64 aimPoseRttMs{0}; // submit() -> aimWallMs RTT (wall clock)
 
     static std::string get_exe_dir()
     {
@@ -212,6 +214,7 @@ struct QtPoseWorker
             double cropX = 0, cropY = 0, cropW = 0, cropH = 0;
             double bboxBottomY = 0;
             double ratioDown = 0.35;
+            qint64 submitWallMs = 0;
 
             {
                 std::unique_lock<std::mutex> lk(reqMutex);
@@ -221,6 +224,7 @@ struct QtPoseWorker
                 cropX = reqCropX; cropY = reqCropY; cropW = reqCropW; cropH = reqCropH;
                 bboxBottomY = reqBboxBottomY;
                 ratioDown = reqRatioDown;
+                submitWallMs = reqSubmitWallMs;
                 reqPending = false;
             }
 
@@ -290,6 +294,7 @@ struct QtPoseWorker
                 aimV = aimV_local;
                 aimValid = true;
                 aimWallMs = QDateTime::currentMSecsSinceEpoch();
+                aimPoseRttMs = (submitWallMs > 0) ? std::max<qint64>(0, aimWallMs - submitWallMs) : 0;
             }
 #endif
         }
@@ -318,6 +323,7 @@ struct QtPoseWorker
             reqCropX = cropX; reqCropY = cropY; reqCropW = cropW; reqCropH = cropH;
             reqBboxBottomY = bboxBottomY;
             reqRatioDown = ratioDown;
+            reqSubmitWallMs = QDateTime::currentMSecsSinceEpoch();
             reqPending = true;
         }
         reqCv.notify_one();
@@ -330,6 +336,12 @@ struct QtPoseWorker
         if (!aimValid) return false;
         outU = aimU; outV = aimV; outMs = aimWallMs;
         return true;
+    }
+
+    qint64 getPoseRttMs()
+    {
+        std::lock_guard<std::mutex> lk(resMutex);
+        return aimPoseRttMs;
     }
 
     void clearAim()
@@ -952,8 +964,12 @@ void MainWindow::trackByNativeId(const QString &nativeId)
     g_qtPoseWorker.clearAim();
     rbfqt_set_pose_aim(0.0f, 0.0f, 0);
     rbfqt_set_tracked_nativeid(nativeId.toStdString().c_str());
-    m_manualTracking = !nativeId.isEmpty();  // 수동 추적 플래그 → fraud 자동 전환 억제
-    qDebug() << "[MainWindow] trackByNativeId" << nativeId << "→ auto-tracking enabled, manualTracking=" << m_manualTracking;
+    m_manualTracking = !nativeId.isEmpty();
+    // pose worker bbox 탐색에 사용할 display ID를 저장 (빈 문자열이면 pose worker 중지)
+    m_manualTrackDisplayId = nativeId;
+    qDebug() << "[MainWindow] trackByNativeId" << nativeId
+             << "→ manualTracking=" << m_manualTracking
+             << " manualTrackDisplayId=" << m_manualTrackDisplayId;
 #endif
 }
 
@@ -1041,6 +1057,7 @@ void MainWindow::clearRbfTarget()
     g_qtPoseWorker.clearAim();
     rbfqt_set_pose_aim(0.0f, 0.0f, 0);
     m_manualTracking = false;
+    m_manualTrackDisplayId.clear();
     {
         QMutexLocker lk(&m_mutex);
         if (!wasManualTracking) {
@@ -1055,6 +1072,36 @@ void MainWindow::clearRbfTarget()
     setSelectedDetection(QString{});
 #endif
     emit trackingXmlIdChanged(QString{});
+}
+
+void MainWindow::setLaserTrackingEnabled(bool enabled)
+{
+#ifdef SFEPS_HAVE_OPENCV
+    if (m_laserTrackingEnabled == enabled) return;
+    m_laserTrackingEnabled = enabled;
+#ifdef CAMERA_RBF_QT_MODE
+    if (!enabled) {
+        // 레이저/pose 추정을 멈추되, rbfqt_set_tracked_nativeid 자체는 유지해
+        // 토글을 다시 ON했을 때 즉시 SET_PWM 계산이 재개되게 한다.
+        g_qtPoseWorker.clearAim();
+        rbfqt_set_pose_aim(0.0f, 0.0f, 0);
+
+        const bool poseChanged = m_poseAimValid;
+        m_poseAimU = 0.0;
+        m_poseAimV = 0.0;
+        m_poseAimValid = false;
+        if (poseChanged) emit poseAimChanged();
+
+        const bool rbfChanged = m_rbfTargetValid;
+        m_rbfTargetU = 0.0;
+        m_rbfTargetV = 0.0;
+        m_rbfTargetValid = false;
+        if (rbfChanged) emit rbfTargetChanged();
+    }
+#else
+    // 레거시 모드에서는 pose 오버레이가 없으므로 플래그만 갱신.
+#endif
+#endif
 }
 
 QVariantMap MainWindow::getBBoxByXmlId(const QString &xmlId) const
@@ -1240,6 +1287,37 @@ void MainWindow::onPwmTick()
     const int W = m_frameW.load() > 0 ? m_frameW.load() : 1920;
     const int H = m_frameH.load() > 0 ? m_frameH.load() : 1080;
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    auto setPoseOverlay = [this](double u, double v, bool valid) {
+        const bool changed = (m_poseAimValid != valid)
+                             || (std::fabs(m_poseAimU - u) > 1e-3)
+                             || (std::fabs(m_poseAimV - v) > 1e-3);
+        if (changed) {
+            m_poseAimU = u;
+            m_poseAimV = v;
+            m_poseAimValid = valid;
+            emit poseAimChanged();
+        }
+    };
+    // RBF가 실제로 겨냥하는 위치(bbox 중심 또는 pose aim) – 주황색 십자 마커로 표시
+    auto setRbfTarget = [this](double u, double v, bool valid) {
+        const bool changed = (m_rbfTargetValid != valid)
+                             || (std::fabs(m_rbfTargetU - u) > 1e-3)
+                             || (std::fabs(m_rbfTargetV - v) > 1e-3);
+        if (changed) {
+            m_rbfTargetU = u;
+            m_rbfTargetV = v;
+            m_rbfTargetValid = valid;
+            emit rbfTargetChanged();
+        }
+    };
+
+    // Laser Tracking 토글 OFF면: pose 추정/target 갱신/SET_PWM 계산 자체를 스킵한다.
+    // (빨간 bbox 표시를 유지하더라도 하드웨어 PWM은 더 이상 보내지 않음)
+    if (!m_laserTrackingEnabled) {
+        setPoseOverlay(0.0, 0.0, false);
+        setRbfTarget(0.0, 0.0, false);
+        return;
+    }
 
 #ifdef CAMERA_RBF_QT_MODE
     // ── 수동 추적이 없을 때: 레이저는 fraudAutoTrackRequest로 고정된 XML(sticky)만 추적
@@ -1327,9 +1405,13 @@ void MainWindow::onPwmTick()
                 const std::string sid = !nid.empty() ? rbfqt_find_stable_id(nid) : std::string{};
                 const std::string key = !sid.empty() ? sid : key_str;
 
-                // sticky target이 화면에 보이는지 여부 판정 (stable 우선, 없으면 xml fallback)
-                const bool isStickyPresent = useStablePolicy ? (key == stickyStableStr)
-                                                                : (!stickyXml.isEmpty() && xmlId == stickyXml);
+                // sticky target이 화면에 보이는지 여부 판정
+                // 기존: stable 우선 -> stable-mapping이 잠깐이라도 어긋나면 "안 보임"으로 처리되어
+                //         kMaxMissingFrames를 넘기면 TRACK_END/추적 종료가 날 수 있었음.
+                // 변경: xmlId 매칭도 같이 허용해서 "보이는데 END" 오동작을 줄인다.
+                const bool isStickyPresent =
+                    (!stickyXml.isEmpty() && xmlId == stickyXml) ||
+                    (useStablePolicy && key == stickyStableStr);
                 if (isStickyPresent) {
                     currentArea = safeArea;
                     currentFound = true;
@@ -1372,6 +1454,8 @@ void MainWindow::onPwmTick()
                 if (stickyXml.isEmpty() || !stickyBoxFound) {
                     g_qtPoseWorker.clearAim();
                     rbfqt_set_pose_aim(0.0f, 0.0f, 0);
+                    setPoseOverlay(0.0, 0.0, false);
+                    setRbfTarget(0.0, 0.0, false);
                 } else {
                     if (sPoseTick % kPoseEveryTicks == 0) {
                         cv::Mat frameCopy;
@@ -1414,20 +1498,67 @@ void MainWindow::onPwmTick()
                         }
                     }
 
+                    static bool sAutoPoseHistValid = false;
+                    static double sAutoPrevAimU = 0.0, sAutoPrevAimV = 0.0;
+                    static double sAutoPrevBoxU = 0.0, sAutoPrevBoxV = 0.0;
+                    const double bboxCx = (stickyX + stickyW * 0.5) * W;
+                    const double bboxCy = (stickyY + stickyH * m_pwmRatio) * H;
                     double aimU = 0.0, aimV = 0.0;
                     qint64 aimMs = 0;
                     const bool gotAim = g_qtPoseWorker.getAim(aimU, aimV, aimMs);
                     const bool staleOk = gotAim && (now - aimMs) <= kPoseStaleMs;
                     if (staleOk) {
-                        rbfqt_set_pose_aim((float)aimU, (float)aimV, 1);
+                        // bbox 이동량 대비 pose 이동량이 과도하면 스파이크로 보고 차단
+                        const double kPoseJumpBasePx = 16.0;
+                        const double kPoseJumpScale = 2.5;
+                        const double kPoseJumpFloorPx = 45.0;
+                        const double kPoseEmaAlpha = 0.45;
+
+                        double filteredAimU = aimU;
+                        double filteredAimV = aimV;
+                        bool jumpRejected = false;
+                        if (sAutoPoseHistValid) {
+                            const double poseMove = std::hypot(aimU - sAutoPrevAimU, aimV - sAutoPrevAimV);
+                            const double boxMove = std::hypot(bboxCx - sAutoPrevBoxU, bboxCy - sAutoPrevBoxV);
+                            const double allowedJump = std::max(kPoseJumpFloorPx, kPoseJumpBasePx + kPoseJumpScale * boxMove);
+                            if (poseMove > allowedJump) {
+                                jumpRejected = true;
+                                filteredAimU = sAutoPrevAimU;
+                                filteredAimV = sAutoPrevAimV;
+                            } else {
+                                filteredAimU = sAutoPrevAimU + kPoseEmaAlpha * (aimU - sAutoPrevAimU);
+                                filteredAimV = sAutoPrevAimV + kPoseEmaAlpha * (aimV - sAutoPrevAimV);
+                            }
+                        }
+                        rbfqt_set_pose_aim((float)filteredAimU, (float)filteredAimV, 1);
+                        setPoseOverlay(filteredAimU, filteredAimV, true);
+                        setRbfTarget(filteredAimU, filteredAimV, true);   // pose 있으면 pose aim이 RBF 타겟
+                        sAutoPrevAimU = filteredAimU;
+                        sAutoPrevAimV = filteredAimV;
+                        sAutoPrevBoxU = bboxCx;
+                        sAutoPrevBoxV = bboxCy;
+                        sAutoPoseHistValid = true;
+                        if (jumpRejected) {
+                            qDebug() << "[PoseAim] auto jump rejected raw=(" << aimU << "," << aimV
+                                     << ") filtered=(" << filteredAimU << "," << filteredAimV << ")";
+                        }
                     } else {
                         rbfqt_set_pose_aim(0.0f, 0.0f, 0);
+                        setPoseOverlay(0.0, 0.0, false);
+                        // pose 없으면 bbox 중심이 RBF 타겟
+                        setRbfTarget(bboxCx, bboxCy, stickyBoxFound);
+                        sAutoPoseHistValid = false;
                     }
                     // 디버그: stale 통과 여부를 1초에 1번 출력
                     static qint64 lastPoseLogMs = 0;
                     if (now - lastPoseLogMs > 1000) {
                         if (gotAim) {
-                            qDebug() << "[PoseAim] got aim=(" << aimU << "," << aimV << ") ageMs=" << (now - aimMs)
+                            const qint64 poseRttMs = g_qtPoseWorker.getPoseRttMs();
+                            const qint64 ageMs = (now - aimMs);
+                            const qint64 streamMs = (m_streamLatencyMs > 0) ? m_streamLatencyMs : 0;
+                            qDebug() << "[PoseAim] got aim=(" << aimU << "," << aimV << ") ageMs=" << ageMs
+                                     << " poseRttMs=" << poseRttMs << " streamMs=" << streamMs
+                                     << " totalMs=" << (streamMs + poseRttMs + ageMs)
                                      << " staleOk=" << staleOk << " xml=" << stickyXml;
                         } else {
                             qDebug() << "[PoseAim] no aim yet staleOk=false xml=" << stickyXml;
@@ -1547,6 +1678,152 @@ void MainWindow::onPwmTick()
             }
         }
         } // end stickyXml isEmpty guard
+    } else {
+        // 수동 tracking에서도 pose aim을 사용할 수 있게 현재 선택/추적 대상 bbox를 기반으로 추론한다.
+        // m_manualTrackDisplayId: trackByNativeId(S_xxx) 시 저장된 display ID
+        // m_selectedDetectionId: 클릭으로만 설정되며 Track 버튼과 무관 → pose 탐색에는 사용 안 함
+        QVariantList dets;
+        QString selectedId;
+        {
+            QMutexLocker lk(&m_mutex);
+            dets = m_detections;
+            selectedId = m_manualTrackDisplayId;  // Track 버튼으로 선택한 ID
+        }
+
+        double bx = 0.0, by = 0.0, bw = 0.0, bh = 0.0;
+        bool bboxFound = false;
+        for (const QVariant &v : dets) {
+            if (!v.canConvert<QVariantMap>()) continue;
+            const QVariantMap dm = v.toMap();
+            const QString id = dm.value("id").toString();
+            const QString nativeId = dm.value("nativeId").toString();
+            const QString xmlId = dm.value("xmlId").toString();
+            const bool match = (!selectedId.isEmpty()) &&
+                               (selectedId == id || selectedId == nativeId || selectedId == xmlId);
+            if (!match) continue;
+            bx = dm.value("x").toDouble();
+            by = dm.value("y").toDouble();
+            bw = dm.value("w").toDouble();
+            bh = dm.value("h").toDouble();
+            bboxFound = (bw > 0.0 && bh > 0.0);
+            break;
+        }
+
+        const int kPoseEveryTicks = 5;
+        const qint64 kPoseStaleMs = 800;
+        const double kPosePadRatio = 0.15;
+        const int kPoseJpegQuality = 80;
+        static int sManualPoseTick = 0;
+        sManualPoseTick++;
+
+        static bool sManualPoseHistValid = false;
+        static double sManualPrevAimU = 0.0, sManualPrevAimV = 0.0;
+        static double sManualPrevBoxU = 0.0, sManualPrevBoxV = 0.0;
+        if (!bboxFound) {
+            g_qtPoseWorker.clearAim();
+            rbfqt_set_pose_aim(0.0f, 0.0f, 0);
+            setPoseOverlay(0.0, 0.0, false);
+            setRbfTarget(0.0, 0.0, false);
+            sManualPoseHistValid = false;
+        } else {
+            // bbox 중심 (m_pwmRatio 적용) → RBF가 pose 없을 때 겨냥하는 픽셀
+            const double bboxCx = (bx + bw * 0.5) * W;
+            const double bboxCy = (by + bh * m_pwmRatio) * H;
+            setRbfTarget(bboxCx, bboxCy, true);
+
+            if (sManualPoseTick % kPoseEveryTicks == 0) {
+                cv::Mat frameCopy;
+                {
+                    std::lock_guard<std::mutex> lk(g_latestFrameMutex);
+                    if (!g_latestFrame.empty()) frameCopy = g_latestFrame.clone();
+                }
+                if (!frameCopy.empty()) {
+                    const int l = std::max(0, std::min(W - 1, (int)std::lround(bx * W)));
+                    const int t = std::max(0, std::min(H - 1, (int)std::lround(by * H)));
+                    const int r = std::max(l + 1, std::min(W, (int)std::lround((bx + bw) * W)));
+                    const int b = std::max(t + 1, std::min(H, (int)std::lround((by + bh) * H)));
+                    const int objW = std::max(1, r - l);
+                    const int objH = std::max(1, b - t);
+                    const int padX = std::max(0, (int)std::lround(objW * kPosePadRatio));
+                    const int padY = std::max(0, (int)std::lround(objH * kPosePadRatio));
+                    const int cl = std::max(0, l - padX);
+                    const int ct = std::max(0, t - padY);
+                    const int cr = std::min(W, r + padX);
+                    const int cb = std::min(H, b + padY);
+                    const int cw = std::max(1, cr - cl);
+                    const int ch = std::max(1, cb - ct);
+                    if (cw > 8 && ch > 8) {
+                        cv::Mat crop = frameCopy(cv::Rect(cl, ct, cw, ch)).clone();
+                        std::vector<uchar> buf;
+                        std::vector<int> params{cv::IMWRITE_JPEG_QUALITY, kPoseJpegQuality};
+                        if (cv::imencode(".jpg", crop, buf, params)) {
+                            const double bboxBottomY = (double)(t + objH);
+                            g_qtPoseWorker.submit(buf, (double)cl, (double)ct, (double)cw, (double)ch,
+                                                  bboxBottomY, m_poseDownRatio);
+                        }
+                    }
+                }
+            }
+
+            double aimU = 0.0, aimV = 0.0;
+            qint64 aimMs = 0;
+            const bool gotAim = g_qtPoseWorker.getAim(aimU, aimV, aimMs);
+            const bool staleOk = gotAim && (now - aimMs) <= kPoseStaleMs;
+            if (staleOk) {
+                // bbox 대비 급점프 pose aim 차단 + EMA 스무딩
+                const double kPoseJumpBasePx = 16.0;
+                const double kPoseJumpScale = 2.5;
+                const double kPoseJumpFloorPx = 45.0;
+                const double kPoseEmaAlpha = 0.45;
+
+                double filteredAimU = aimU;
+                double filteredAimV = aimV;
+                bool jumpRejected = false;
+                if (sManualPoseHistValid) {
+                    const double poseMove = std::hypot(aimU - sManualPrevAimU, aimV - sManualPrevAimV);
+                    const double boxMove = std::hypot(bboxCx - sManualPrevBoxU, bboxCy - sManualPrevBoxV);
+                    const double allowedJump = std::max(kPoseJumpFloorPx, kPoseJumpBasePx + kPoseJumpScale * boxMove);
+                    if (poseMove > allowedJump) {
+                        jumpRejected = true;
+                        filteredAimU = sManualPrevAimU;
+                        filteredAimV = sManualPrevAimV;
+                    } else {
+                        filteredAimU = sManualPrevAimU + kPoseEmaAlpha * (aimU - sManualPrevAimU);
+                        filteredAimV = sManualPrevAimV + kPoseEmaAlpha * (aimV - sManualPrevAimV);
+                    }
+                }
+
+                rbfqt_set_pose_aim((float)filteredAimU, (float)filteredAimV, 1);
+                setPoseOverlay(filteredAimU, filteredAimV, true);
+                setRbfTarget(filteredAimU, filteredAimV, true);      // pose 유효 → pose aim이 RBF 타겟
+                sManualPrevAimU = filteredAimU;
+                sManualPrevAimV = filteredAimV;
+                sManualPrevBoxU = bboxCx;
+                sManualPrevBoxV = bboxCy;
+                sManualPoseHistValid = true;
+                if (jumpRejected) {
+                    qDebug() << "[PoseAim][manual] jump rejected raw=(" << aimU << "," << aimV
+                             << ") filtered=(" << filteredAimU << "," << filteredAimV << ")";
+                }
+            } else {
+                rbfqt_set_pose_aim(0.0f, 0.0f, 0);
+                setPoseOverlay(0.0, 0.0, false);
+                setRbfTarget(bboxCx, bboxCy, true);  // pose 없음 → bbox 중심이 RBF 타겟
+                sManualPoseHistValid = false;
+            }
+            static qint64 lastManualPoseLogMs = 0;
+            if (now - lastManualPoseLogMs > 1000) {
+                if (gotAim) {
+                    const qint64 poseRttMs = g_qtPoseWorker.getPoseRttMs();
+                    qDebug() << "[PoseAim][manual] aim=(" << aimU << "," << aimV
+                             << ") ageMs=" << (now - aimMs) << " poseRttMs=" << poseRttMs
+                             << " staleOk=" << staleOk << " id=" << selectedId;
+                } else {
+                    qDebug() << "[PoseAim][manual] no aim yet staleOk=false id=" << selectedId;
+                }
+                lastManualPoseLogMs = now;
+            }
+        }
     }
 
     int pan = 1500, tilt = 1500;

@@ -254,3 +254,70 @@ ERROR
 
 일반적인 AT 펌웨어에서는 최소한 `AT` → `OK` 가 나와야 정상이다.
 
+---
+
+### 7. ESP8266을 서버(AP) 모드로 운용 (노트북이 직접 접속)
+
+아래는 **ESP8266이 AP + TCP 서버**가 되고, 노트북/Qt가 클라이언트로 붙는 구성이다.
+
+구성:
+
+- ESP8266 AP IP: 기본 `192.168.4.1`
+- TCP 서버 포트: 예) `5566`
+- 노트북: ESP AP(SSID)로 직접 Wi-Fi 접속
+
+#### 7-1. 1회 설정(플래시에 저장)
+
+```text
+AT+SYSSTORE=1
+AT+CWMODE_DEF=2
+AT+CWSAP_DEF="ESP8266_AP","12345678",5,3
+```
+
+- `CWMODE_DEF=2`: AP 모드
+- `CWSAP_DEF=...`: SSID/비밀번호/채널/암호화 저장
+- `_DEF` 명령은 재부팅 후에도 유지됨
+
+#### 7-2. 런타임(부팅 후) 서버 열기
+
+펌웨어에 따라 `CIPMUX/CIPSERVER`가 재부팅 후 유지되지 않을 수 있으므로, 부팅 시 아래를 다시 보내는 것을 권장:
+
+```text
+AT+CIPMUX=1
+AT+CIPSERVER=1,5566
+AT+CIFSR
+```
+
+- `CIPMUX=1`: 다중 연결 허용
+- `CIPSERVER=1,5566`: TCP 서버 시작
+- `CIFSR`: AP IP 확인 (`192.168.4.1` 확인용)
+
+#### 7-3. 노트북 연결 방법
+
+1. 노트북 Wi-Fi에서 `ESP8266_AP` 접속
+2. 비밀번호 `12345678` 입력
+3. 포트 체크:
+
+   - Windows PowerShell:
+
+   ```powershell
+   Test-NetConnection 192.168.4.1 -Port 5566
+   ```
+
+4. Qt/클라이언트 설정:
+
+   - `SFEPS_PWM_MODE=stm`
+   - `SFEPS_PWM_HOST=192.168.4.1`
+   - `SFEPS_PWM_PORT=5566`
+
+#### 7-4. 매번 입력해야 하는지 정리
+
+- **매번 불필요 (저장됨)**:
+  - `AT+CWMODE_DEF=2`
+  - `AT+CWSAP_DEF=...`
+- **부팅 시 재실행 권장**:
+  - `AT+CIPMUX=1`
+  - `AT+CIPSERVER=1,5566`
+
+STM32 부팅 코드에서 위 2줄을 자동 전송하면 운용이 가장 안정적이다.
+
