@@ -539,7 +539,11 @@ bool runFullPipeline(const cv::Mat& frame,
               << ", depth=" << frame.depth()
               << ", channels=" << frame.channels() << std::endl;
 
-    cv::imwrite(debug_dir + "1_raw_capture.png", frame);
+    cv::Mat raw_vis;
+    double min_val, max_val;
+    cv::minMaxLoc(frame, &min_val, &max_val);
+    frame.convertTo(raw_vis, CV_8UC1, 255.0 / (max_val - min_val), -min_val * 255.0 / (max_val - min_val));
+    cv::imwrite(debug_dir + "1_raw_capture.png", raw_vis);
 
     cv::Mat isp_out;
     if (raw_mode) {
