@@ -81,9 +81,17 @@ if (-not (Test-Path $caPath)) {
 #   STM/ESP8266 모드        : SFEPS_PWM_MODE=stm   → UDP 무선
 #
 # PWM 설정은 항상 강제 적용 (Set-DefaultEnv는 이미 설정된 값을 덮어쓰지 않으므로 직접 설정)
-[Environment]::SetEnvironmentVariable("SFEPS_PWM_MODE", "raspi",        "Process")  # raspi | stm
-[Environment]::SetEnvironmentVariable("SFEPS_PWM_HOST", "127.0.0.1",    "Process")  # SSH 터널: ssh -p 2222 -L 15566:localhost:5566 -N physical-100@192.168.0.87
-[Environment]::SetEnvironmentVariable("SFEPS_PWM_PORT", "15566",        "Process")  # 로컬 터널 포트 (Cursor가 5566 점유 중)
+# both: Raspberry Pi(TCP) + ESP8266(STM) 동시 송신
+[Environment]::SetEnvironmentVariable("SFEPS_PWM_MODE", "both",         "Process")  # raspi | stm | both
+[Environment]::SetEnvironmentVariable("SFEPS_PWM_HOST", "127.0.0.1",    "Process")  # Raspberry Pi 터널: ssh -p 2222 -L 15566:localhost:5566 -N physical-100@192.168.0.87
+[Environment]::SetEnvironmentVariable("SFEPS_PWM_PORT", "15566",        "Process")  # Raspberry Pi 터널 로컬 포트
+[Environment]::SetEnvironmentVariable("SFEPS_PWM_STM_TRANSPORT", "tcp", "Process")  # udp | tcp
+[Environment]::SetEnvironmentVariable("SFEPS_PWM_STM_HOST", "192.168.4.1", "Process")
+[Environment]::SetEnvironmentVariable("SFEPS_PWM_STM_PORT", "5566",        "Process")
+
+# ESP8266 AP 모드 사용 시(예: SSID=ESP8266_AP, PW=chl571010):
+# 1) Windows를 ESP8266_AP에 먼저 연결해야 함 (Qt가 Wi-Fi 연결 자체를 수행하진 않음)
+# 2) ESP에서 TCP 서버를 열어야 함 (예: AT+CIPSERVER=1,5566)
 
 # pose(어깨) 기반 조준점: shoulder_y + (bboxBottom - shoulder_y) * ratio
 # 0.0 → 어깨 중심, 1.0 → sticky bbox bottom

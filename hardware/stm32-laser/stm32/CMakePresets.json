@@ -22,6 +22,14 @@
             }
         },
         {
+            "name": "Debug-Server",
+            "inherits": "default",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "WIFI_WORK_MODE": "1"
+            }
+        },
+        {
             "name": "Release",
             "inherits": "default",
             "cacheVariables": {
@@ -33,6 +41,10 @@
         {
             "name": "Debug",
             "configurePreset": "Debug"
+        },
+        {
+            "name": "Debug-Server",
+            "configurePreset": "Debug-Server"
         },
         {
             "name": "Release",

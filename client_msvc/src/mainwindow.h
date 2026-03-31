@@ -58,6 +58,12 @@ class MainWindow : public QObject
     Q_PROPERTY(int frameWidth READ frameWidth NOTIFY previewRevisionChanged)
     Q_PROPERTY(int frameHeight READ frameHeight NOTIFY previewRevisionChanged)
     Q_PROPERTY(bool useLowLatencyOpenCv READ useLowLatencyOpenCv CONSTANT)
+    Q_PROPERTY(double poseAimU READ poseAimU NOTIFY poseAimChanged)
+    Q_PROPERTY(double poseAimV READ poseAimV NOTIFY poseAimChanged)
+    Q_PROPERTY(bool poseAimValid READ poseAimValid NOTIFY poseAimChanged)
+    Q_PROPERTY(double rbfTargetU READ rbfTargetU NOTIFY rbfTargetChanged)
+    Q_PROPERTY(double rbfTargetV READ rbfTargetV NOTIFY rbfTargetChanged)
+    Q_PROPERTY(bool rbfTargetValid READ rbfTargetValid NOTIFY rbfTargetChanged)
 #endif
 
 public:
@@ -89,6 +95,8 @@ public:
     // QML Track 버튼 → N-ID로 직접 추적 시작 (매 tick 자동 bbox 갱신)
     Q_INVOKABLE void trackByNativeId(const QString &nativeId);
     Q_INVOKABLE void clearRbfTarget();
+    // Laser Tracking 토글: ON일 때만 pose 추정/SET_PWM 계산 수행
+    Q_INVOKABLE void setLaserTrackingEnabled(bool enabled);
 
     // Fraud 알림: xmlId 추가/삭제 (bbox 색상 빨간색 표시 및 자동 전환 트리거)
     Q_INVOKABLE void addFraudXmlId(const QString &xmlId);
@@ -119,6 +127,13 @@ public:
         return h > 0 ? h : 1080;
     }
     bool useLowLatencyOpenCv() const { return true; }
+    bool laserTrackingEnabled() const { return m_laserTrackingEnabled; }
+    double poseAimU() const { return m_poseAimU; }
+    double poseAimV() const { return m_poseAimV; }
+    bool poseAimValid() const { return m_poseAimValid; }
+    double rbfTargetU() const { return m_rbfTargetU; }
+    double rbfTargetV() const { return m_rbfTargetV; }
+    bool rbfTargetValid() const { return m_rbfTargetValid; }
 #endif
 
 signals:
@@ -138,6 +153,8 @@ signals:
 #ifdef SFEPS_HAVE_OPENCV
     void previewRevisionChanged();
     void pwmSetRequested(int pan, int tilt);
+    void poseAimChanged();
+    void rbfTargetChanged();
 #endif
 
 #ifdef CAMERA_RBF_QT_MODE
@@ -180,6 +197,8 @@ private:
     QSet<QString> m_fraudXmlIds;
     // 수동 추적 활성 여부 (Track 버튼으로 시작된 경우 true → fraud 자동 전환 억제)
     bool m_manualTracking{false};
+    // 수동 Track 버튼으로 선택된 displayId (S_xxx / N_xxx) – pose worker bbox 탐색에 사용
+    QString m_manualTrackDisplayId;
 #ifdef CAMERA_RBF_QT_MODE
     // 부정승차 자동 레이저가 따라갈 ONVIF XML ID (fraudAutoTrackRequest→trackByXmlId 시만 설정, 추가 FRAUD는 색만)
     QString m_fraudLaserStickyXmlId;
@@ -231,6 +250,13 @@ private:
     std::atomic_bool m_opencvRunning{false};
     QTimer *m_pwmTimer = nullptr;
     qint64 m_lastPwmTickMs = 0;
+    double m_poseAimU = 0.0;
+    double m_poseAimV = 0.0;
+    bool m_poseAimValid = false;
+    double m_rbfTargetU = 0.0;
+    double m_rbfTargetV = 0.0;
+    bool m_rbfTargetValid = false;
+    bool m_laserTrackingEnabled{true};
 #ifndef CAMERA_RBF_QT_MODE
     // 레거시 모드: native_metadata_tracker + rbf_pwm_core 직접 사용
     NativeMetadataTracker m_nativeTracker;

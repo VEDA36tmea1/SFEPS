@@ -189,6 +189,71 @@ Item {
                     }
                 }
             }
+
+            // ── Pose Aim 도트 (하늘색 원): MediaPipe가 계산한 어깨/목표 픽셀 위치
+            Rectangle {
+                id: poseAimDot
+                z: 110
+                visible: useOpencvVideo
+                         && videoBackend.poseAimValid
+                         && imageWidth > 0 && imageHeight > 0
+                width: 12; height: 12; radius: 6
+                color: "#00e5ff"
+                border.width: 2; border.color: "white"
+                x: (videoBackend.poseAimU / imageWidth) * parent.width - width / 2
+                y: (videoBackend.poseAimV / imageHeight) * parent.height - height / 2
+
+                Text {
+                    text: "POSE"
+                    color: "#00e5ff"
+                    font.pixelSize: 10
+                    font.bold: true
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.top: parent.bottom
+                    anchors.topMargin: 2
+                }
+            }
+
+            // ── RBF 타겟 십자선 (주황색): 실제로 하드웨어에 전송되는 겨냥 위치
+            // pose 유효 → pose aim 좌표 / pose 없음 → bbox 중심 좌표
+            Item {
+                id: rbfTargetCross
+                z: 111
+                visible: useOpencvVideo
+                         && videoBackend.rbfTargetValid
+                         && imageWidth > 0 && imageHeight > 0
+                x: (videoBackend.rbfTargetU / imageWidth) * parent.width
+                y: (videoBackend.rbfTargetV / imageHeight) * parent.height
+
+                // 가로선
+                Rectangle {
+                    width: 20; height: 2
+                    color: "#ff8c00"
+                    anchors.centerIn: parent
+                }
+                // 세로선
+                Rectangle {
+                    width: 2; height: 20
+                    color: "#ff8c00"
+                    anchors.centerIn: parent
+                }
+                // 중심 점
+                Rectangle {
+                    width: 6; height: 6; radius: 3
+                    color: "#ff8c00"
+                    border.width: 1; border.color: "white"
+                    anchors.centerIn: parent
+                }
+                Text {
+                    text: "RBF"
+                    color: "#ff8c00"
+                    font.pixelSize: 10
+                    font.bold: true
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.top: parent.bottom
+                    anchors.topMargin: 6
+                }
+            }
         }
     }
 
