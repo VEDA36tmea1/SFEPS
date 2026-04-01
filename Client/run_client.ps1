@@ -1,0 +1,159 @@
+# SFEPS 클라이언트 실행 스크립트 (Windows PowerShell)
+# 이 파일에서 환경변수를 수정하세요.
+# 실행 방법: client_msvc 폴더 또는 build-msvc 폴더 어디서든 호출 가능
+#   cd C:\Users\2-16\Desktop\SFEPS\client_msvc
+#   .\run_client.ps1
+
+# 스크립트 위치 기준으로 client_msvc 폴더를 찾음 (build-msvc 에서 호출해도 동작)
+$clientDir = $PSScriptRoot
+if ($clientDir -like '*build-msvc*') {
+    $clientDir = Split-Path $clientDir -Parent
+}
+
+function Set-DefaultEnv([string]$name, [string]$value) {
+    if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+        [Environment]::SetEnvironmentVariable($name, $value, "Process")
+    }
+}
+
+# ── 서버 연결 ──────────────────────────────────────────────────────────────────
+Set-DefaultEnv "RTSP_STREAM_URL" "rtsp://192.168.0.84/profile2/media.smp"
+# metadata 수신 RTSP (객체 박스용): 기본은 영상 URL과 동일
+Set-DefaultEnv "METADATA_RTSP_URL" $env:RTSP_STREAM_URL
+# 카메라가 trackID=v/m 이 아니면 0/1 등으로 지정
+Set-DefaultEnv "METADATA_VIDEO_TRACK_ID" "v"
+Set-DefaultEnv "METADATA_META_TRACK_ID" "m"
+Set-DefaultEnv "FRAUD_SERVER_HOST" "192.168.0.101"
+Set-DefaultEnv "FRAUD_SERVER_PORT" "5557"
+# Auth 서버 호스트 (AuthManager 기본값이 192.168.0.82라서 로그가 82로 보일 수 있음)
+[Environment]::SetEnvironmentVariable("AUTH_SERVER_HOST", "192.168.0.101", "Process")
+Set-DefaultEnv "POS_SERVER_PORT" "5558"
+# 비디오 아카이브 카탈로그 서버 (VideoArchiveManager - ArchiveView의 녹화 목록/재생)
+Set-DefaultEnv "VIDEO_CATALOG_HOST"       "192.168.0.101"
+Set-DefaultEnv "SFEPS_VIDEO_CATALOG_PORT" "5559"
+Set-DefaultEnv "AUTH_TLS_ENABLE" "0"          # TLS 사용 시 1
+
+# ── 저지연 스트리밍 옵션(직접 RTSP) ────────────────────────────────────────────
+# 1이면 로그인/서버 연결 없이 메인 화면에서 RTSP 직접 재생
+Set-DefaultEnv "SFEPS_DIRECT_STREAM_MODE" "0"
+# 1이면 ONVIF 메타데이터(XMLParser)로 Human bbox를 직접 파싱해 오버레이
+Set-DefaultEnv "SFEPS_USE_ONVIF_METADATA" "1"
+# ffmpeg | gstreamer
+Set-DefaultEnv "RTSP_BACKEND" "gstreamer"
+# 목표 표시 FPS (worker emit 간격)
+Set-DefaultEnv "RTSP_TARGET_FPS" "30"
+# grab 후 추가로 버릴 프레임 수 (live-edge 유지)
+Set-DefaultEnv "RTSP_DROP_GRABS" "3"
+# ffmpeg 저지연 옵션 (필요 시 조정)
+Set-DefaultEnv "RTSP_FFMPEG_OPTIONS" "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0|probesize;32768|analyzeduration;0|reorder_queue_size;0"
+# OpenCV CAP_GSTREAMER 전용 파이프라인 (비어있으면 FFmpeg fallback)
+if ([string]::IsNullOrWhiteSpace($env:SFEPS_GSTREAMER_PIPELINE) -and $env:RTSP_BACKEND -eq "gstreamer") {
+    $env:SFEPS_GSTREAMER_PIPELINE = "rtspsrc location=$($env:RTSP_STREAM_URL) latency=0 protocols=tcp ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! appsink drop=true max-buffers=1 sync=false"
+}
+
+# ── TLS/CA (로그인 채널) ─────────────────────────────────────────────────────
+# TLS 사용 시 AUTH_TLS_ENABLE=1 로 변경하고, CA 파일 경로를 확인하세요.
+$caPath = Join-Path $clientDir "certs\auth_ca.pem"
+Set-DefaultEnv "AUTH_TLS_PORT" "6555"
+Set-DefaultEnv "AUTH_PLAINTEXT_PORT" "5555"
+[Environment]::SetEnvironmentVariable("AUTH_ALLOW_PLAINTEXT_FALLBACK", "1", "Process")
+[Environment]::SetEnvironmentVariable("AUTH_TLS_CA_FILE", $caPath, "Process")
+
+# 선택: 통합 TLS 토글(프로젝트의 다른 경로에서 참조 가능)
+[Environment]::SetEnvironmentVariable("SFEPS_CLIENT_TLS_ENABLE", $env:AUTH_TLS_ENABLE, "Process")
+[Environment]::SetEnvironmentVariable("SFEPS_CLIENT_CA_FILE", $caPath, "Process")
+[Environment]::SetEnvironmentVariable("SFEPS_ALERT_TLS_ENABLE", $env:AUTH_TLS_ENABLE, "Process")
+
+# 기타 서비스(Voice/Alert/Position/VideoCatalog) TLS 기본 토글 동기화
+[Environment]::SetEnvironmentVariable("SFEPS_POS_TLS_ENABLE", "$($env:AUTH_TLS_ENABLE)", "Process")
+[Environment]::SetEnvironmentVariable("SFEPS_VIDEO_CATALOG_TLS_ENABLE", $env:AUTH_TLS_ENABLE, "Process")
+
+if (-not (Test-Path $caPath)) {
+    Write-Warning "TLS CA 파일을 찾을 수 없습니다: $caPath"
+    Write-Warning "TLS 로그인 사용 시 certs/auth_ca.pem 파일을 배치하세요."
+}
+
+# ── PWM 전송 모드 (camera_RBF --qt-mode 연동) ──────────────────────────────────
+# camera_RBF.cpp를 --qt-mode 로 실행하면 클릭 이벤트 무시 + Track 버튼으로만 추적 시작
+# Qt 클라이언트가 PWM_OUT 수신 후 Raspberry Pi(set_pwm_server.py)로 TCP 전송
+# PWM 설정은 항상 강제 적용 (Set-DefaultEnv는 이미 설정된 값을 덮어쓰지 않으므로 직접 설정)
+[Environment]::SetEnvironmentVariable("SFEPS_PWM_HOST", "127.0.0.1",    "Process")  # SSH 터널: ssh -p 2222 -L 15566:localhost:5566 -N physical-100@192.168.0.87
+[Environment]::SetEnvironmentVariable("SFEPS_PWM_PORT", "15566",        "Process")  # 로컬 터널 포트 (Cursor가 5566 점유 중)
+
+# ESP8266 AP 모드 사용 시(예: SSID=ESP8266_AP, PW=chl571010):
+# 1) Windows를 ESP8266_AP에 먼저 연결해야 함 (Qt가 Wi-Fi 연결 자체를 수행하진 않음)
+# 2) ESP에서 TCP 서버를 열어야 함 (예: AT+CIPSERVER=1,5566)
+
+# ── Pose(어깨) 기반 조준점 및 사용 여부 ────────────────────────────────────────────
+# 0.0 → 어깨 중심, 1.0 → sticky bbox bottom
+[Environment]::SetEnvironmentVariable("SFEPS_POSE_DOWN_RATIO", "0.25", "Process")
+
+# Pose 사용 여부 토글 (true: MediaPipe 포즈 사용, false: 완전 OFF, bbox만 사용)
+# 필요할 때 여기만 true/false로 바꾸고 스크립트를 다시 실행하면 됨.
+$usePose = $true
+$poseEnable = if ($usePose) { "1" } else { "0" }
+[Environment]::SetEnvironmentVariable("SFEPS_POSE_ENABLE", $poseEnable, "Process")
+
+# Qt/standalone 공통: 지연 예측(칼만 predict_ms)
+# 메타데이터/프레임 지연이 크면 값을 올리세요.
+[Environment]::SetEnvironmentVariable("SFEPS_RBF_PREDICT_MS", "300", "Process")
+
+# ── 카메라 CGI 밝기/대조 제어 ──────────────────────────────────────────────────
+Set-DefaultEnv "CAMERA_CGI_USER" "admin"      # 카메라 로그인 아이디
+Set-DefaultEnv "CAMERA_CGI_PASSWORD" "CCgbdCCgbd"      # 카메라 로그인 비밀번호
+
+# 기본값 그대로 사용 시 아래 두 줄은 주석 유지 (192.168.0.84 고정)
+# $env:CAMERA_BRIGHTNESS_CGI_URL = "https://192.168.0.84/stw-cgi/image.cgi?msubmenu=imageenhancements2&action=set&Brightness={value}"
+# $env:CAMERA_CONTRAST_CGI_URL   = "https://192.168.0.84/stw-cgi/image.cgi?msubmenu=imageenhancements2&action=set&Contrast={value}"
+
+# HTTPS 자체서명 인증서 허용 (카메라 기본 설정)
+Set-DefaultEnv "CAMERA_CGI_ALLOW_INSECURE_TLS" "1"
+
+# ── 실행 ───────────────────────────────────────────────────────────────────────
+# OpenCV 통합 빌드(build-opencv-on)를 우선 사용, 없으면 기존 build-msvc fallback
+$exeCandidates = @(
+    (Join-Path $clientDir "build-opencv-on\Release\appHanwhaVisionSFEPS.exe"),
+    (Join-Path $clientDir "build-msvc\Release\appHanwhaVisionSFEPS.exe")
+)
+$exePath = $null
+foreach ($cand in $exeCandidates) {
+    if (Test-Path $cand) { $exePath = $cand; break }
+}
+
+if (-not $exePath) {
+    Write-Error "실행파일을 찾을 수 없습니다 (build-opencv-on 또는 build-msvc)."
+    Write-Host "OpenCV 빌드 예시:"
+    Write-Host "  cmake -S . -B build-opencv-on -G ""Visual Studio 17 2022"" -A x64 -DOpenCV_DIR=""C:/Users/2-16/Desktop/SFEPS/opencv-gst/install"""
+    Write-Host "  cmake --build build-opencv-on --config Release"
+    Write-Host ""
+    Write-Host "기존 빌드 예시:"
+    Write-Host "  cmake -S . -B build-msvc -G ""Visual Studio 17 2022"" -A x64 -DSFEPS_WITH_OPENCV=OFF"
+    Write-Host "  cmake --build build-msvc --config Release"
+    exit 1
+}
+
+# OpenCV/GStreamer/Qt 런타임 DLL 경로를 우선 추가
+$opencvBinCandidates = @(
+    # 표준 위치 (최우선)
+    "C:\Users\2-16\Desktop\SFEPS\opencv-gst\install\x64\vc17\bin",
+    # 중첩 폴더 구조인 경우 fallback
+    "C:\Users\2-16\Desktop\SFEPS\opencv-gst\opencv-gst\install\x64\vc17\bin",
+    # 다른 개발자 경로 후보
+    "C:\Users\2-16\Downloads\opencv-gst\install\x64\vc17\bin",
+    "C:\opencv\build\x64\vc17\bin",
+    "C:\opencv-gst\install\x64\vc17\bin"
+)
+$opencvBin = $null
+foreach ($cand in $opencvBinCandidates) {
+    if (Test-Path $cand) { $opencvBin = $cand; break }
+}
+$gstreamerBin = "C:\Program Files\gstreamer\1.0\msvc_x86_64\bin"
+$gstreamerPluginDir = "C:\Program Files\gstreamer\1.0\msvc_x86_64\lib\gstreamer-1.0"
+$qtBin = "C:\Qt\6.10.0\msvc2022_64\bin"
+if ($opencvBin) { $env:Path = "$opencvBin;$env:Path" }
+if (Test-Path $gstreamerBin) { $env:Path = "$gstreamerBin;$env:Path" }
+if (Test-Path $gstreamerPluginDir) { Set-DefaultEnv "GST_PLUGIN_PATH" $gstreamerPluginDir }
+if (Test-Path $qtBin) { $env:Path = "$qtBin;$env:Path" }
+
+Write-Host "[run_client.ps1] exe=$exePath opencvBin=$opencvBin backend=$($env:RTSP_BACKEND) AUTH_TLS_ENABLE=$($env:AUTH_TLS_ENABLE)"
+& $exePath

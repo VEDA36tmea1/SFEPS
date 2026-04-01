@@ -7,6 +7,8 @@ Nucleo STM32F401RE 펌웨어는 다음을 동시에 수행합니다.
 3. `ESP8266`(USART1)와 통신하여 TCP payload(`+IPD,...:`)를 수신하고 파싱
 4. `USART2`(PC)에서 들어오는 입력을 파싱(AT pass-through, mode 전환, PWM 설정 등)
 5. `TRACK_START / TRACK_END` 수신 시 서버로 ACK를 다시 TCP로 전송
+6. `SET_PWM,PAN=...,TILT=...` 수신 시 서보 PWM 직접 반영
+7. WiFi 동작 모드 분기: CLIENT(기존) / SERVER(신규)
 
 ---
 
@@ -23,8 +25,9 @@ Nucleo STM32F401RE 펌웨어는 다음을 동시에 수행합니다.
 
 ### 파서 분리
 - `Core/Inc/ESP_Parser.h`, `Core/Src/ESP_Parser.c`
-  - `+IPD` payload 내부의 `TRACK_START / TRACK_POS / TRACK_END` 파싱
+  - `+IPD` payload 내부의 `TRACK_START / TRACK_POS / TRACK_END / SET_PWM` 파싱
   - PB0 레이저 on/off 및 서버 ACK 전송 큐잉
+  - `SET_PWM,PAN=<us>,TILT=<us>`를 `Servo_SetAllUs(tilt, pan)`으로 반영
 
 - `Core/Inc/UART_Parser.h`, `Core/Src/UART_Parser.c`
   - `USART2`(PC)에서 들어오는 1라인을 파싱
@@ -65,14 +68,14 @@ Nucleo STM32F401RE 펌웨어는 다음을 동시에 수행합니다.
 
 ---
 
-## 3) +IPD 수신 파싱: legacy + TRACK
+## 3) +IPD 수신 파싱: legacy + TRACK + SET_PWM
 
 ### 3.1 라인 분리 방식
 `main.c`에서 `payload` 문자열 내부를 다음처럼 처리합니다.
 - `+IPD` 이후 콜론(`:`) 뒤부터 payload 시작
 - payload 끝의 `\r`/`\n` 제거
 - 그 다음 `\r\n`으로 “한 줄(cursor)”을 만들고, cursor마다 다음을 수행:
-  - `ESP_Parser_HandleIpdLine(cursor)` (TRACK_* 처리용)
+  - `ESP_Parser_HandleIpdLine(cursor)` (TRACK_*/SET_PWM 처리용)
   - 실패하면 legacy:
     - `EX=...,EY=...` : IBVS PID 입력
     - `CX=...,CY=...` : 기존 직접 PWM 경로(예: `Servo_SetAllUs`)
@@ -86,7 +89,8 @@ Nucleo STM32F401RE 펌웨어는 다음을 동시에 수행합니다.
   - `CLOSED`, `STATUS:4` 등 포함 시
 - 에러/실패는 `ERROR`/`FAIL`을 찾아 송신 pending 등을 정리
 
-> 주의: `WIFI_SERVER_IP`/`WIFI_SERVER_PORT`는 현재 코드에 상수로 들어있습니다. 서버 포트와 반드시 맞춰야 합니다.
+> 주의: `WIFI_WORK_MODE=CLIENT`일 때만 `WIFI_SERVER_IP`/`WIFI_SERVER_PORT` 재접속 로직이 동작합니다.
+> `WIFI_WORK_MODE=SERVER`일 때는 `CIPSTART` 재접속을 하지 않고, 부팅 시 서버를 열어 대기합니다.
 
 ---
 
@@ -111,6 +115,12 @@ Nucleo STM32F401RE 펌웨어는 다음을 동시에 수행합니다.
   - `[TRACK] START id=... (PB0 ON if not manual)\r\n`
   - `[TRACK] END id=... REASON=... (PB0 OFF if not manual)\r\n` (또는 reason 없을 때 REASON 없이)
 - `TRACK_POS`는 초당 수십 번 호출될 수 있어 **디버그 한 줄은 출력하지 않음** (원문은 위 `wifi_link_ok` 에코로 확인).
+
+### 4.4 PWM 수신 로그(USART2)
+- `SET_PWM,PAN=...,TILT=...` 수신 시 `ESP_Parser`가 다음 로그를 출력:
+  - `[PWM] PAN=1290 TILT=1390 us`
+- 실제 반영은 `Esp_SetServoPwm(pan, tilt)` 래퍼를 통해 수행:
+  - `Servo_SetAllUs(tilt, pan)` (CH1=TILT, CH2=PAN)
 
 ---
 
@@ -191,4 +201,85 @@ Nucleo STM32F401RE 펌웨어는 다음을 동시에 수행합니다.
 1. `TRACK_POS`는 현재 단계에서 별도 ACK/서보 업데이트 없이 무시합니다(“서보/좌표 추종 로직을 확장”하면 여기서 처리).
 2. 레이저 on/off의 “HIGH=ON” 여부는 사용 중인 레이저 드라이버/회로 극성에 따라 반전될 수 있습니다. 필요하면 `PB0_SetLaser(on)`에서 on/off만 뒤집으면 됩니다.
 3. 서버 포트 불일치(예: 서버는 5555, 펌웨어는 5565)면 재연결만 반복됩니다. `WIFI_SERVER_PORT`와 서버 포트를 맞추세요.
+
+---
+
+## 10) WiFi 모드 분기 (CLIENT / SERVER)
+
+`main.c`는 컴파일 타임 매크로 `WIFI_WORK_MODE`로 ESP 동작을 분기합니다.
+
+- `0` (`WIFI_MODE_CLIENT`, 기본)
+  - 기존 동작 유지
+  - `Wifi_MaybeReconnect()`에서 `AT+CIPSTART="TCP","<WIFI_SERVER_IP>",<WIFI_SERVER_PORT>` 재시도
+
+- `1` (`WIFI_MODE_SERVER`)
+  - 부팅 시 자동 전송:
+    - `AT+CIPMUX=1`
+    - `AT+CIPSERVER=1,5566`
+    - `AT+CIFSR`
+  - `Wifi_MaybeReconnect()`는 서버 모드에서 비활성화 (CIPSTART 안 함)
+
+### 10.1 CMake 설정
+
+`CMakeLists.txt`:
+- `WIFI_WORK_MODE` cache variable 추가 (`0` 기본)
+- compile definition: `WIFI_WORK_MODE=${WIFI_WORK_MODE}`
+
+`CMakePresets.json`:
+- `Debug`       : CLIENT 모드
+- `Debug-Server`: SERVER 모드 (`WIFI_WORK_MODE=1`)
+
+빌드 예:
+
+```powershell
+# CLIENT (기존)
+cmake --preset Debug
+cmake --build --preset Debug
+
+# SERVER (부팅 시 CIPMUX/CIPSERVER 자동 실행)
+cmake --preset Debug-Server
+cmake --build --preset Debug-Server
+```
+
+---
+
+## 11) Windows에서 STM32 굽기(Flash) 명령어
+
+`st-flash` 대신 **STM32CubeCLT에 포함된 `STM32_Programmer_CLI.exe`** 사용을 권장합니다.
+
+### 11.1 SERVER 모드 빌드 + 굽기
+
+```powershell
+cd C:\Users\2-16\Desktop\SFEPS\hardware\stm32-laser\stm32
+
+cmake --preset Debug-Server
+cmake --build --preset Debug-Server
+
+& "C:\ST\STM32CubeCLT_1.21.0\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe" `
+  -c port=SWD `
+  -d ".\build\Debug-Server\stm32_laser.bin" 0x08000000 `
+  -rst
+```
+
+### 11.2 CLIENT 모드 빌드 + 굽기
+
+```powershell
+cd C:\Users\2-16\Desktop\SFEPS\hardware\stm32-laser\stm32
+
+cmake --preset Debug
+cmake --build --preset Debug
+
+& "C:\ST\STM32CubeCLT_1.21.0\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe" `
+  -c port=SWD `
+  -d ".\build\Debug\stm32_laser.bin" 0x08000000 `
+  -rst
+```
+
+### 11.3 경로가 다를 때 확인 명령
+
+```powershell
+Get-ChildItem "C:\ST" -Recurse -Filter "STM32_Programmer_CLI.exe"
+```
+
+출력된 실제 경로로 위 명령의 exe 경로를 바꿔서 사용하면 됩니다.
 
