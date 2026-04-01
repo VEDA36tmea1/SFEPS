@@ -43,8 +43,6 @@ SecurityRuntimeOptions load_security_runtime_options() {
         load_env_int("SFEPS_POSITION_MIN_SEND_MS", 1000, 1, kConfigLogPrefix);
     cfg.auth_deauth_grace_ms =
         load_env_int("SFEPS_AUTH_DEAUTH_GRACE_MS", 3000, 0, kConfigLogPrefix);
-    cfg.position_stale_seconds =
-        load_env_size_t("SFEPS_POSITION_STALE_SEC", 3, 1, kConfigLogPrefix);
 
     cfg.app_tls_enable = load_env_bool("SFEPS_APP_TLS_ENABLE", false, kConfigLogPrefix);
     cfg.app_plaintext_enable = load_env_bool("SFEPS_APP_PLAINTEXT_ENABLE", true, kConfigLogPrefix);
@@ -86,26 +84,6 @@ SecurityRuntimeOptions load_security_runtime_options() {
     cfg.fraud_image_retention_sec =
         load_env_size_t("SFEPS_FRAUD_IMAGE_RETENTION_SEC", 86400, 1, kConfigLogPrefix);
 
-    cfg.esp_tcp_enable = load_env_bool("SFEPS_ESP_TCP_ENABLE", false, kConfigLogPrefix);
-    cfg.esp_tcp_port = load_env_port("SFEPS_ESP_TCP_PORT", 5565, kConfigLogPrefix);
-    cfg.esp_tcp_max_clients =
-        load_env_size_t("SFEPS_ESP_TCP_MAX_CLIENTS", 4, 1, kConfigLogPrefix);
-    cfg.esp_tcp_allow_ips = parse_allowlist_env("SFEPS_ESP_TCP_ALLOW_IPS");
-
-    const std::string esp_bind_ip = load_env_string("SFEPS_ESP_TCP_BIND_IP");
-    if (!esp_bind_ip.empty()) {
-        cfg.esp_tcp_bind_ip = trim_copy(esp_bind_ip);
-    }
-    cfg.esp_test_track_pos_enable =
-        load_env_bool("SFEPS_ESP_TEST_TRACK_POS_ENABLE", false, kConfigLogPrefix);
-    cfg.esp_test_track_pos_interval_sec = load_env_int(
-        "SFEPS_ESP_TEST_TRACK_POS_INTERVAL_SEC", 5, 1, kConfigLogPrefix);
-    const std::string esp_test_track_pos_object_id =
-        load_env_string("SFEPS_ESP_TEST_TRACK_POS_OBJECT_ID", "ESP-TEST-01");
-    if (!esp_test_track_pos_object_id.empty()) {
-        cfg.esp_test_track_pos_object_id = trim_copy(esp_test_track_pos_object_id);
-    }
-
     return cfg;
 }
 
@@ -119,14 +97,6 @@ bool validate_security_runtime_options(const SecurityRuntimeOptions& cfg, std::s
     if (inet_pton(AF_INET, cfg.app_bind_ip.c_str(), &bind_addr) != 1) {
         err = "invalid bind IP in SFEPS_APP_BIND_IP: " + cfg.app_bind_ip;
         return false;
-    }
-
-    if (cfg.esp_tcp_enable) {
-        in_addr esp_bind_addr {};
-        if (inet_pton(AF_INET, cfg.esp_tcp_bind_ip.c_str(), &esp_bind_addr) != 1) {
-            err = "invalid bind IP in SFEPS_ESP_TCP_BIND_IP: " + cfg.esp_tcp_bind_ip;
-            return false;
-        }
     }
 
     if (!cfg.app_tls_enable) {
@@ -244,20 +214,4 @@ void log_transport_mode(const SecurityRuntimeOptions& cfg) {
                   << kPositionPort << "/" << cfg.video_catalog_port << std::endl;
     }
     std::cout << "[main.cpp] [Security] Bind IP=" << cfg.app_bind_ip << std::endl;
-}
-
-void log_esp_transport_mode(const SecurityRuntimeOptions& cfg) {
-    std::cout << "[main.cpp] [ESP] 활성화=" << (cfg.esp_tcp_enable ? "on" : "off")
-              << ", bind_ip=" << cfg.esp_tcp_bind_ip
-              << ", port=" << cfg.esp_tcp_port
-              << ", max_clients=" << cfg.esp_tcp_max_clients << std::endl;
-    if (cfg.esp_tcp_enable) {
-        if (cfg.esp_tcp_allow_ips.empty()) {
-            std::cout << "[main.cpp] [ESP] SFEPS_ESP_TCP_ALLOW_IPS is empty: allow-all within bound interface."
-                      << std::endl;
-        } else {
-            std::cout << "[main.cpp] [ESP] SFEPS_ESP_TCP_ALLOW_IPS 활성화됨: "
-                      << cfg.esp_tcp_allow_ips.size() << " IP(s)." << std::endl;
-        }
-    }
 }

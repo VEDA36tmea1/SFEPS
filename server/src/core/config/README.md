@@ -15,14 +15,14 @@
 
 ### `security_runtime.cpp`
 - `SecurityRuntimeOptions`를 환경변수 기반으로 구성합니다.
-- allowlist, 최대 바이트 수, 최대 클라이언트 수, 타임아웃, TLS 포트, ESP TCP 옵션, 이미지 보관 기간 등을 읽습니다.
+- allowlist, 최대 바이트 수, 최대 클라이언트 수, 타임아웃, TLS 포트, 이미지 보관 기간 등을 읽습니다.
 - `validate_security_runtime_options`는 아래 항목을 검증합니다.
   - plaintext/TLS가 둘 다 비활성화되지 않았는지
   - bind IP가 올바른 IPv4인지
   - TLS cert/key 파일이 존재하고 읽기 가능한지
   - TLS 포트끼리, 또는 plaintext 포트와 충돌하지 않는지
   - Auth/Audio/Alert allowlist가 비어 있지 않은지
-- `log_allowlist_mode`, `log_transport_mode`, `log_esp_transport_mode`는 현재 보안 모드를 기동 로그로 남깁니다.
+- `log_allowlist_mode`, `log_transport_mode`는 현재 보안 모드를 기동 로그로 남깁니다.
 
 ## 운영 관점 메모
 

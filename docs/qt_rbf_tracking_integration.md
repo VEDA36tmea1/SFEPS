@@ -11,7 +11,7 @@
 |-----------|------|
 | `camera_RBF.cpp` | RTSP 스트림 수신 + ONVIF 메타데이터 파싱 + RBF(TPS) 보간으로 Pan/Tilt PWM 계산 |
 | `client_msvc` (Qt) | 영상 표시 + Track 버튼으로 추적 대상 선택 + FraudManager 부정승차 감지 |
-| `PwmTransmitter` | Qt가 수신한 PWM 값을 Raspberry Pi(TCP) 또는 ESP8266(UDP)으로 전송 |
+| `PwmTransmitter` | Qt가 수신한 PWM 값을 Raspberry Pi(TCP)로 전송 |
 
 ---
 
@@ -44,11 +44,9 @@
 │  pwmSetRequested → PwmTransmitter.sendPwm(pan,tilt) (+ PositionManager SET_PWM) │
 └─────────────────────────────────────────────────────────────────┘
               │
-     ┌────────┴────────┐
-     ▼                 ▼
-Raspberry Pi        ESP8266
-TCP :5566          UDP :5566
-(raspi 모드)       (stm 모드)
+              ▼
+        Raspberry Pi
+         TCP :5566
 ```
 
 ---
@@ -136,19 +134,17 @@ signals:
 
 ## 5. PwmTransmitter — 하드웨어 PWM 송신
 
-### 5.1 두 가지 송신 모드
+### 5.1 송신 대상
 
-| 모드 | 환경변수 값 | 통신 방식 | 대상 |
-|------|------------|-----------|------|
-| `raspi` (**기본**) | `SFEPS_PWM_MODE=raspi` | TCP 이더넷 | Raspberry Pi |
-| `stm` | `SFEPS_PWM_MODE=stm` | UDP 무선 | ESP8266 → STM |
+| 통신 방식 | 대상 |
+|-----------|------|
+| TCP 이더넷 | Raspberry Pi |
 
 ### 5.2 환경변수 설정 (`run_client.ps1`)
 
 ```powershell
-$env:SFEPS_PWM_MODE = "raspi"     # "raspi" | "stm"
-$env:SFEPS_PWM_HOST = "<ip>"     # Raspi(TCP 목적지) 또는 STM(UDP 목적지) IP
-$env:SFEPS_PWM_PORT = "<port>"   # Raspi/TCP 또는 STM/UDP 목적지 포트
+$env:SFEPS_PWM_HOST = "<ip>"     # Raspi TCP 목적지 IP
+$env:SFEPS_PWM_PORT = "<port>"   # Raspi TCP 목적지 포트
 ```
 
 ### 5.3 전송 패킷 형식
@@ -175,18 +171,6 @@ python3 set_pwm_server.py --port <SFEPS_PWM_PORT> -v
 GPIO12(PAN), GPIO13(TILT) PWM을 갱신합니다.
 
 기본 clamp 값은 `--min-us=800`, `--max-us=2200` 입니다.
-
-### 5.5 STM(ESP8266/STM32 등) 수신 방식 (UDP)
-
-`stm` 모드에서는 Qt client가 `QUdpSocket::writeDatagram()`로
-`SET_PWM,PAN=...,TILT=...\n` 문자열을 `<SFEPS_PWM_HOST>:<SFEPS_PWM_PORT>`로 전송합니다.
-
-STM 쪽은 다음만 만족하면 됩니다.
-- UDP 수신 소켓을 `<SFEPS_PWM_PORT>`에 bind
-- UDP payload 문자열에서 `PAN=` / `TILT=` 값을 파싱 (payload 끝의 `\n` 무시 가능)
-- 파싱된 `pan_us`, `tilt_us`로 PWM(서보/레이저 드라이버) 갱신
-
----
 
 ## 6. FraudManager — 부정승차 대기큐
 
@@ -370,7 +354,7 @@ cd C:\Users\2-16\Desktop\SFEPS\client_msvc
 `run_client.ps1`는 환경변수를 설정한 뒤 `appHanwhaVisionSFEPS.exe`를 실행합니다.
 - `SFEPS_RBF_PREDICT_MS`
 - `SFEPS_POSE_DOWN_RATIO`
-- `SFEPS_PWM_MODE`, `SFEPS_PWM_HOST`, `SFEPS_PWM_PORT`
+- `SFEPS_PWM_HOST`, `SFEPS_PWM_PORT`
 
 ### 10.2 Raspberry Pi PWM 수신
 
@@ -386,7 +370,7 @@ python3 pwm_receiver.py   # TCP 5566 수신
 | 5555 | Qt → 서버 | 로그인 인증(Auth) |
 | 5557 | 서버 → Qt | FRAUD 알림(FraudManager) |
 | 5558 | 서버 → Qt | 위치 스트림/오브젝트 POS(overlay/monitoring 용도) |
-| 5566 | Qt → Raspi/ESP8266 | SET_PWM 하드웨어 전송 |
+| 5566 | Qt → Raspi | SET_PWM 하드웨어 전송 |
 
 ※ `5565`/`--qt-mode` 역방향 소켓은 별도 `camera_RBF.exe` 실행 시나리오에서만 해당하며,
 현재 Windows Qt client(in-process 통합)에서는 사용하지 않습니다.
@@ -400,5 +384,5 @@ python3 pwm_receiver.py   # TCP 5566 수신
 | `client_msvc/src/videobackend.cpp` | 수정 | onPwmTick 자동 스위칭( stickyStableId 우선 ) + PoseAim 주입 + 수동 override 가드 |
 | `client_msvc/src/fraudmanager.h/.cpp` | 수정 | fraud queue/auto track request emission |
 | `client_msvc/src/main.cpp` | 수정 | FraudManager → videoBackend 연결 및 laser stop 시 TRACK_END 전송 |
-| `client_msvc/src/pwmtransmitter.h/.cpp` | 신규 | Raspberry Pi TCP / ESP8266 UDP 두 가지 모드 |
+| `client_msvc/src/pwmtransmitter.h/.cpp` | 신규 | Raspberry Pi TCP 전송 경로 |
 | `client_msvc/run_client.ps1` | 수정 | `SFEPS_RBF_PREDICT_MS`, `SFEPS_POSE_DOWN_RATIO` 등 환경변수 |

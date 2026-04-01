@@ -1,7 +1,6 @@
 #include "pwmtransmitter.h"
 #include <QDateTime>
 #include <QDebug>
-#include <QHostAddress>
 
 PwmTransmitter::PwmTransmitter(QObject *parent) : QObject(parent)
 {
@@ -12,27 +11,7 @@ PwmTransmitter::PwmTransmitter(QObject *parent) : QObject(parent)
 
 bool PwmTransmitter::isConnected() const
 {
-    if (m_mode == Mode::RaspberryPi)
-        return m_tcpSocket && m_tcpSocket->state() == QAbstractSocket::ConnectedState;
-    return m_udpSocket != nullptr;   // UDP: 설정되면 전송 가능
-}
-
-QString PwmTransmitter::mode() const
-{
-    return (m_mode == Mode::RaspberryPi) ? QStringLiteral("raspi")
-                                         : QStringLiteral("stm");
-}
-
-void PwmTransmitter::setMode(const QString &modeStr)
-{
-    const Mode newMode = (modeStr.toLower() == "stm" || modeStr.toLower() == "esp8266")
-                             ? Mode::Esp8266
-                             : Mode::RaspberryPi;
-    if (newMode == m_mode) return;
-    m_mode = newMode;
-    qDebug() << "[PwmTransmitter] Mode ->" << mode();
-    emit modeChanged();
-    emit connectedChanged();
+    return m_tcpSocket && m_tcpSocket->state() == QAbstractSocket::ConnectedState;
 }
 
 void PwmTransmitter::connectTarget(const QString &host, int port)
@@ -41,15 +20,8 @@ void PwmTransmitter::connectTarget(const QString &host, int port)
     m_port    = port;
     m_enabled = true;
 
-    if (m_mode == Mode::RaspberryPi) {
-        setupTcpSocket();
-        doConnect();
-    } else {
-        if (!m_udpSocket)
-            m_udpSocket = new QUdpSocket(this);
-        qDebug() << "[PwmTransmitter] ESP8266 UDP target:" << host << ":" << port;
-        emit connectedChanged();
-    }
+    setupTcpSocket();
+    doConnect();
 }
 
 void PwmTransmitter::disconnectTarget()
@@ -58,11 +30,6 @@ void PwmTransmitter::disconnectTarget()
     m_reconnectTimer->stop();
     if (m_tcpSocket) {
         m_tcpSocket->disconnectFromHost();
-    }
-    if (m_udpSocket) {
-        m_udpSocket->close();
-        m_udpSocket->deleteLater();
-        m_udpSocket = nullptr;
     }
 }
 
@@ -130,17 +97,8 @@ void PwmTransmitter::tryReconnect()
 void PwmTransmitter::sendRaw(const QByteArray &data)
 {
     if (!m_enabled) return;
-
-    if (m_mode == Mode::RaspberryPi) {
-        if (!m_tcpSocket ||
-            m_tcpSocket->state() != QAbstractSocket::ConnectedState)
-            return;
-        m_tcpSocket->write(data);
-    } else {
-        if (!m_udpSocket || m_host.isEmpty()) return;
-        m_udpSocket->writeDatagram(data, QHostAddress(m_host),
-                                   static_cast<quint16>(m_port));
-    }
+    if (!m_tcpSocket || m_tcpSocket->state() != QAbstractSocket::ConnectedState) return;
+    m_tcpSocket->write(data);
 }
 
 void PwmTransmitter::sendTrackStart(const QString &objectId)
@@ -163,8 +121,7 @@ void PwmTransmitter::sendPwm(int pan, int tilt)
 {
     if (!m_enabled) return;
 
-    if (m_mode == Mode::RaspberryPi &&
-        (!m_tcpSocket || m_tcpSocket->state() != QAbstractSocket::ConnectedState)) {
+    if (!m_tcpSocket || m_tcpSocket->state() != QAbstractSocket::ConnectedState) {
         static qint64 lastWarnMs = 0;
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
         if (now - lastWarnMs > 5000) {
@@ -172,10 +129,6 @@ void PwmTransmitter::sendPwm(int pan, int tilt)
                        << "(서버 실행: python3 set_pwm_server.py --port" << m_port << ")";
             lastWarnMs = now;
         }
-        return;
-    }
-    if (m_mode == Mode::Esp8266 && (!m_udpSocket || m_host.isEmpty())) {
-        qWarning() << "[PwmTransmitter] ESP8266 UDP not configured";
         return;
     }
 

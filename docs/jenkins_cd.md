@@ -92,7 +92,6 @@ Test deploy (`develop`):
   - `SFEPS_APP_BIND_IP=0.0.0.0`
   - `SFEPS_APP_TLS_ENABLE=0`
   - `SFEPS_APP_PLAINTEXT_ENABLE=1`
-  - `SFEPS_ESP_TCP_ENABLE=0`
 
 Prod deploy (`main`):
 - 승인 단계 후 배포

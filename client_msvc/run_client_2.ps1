@@ -71,9 +71,8 @@ if (-not (Test-Path $caPath)) {
     Write-Warning "TLS 로그인 사용 시 certs/auth_ca.pem 파일을 배치하세요."
 }
 
-# ── PWM 전송 모드 (camera_RBF --qt-mode 연동) ──────────────────────────────────
+# ── PWM 전송 설정 (camera_RBF --qt-mode 연동) ──────────────────────────────────
 # PWM 설정은 항상 강제 적용 (Set-DefaultEnv는 이미 설정된 값을 덮어쓰지 않으므로 직접 설정)
-[Environment]::SetEnvironmentVariable("SFEPS_PWM_MODE", "raspi",        "Process")  # raspi | stm
 [Environment]::SetEnvironmentVariable("SFEPS_PWM_HOST", "127.0.0.1",    "Process")  # SSH 터널: ssh -p 2222 -L 15566:localhost:5566 -N physical-100@192.168.0.87
 [Environment]::SetEnvironmentVariable("SFEPS_PWM_PORT", "15566",        "Process")  # 로컬 터널 포트 (Cursor가 5566 점유 중)
 
@@ -118,4 +117,3 @@ if (Test-Path $gstreamerPluginDir) { Set-DefaultEnv "GST_PLUGIN_PATH" $gstreamer
 
 Write-Host "[run_client_2.ps1] exe=$exePath opencvBin=$opencvBin backend=$($env:RTSP_BACKEND) AUTH_TLS_ENABLE=$($env:AUTH_TLS_ENABLE) SFEPS_CLIENT_TLS_ENABLE=$($env:SFEPS_CLIENT_TLS_ENABLE) SFEPS_POS_TLS_ENABLE=$($env:SFEPS_POS_TLS_ENABLE) SFEPS_ALERT_TLS_ENABLE=$($env:SFEPS_ALERT_TLS_ENABLE)"
 & $exePath
-

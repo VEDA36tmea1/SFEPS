@@ -15,7 +15,7 @@
   - RFID 연령 정보와 카메라 추정 연령을 비교해 fraud 여부 판단
   - `analytics_logs` DB 적재
   - `FRAUD|...` Alert 메시지 생성
-  - ESP 추적/이미지 후처리용 callback 호출
+  - 이미지 후처리용 callback 호출
 - 환경변수로 큐 크기, pending TTL, drop log 샘플링, rule 이름을 조정합니다.
 
 ### `recorder.cpp`
@@ -47,7 +47,7 @@
 2. `analytics.cpp`가 객체 위치와 rule 이벤트를 모읍니다.
 3. `rfid_monitor.cpp`가 RFID 연령 텍스트를 넣어 pending 객체와 매칭합니다.
 4. outline 이벤트 시 fraud 여부를 최종 결정합니다.
-5. 결과는 DB, Alert, ESP, fraud 이미지 후처리로 퍼집니다.
+5. 결과는 DB, Alert, fraud 이미지 후처리로 퍼집니다.
 
 ## 주의 포인트
 

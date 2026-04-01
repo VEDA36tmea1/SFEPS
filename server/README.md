@@ -17,9 +17,8 @@
 - 알림 브로드캐스트(Alert)
 - 객체 위치 스트리밍(Position)
 - 녹화 목록/재생 URL 제공(Video Catalog)
-- 선택 기능: ESP TCP 연동
 
-핵심은 단순한 "API 서버"가 아니라, 카메라/DB/RFID/앱 클라이언트/ESP를 한 번에 연결하는 실시간 이벤트 허브에 가깝다는 점입니다.
+핵심은 단순한 "API 서버"가 아니라, 카메라/DB/RFID/앱 클라이언트를 한 번에 연결하는 실시간 이벤트 허브에 가깝다는 점입니다.
 
 ## 2. 전체 구조
 
@@ -33,7 +32,7 @@
   - Auth/Alert/Audio/Position/Video Catalog 서비스가 공통으로 쓰는 transport/helper
 - `modules/`
   - 실제 도메인 로직
-  - `auth/`, `alerts/`, `voice/`, `ui/`, `streaming/`, `esp/`
+  - `auth/`, `alerts/`, `voice/`, `ui/`, `streaming/`
 
 읽는 시작점은 항상 `server/src/main.cpp`입니다.
 
@@ -46,7 +45,7 @@
    - DB 호스트는 `localhost`만 허용합니다.
 
 2. `SecurityRuntimeOptions` 로드 및 검증
-   - allowlist, 최대 payload, 포트, TLS, ESP, retention 값을 읽습니다.
+   - allowlist, 최대 payload, 포트, TLS, retention 값을 읽습니다.
    - Auth/Audio/Alert allowlist가 비어 있으면 fail-closed로 종료합니다.
    - TLS 사용 시 cert/key 가독성과 포트 충돌도 검사합니다.
 
@@ -69,34 +68,30 @@
 7. Analytics callback 연결
    - RFID 매칭 성공 시 이미지 캡처 요청
    - outline 판정 완료 시 fraud 이미지 finalize + `IMG_REF` Alert 전송
-   - fraud 위치 갱신 시 ESP 추적 위치 전송
 
-8. `EspManager` 시작
-   - 설정이 켜져 있으면 ESP용 TCP 서버를 엽니다.
-
-9. 백그라운드 워커 시작
+8. 백그라운드 워커 시작
    - 영상 파일 retention / 용량 정리
    - pending/fraud 이미지 정리
    - DB cleanup 요청 스레드
 
-10. 앱 서비스 스레드 시작
+9. 앱 서비스 스레드 시작
    - Auth
    - Audio
    - Alert
    - Position
    - Video Catalog
 
-11. `RfidMonitor` 시작
+10. `RfidMonitor` 시작
    - `/tmp/rc522_events.sock`를 감시합니다.
 
-12. 메인 스레드에서 `RTSPRecorder::run()`
+11. 메인 스레드에서 `RTSPRecorder::run()`
    - RTSP 연결 유지
    - MP4 세그먼트 저장
    - 메타데이터 XML 추출 후 Analytics로 전달
 
-13. 종료 시
+12. 종료 시
    - `g_running=false`
-   - Alert/ESP 연결 정리
+   - Alert 연결 정리
    - 각 스레드 join
    - `analytics.stop()`
 
@@ -104,7 +99,7 @@
 
 ## 4. 가장 중요한 데이터 흐름
 
-### 4.1 카메라 메타데이터 -> 객체 상태 -> Alert/ESP/Position
+### 4.1 카메라 메타데이터 -> 객체 상태 -> Alert/Position
 
 관련 파일:
 
@@ -112,7 +107,6 @@
 - `server/src/modules/streaming/analytics.cpp`
 - `server/src/modules/alerts/alert.cpp`
 - `server/src/modules/ui/position_service.cpp`
-- `server/src/modules/esp/esp_manager.cpp`
 
 흐름은 아래와 같습니다.
 
@@ -130,14 +124,12 @@
 7. 결과는 동시에 여러 곳으로 퍼집니다.
    - Alert: `FRAUD|...`
    - Position: `getAllObjectSnapshots()`를 통해 주기적으로 방송
-   - ESP: fraud track 위치 callback
    - DB: fraud일 때만 `analytics_logs` INSERT
 
 중요한 점:
 
 - Position 서비스는 자체적으로 객체를 계산하지 않습니다.
 - Position은 `AnalyticsProcessor`가 유지하는 최신 스냅샷을 읽어서 방송합니다.
-- ESP도 동일한 원본 상태를 재사용합니다.
 
 ### 4.2 RFID -> pending 객체 매칭 -> 이미지 캡처 -> fraud 이미지 확정
 
@@ -221,7 +213,6 @@
 - `server/src/modules/ui/position_service.cpp`
 - `server/src/services/service_shared.cpp`
 - `server/src/modules/alerts/alert.cpp`
-- `server/src/modules/esp/esp_manager.cpp`
 
 흐름은 아래와 같습니다.
 
@@ -240,9 +231,7 @@
    - `OBJ_END|...`
    를 연결된 Position 클라이언트들에게 전송합니다.
 
-6. Position 클라이언트가 특정 object id를 구독하면 ESP 추적 대상도 그 id로 전환됩니다.
-
-7. Position 연결이 끊기면 즉시 인증을 지우지 않고 grace period를 둡니다.
+6. Position 연결이 끊기면 즉시 인증을 지우지 않고 grace period를 둡니다.
    - `SFEPS_AUTH_DEAUTH_GRACE_MS`
    - 같은 IP로 재연결하면 예약된 deauth를 취소
    - 끝까지 재연결이 없으면 `unmark_ip_authenticated(ip)`
@@ -302,30 +291,6 @@
 
 - RFID 태그가 읽힐 때 입력 오디오 클라이언트가 없으면 로컬 비프음을 재생합니다.
 
-### 4.7 Fraud 위치 -> ESP 자동 추적 / 수동 추적
-
-관련 파일:
-
-- `server/src/modules/esp/esp_manager.cpp`
-- `server/src/modules/ui/position_service.cpp`
-- `server/src/modules/streaming/analytics.cpp`
-
-ESP 추적에는 두 모드가 있습니다.
-
-1. 수동 추적
-   - Position 구독자가 `SUB_POS|object_id`를 보내면 그 object id를 우선 추적합니다.
-
-2. 자동 fraud 추적
-   - 수동 추적 중이 아닐 때, fraud 객체 위치가 들어오면 그 객체를 자동 추적합니다.
-
-ESP로 나가는 메시지:
-
-- `ESP_READY|SERVER_ONLINE`
-- `TRACK_SWITCH|FROM=...|TO=...`
-- `TRACK_START|<object_id>`
-- `TRACK_POS|...`
-- `TRACK_END|<object_id>|REASON=...`
-
 ## 5. 모듈별 책임 정리
 
 ### `core/config`
@@ -378,10 +343,6 @@ ESP로 나가는 메시지:
 
 - 오디오 수신 및 재생 버퍼링
 
-### `modules/esp`
-
-- 외부 ESP 장치 추적 이벤트 송신
-
 ## 6. 서버가 쓰는 주요 상태 저장소
 
 ### 메모리 상태
@@ -392,7 +353,7 @@ ESP로 나가는 메시지:
 
 - 최신 객체 위치
   - Analytics가 유지
-  - Position/ESP가 읽음
+  - Position이 읽음
 
 - pending 객체 큐
   - enterline 이벤트로 생성
@@ -432,7 +393,6 @@ ESP로 나가는 메시지:
 | 5557 | Alert | 서버 푸시 구독 |
 | 5558 | Position | 위치 스트림 |
 | 5559 | Video Catalog | 녹화 목록/재생 요청 |
-| 5565 | ESP | 외부 장치 추적 신호 |
 
 ### TLS 기본값
 
@@ -478,17 +438,9 @@ Video Catalog:
 - `PLAY_URL|<id>|<created_at>|<url>`
 - `PLAY_ERR|...`
 
-ESP:
-
-- `ESP_READY|SERVER_ONLINE`
-- `TRACK_SWITCH|FROM=...|TO=...`
-- `TRACK_START|<object_id>`
-- `TRACK_POS|...`
-- `TRACK_END|<object_id>|REASON=...`
-
 참고:
 
-- `Video Catalog` plain/TLS 포트와 `ESP` 포트는 환경변수로 변경 가능합니다.
+- `Video Catalog` plain/TLS 포트는 환경변수로 변경 가능합니다.
 - Auth/Audio/Alert/Position plain 포트는 코드상 `5555~5558`로 고정되어 있습니다.
 
 ## 8. 필수 환경변수
@@ -551,8 +503,7 @@ cmake --build build -j"$(nproc)"
 8. `server/src/modules/auth/auth_service.cpp`
 9. `server/src/modules/ui/position_service.cpp`
 10. `server/src/modules/ui/video_catalog_service.cpp`
-11. `server/src/modules/esp/esp_manager.cpp`
 
 ## 12. 한 줄 요약
 
-이 서버는 "카메라 메타데이터와 RFID를 합쳐 객체별 fraud를 판정하고, 그 결과를 DB/Alert/Position/Video Catalog/ESP로 동시에 배포하는 실시간 멀티서비스 프로세스"입니다.
+이 서버는 "카메라 메타데이터와 RFID를 합쳐 객체별 fraud를 판정하고, 그 결과를 DB/Alert/Position/Video Catalog로 동시에 배포하는 실시간 멀티서비스 프로세스"입니다.

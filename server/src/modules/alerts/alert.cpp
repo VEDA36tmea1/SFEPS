@@ -144,23 +144,16 @@ bool add_alert_plain_client(int fd, const std::string& client_ip) {
     client.fd = fd;
     client.client_ip = client_ip;
     g_plain_clients.push_back(std::move(client));
-    std::cout << "[main.cpp] [Alert] 클라이언트 연결됨: 종류=plain, fd=" << fd
-              << ", ip=" << client_ip << ", 총_클라이언트=" << total_clients_locked()
-              << std::endl;
     return true;
 }
 
 bool add_alert_tls_client(TlsClientConnection&& client, const std::string& client_ip) {
     if (client.fd < 0 || client.ssl == nullptr) return false;
     std::lock_guard<std::mutex> lock(g_alert_clients_mutex);
-    const int fd = client.fd;
     TlsAlertClient state;
     state.conn = std::move(client);
     state.client_ip = client_ip;
     g_tls_clients.emplace_back(std::move(state));
-    std::cout << "[main.cpp] [Alert] 클라이언트 연결됨: 종류=tls, fd=" << fd
-              << ", ip=" << client_ip << ", 총_클라이언트=" << total_clients_locked()
-              << std::endl;
     return true;
 }
 
