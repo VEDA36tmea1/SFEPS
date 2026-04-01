@@ -66,7 +66,6 @@ cd C:\Users\2-16\Desktop\SFEPS\client_msvc
 ```
 SFEPS_PWM_HOST = 127.0.0.1   ← SSH 터널 로컬 엔드포인트
 SFEPS_PWM_PORT = 15566        ← 터널 로컬 포트
-SFEPS_PWM_MODE = raspi
 ```
 
 ---

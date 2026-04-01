@@ -12,8 +12,6 @@ pipeline {
         SFEPS_DB_USER = "${env.SFEPS_DB_USER ?: 'pi'}"
         SFEPS_DB_PASS = "${env.SFEPS_DB_PASS ?: 'raspberry'}"
         SFEPS_DB_NAME_ANALYTICS = "${env.SFEPS_DB_NAME_ANALYTICS ?: 'CCgbd'}"
-        SFEPS_ESP_TCP_ENABLE = "${env.SFEPS_ESP_TCP_ENABLE ?: '0'}"
-        SFEPS_ESP_TCP_BIND_IP = "${env.SFEPS_ESP_TCP_BIND_IP ?: '127.0.0.1'}"
 
         // CD settings (override in Jenkins job/global env)
         SFEPS_DOCKER_REGISTRY = "${env.SFEPS_DOCKER_REGISTRY ?: 'ghcr.io'}"
@@ -704,13 +702,12 @@ PY
                             exit 1
                           fi
                           rm -f '${SFEPS_REMOTE_ENV_FILE}.ci-test'
-                          grep -Ev '^(SFEPS_APP_BIND_IP|SFEPS_APP_TLS_ENABLE|SFEPS_APP_PLAINTEXT_ENABLE|SFEPS_APP_TLS_CERT_FILE|SFEPS_APP_TLS_KEY_FILE|SFEPS_ESP_TCP_ENABLE|SFEPS_ESP_TCP_BIND_IP|SFEPS_ESP_TCP_PORT|SFEPS_ESP_TCP_MAX_CLIENTS|SFEPS_ESP_TCP_ALLOW_IPS)=' \
+                          grep -Ev '^(SFEPS_APP_BIND_IP|SFEPS_APP_TLS_ENABLE|SFEPS_APP_PLAINTEXT_ENABLE|SFEPS_APP_TLS_CERT_FILE|SFEPS_APP_TLS_KEY_FILE)=' \
                             '${SFEPS_REMOTE_ENV_FILE}' > '${SFEPS_REMOTE_ENV_FILE}.ci-test'
                           {
                             echo 'SFEPS_APP_BIND_IP=0.0.0.0'
                             echo 'SFEPS_APP_TLS_ENABLE=0'
                             echo 'SFEPS_APP_PLAINTEXT_ENABLE=1'
-                            echo 'SFEPS_ESP_TCP_ENABLE=0'
                           } >> '${SFEPS_REMOTE_ENV_FILE}.ci-test'
                           if ! docker run -d --name '${SFEPS_TEST_CONTAINER_NAME}' --restart unless-stopped --network host \
                             -v '${SFEPS_REMOTE_ENV_FILE}.ci-test:${SFEPS_CONTAINER_ENV_FILE}:ro' \

@@ -1,10 +1,14 @@
+#include <unistd.h>
+
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cstdio>
 #include <functional>
 #include <iostream>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -13,7 +17,6 @@
 #include "analytics.h"
 #include "auth.h"
 #include "cleanup.h"
-#include "esp_manager.h"
 #include "log.h"
 #include "recorder.h"
 #include "rfid_image_pipeline.h"
@@ -52,11 +55,107 @@ std::string sanitize_alert_field(std::string value) {
 }
 
 void print_section_log(const std::string& title, const std::vector<std::string>& lines) {
-    std::cout << "[" << title << "]" << std::endl;
+    std::string output = "[" + title + "]\n";
     for (const auto& line : lines) {
-        std::cout << line << std::endl;
+        output += line;
+        output.push_back('\n');
     }
-    std::cout << "--------------------" << std::endl;
+    output += "--------------------\n";
+    (void)::write(STDOUT_FILENO, output.c_str(), output.size());
+}
+
+int extract_port_number(const std::string& line) {
+    const std::size_t colon_pos = line.rfind(':');
+    if (colon_pos == std::string::npos || colon_pos + 1 >= line.size()) {
+        return -1;
+    }
+
+    std::size_t end_pos = colon_pos + 1;
+    while (end_pos < line.size() && std::isdigit(static_cast<unsigned char>(line[end_pos]))) {
+        ++end_pos;
+    }
+    if (end_pos == colon_pos + 1) {
+        return -1;
+    }
+
+    try {
+        return std::stoi(line.substr(colon_pos + 1, end_pos - (colon_pos + 1)));
+    } catch (...) {
+        return -1;
+    }
+}
+
+std::unordered_set<int> capture_listening_ports() {
+    constexpr const char* kCommand =
+        "sh -lc \"ss -H -tln 2>/dev/null | awk '{print $4}' || netstat -tln 2>/dev/null | awk 'NR>2 {print $4}'\"";
+
+    std::unordered_set<int> ports;
+    FILE* pipe = popen(kCommand, "r");
+    if (pipe == nullptr) return ports;
+
+    char buffer[512];
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        std::string line(buffer);
+        while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) {
+            line.pop_back();
+        }
+        if (line.empty()) continue;
+
+        const int port = extract_port_number(line);
+        if ((port >= 5555 && port <= 5559) || (port >= 6555 && port <= 6559)) {
+            ports.insert(port);
+        }
+    }
+    pclose(pipe);
+    return ports;
+}
+
+std::vector<int> expected_listening_ports(const SecurityRuntimeOptions& sec_cfg) {
+    std::vector<int> ports;
+    if (sec_cfg.app_plaintext_enable) {
+        ports.push_back(app_services_shared::kAuthPort);
+        ports.push_back(app_services_shared::kAudioPort);
+        ports.push_back(app_services_shared::kAlertPort);
+        ports.push_back(app_services_shared::kPositionPort);
+        ports.push_back(sec_cfg.video_catalog_port);
+    }
+    if (sec_cfg.app_tls_enable) {
+        ports.push_back(sec_cfg.auth_tls_port);
+        ports.push_back(sec_cfg.audio_tls_port);
+        ports.push_back(sec_cfg.alert_tls_port);
+        ports.push_back(sec_cfg.position_tls_port);
+        ports.push_back(sec_cfg.video_catalog_tls_port);
+    }
+    return ports;
+}
+
+void log_listening_ports(const SecurityRuntimeOptions& sec_cfg, std::atomic<bool>& running_flag) {
+    std::unordered_set<int> open_ports;
+    const std::vector<int> expected_ports = expected_listening_ports(sec_cfg);
+
+    for (int attempt = 0; attempt < 50 && running_flag.load(); ++attempt) {
+        open_ports = capture_listening_ports();
+        bool all_ready = !expected_ports.empty();
+        for (const int port : expected_ports) {
+            if (open_ports.count(port) == 0) {
+                all_ready = false;
+                break;
+            }
+        }
+        if (all_ready || (!open_ports.empty() && expected_ports.empty())) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+
+    std::vector<std::string> lines;
+    for (const int port : expected_ports) {
+        if (open_ports.count(port) > 0) {
+            lines.push_back("포트 " + std::to_string(port) + " : LISTEN");
+        }
+    }
+    if (lines.empty()) {
+        lines.push_back("조회 결과 없음");
+    }
+    print_section_log("포트 리스닝 상태", lines);
 }
 
 }  // namespace
@@ -114,7 +213,6 @@ int main() {
             AnalyticsProcessor::OutlineDecisionPayload send_payload = payload;
             send_payload.is_fraud = detected_fraud;
             FinalizedFraudImageInfo fraud_image_info;
-            bool image_ref_sent = false;
             if (should_send_image_ref &&
                 finalize_outline_image_for_object(send_payload, &fraud_image_info) &&
                 !sec_cfg.fraud_image_http_base_url.empty() &&
@@ -128,7 +226,6 @@ int main() {
                                       "|NAME=" + sanitize_alert_field(fraud_image_info.filename);
                 message.push_back('\n');
                 send_alert_to_clients(message);
-                image_ref_sent = true;
             }
 
             const std::string card_age_display =
@@ -144,30 +241,6 @@ int main() {
             print_section_log("판정 결과", lines);
         });
     if (!analytics.start()) {
-        return -1;
-    }
-
-    EspManager::Config esp_cfg;
-    esp_cfg.enabled = sec_cfg.esp_tcp_enable;
-    esp_cfg.bind_ip = sec_cfg.esp_tcp_bind_ip;
-    esp_cfg.port = sec_cfg.esp_tcp_port;
-    esp_cfg.max_clients = sec_cfg.esp_tcp_max_clients;
-    esp_cfg.allow_ips = sec_cfg.esp_tcp_allow_ips;
-    EspManager esp_manager(std::move(esp_cfg));
-    analytics.setTrackPosCallback(
-        [&esp_manager](const AnalyticsProcessor::TrackPosPayload& payload) {
-            EspManager::TrackPosPayload esp_payload;
-            esp_payload.object_id = payload.object_id;
-            esp_payload.left = payload.left;
-            esp_payload.top = payload.top;
-            esp_payload.right = payload.right;
-            esp_payload.bottom = payload.bottom;
-            esp_payload.x = payload.x;
-            esp_payload.y = payload.y;
-            esp_manager.publishFraudTrackPosIfIdle(esp_payload);
-        });
-    if (sec_cfg.esp_tcp_enable && !esp_manager.start(g_running)) {
-        analytics.stop();
         return -1;
     }
 
@@ -194,7 +267,7 @@ int main() {
     std::thread t_audio(run_audio_receiver, std::ref(g_running), std::cref(sec_cfg));
     std::thread t_alert(run_fraud_notifier, std::ref(g_running), std::cref(sec_cfg));
     std::thread t_position(run_position_stream_service, std::ref(g_running), std::cref(sec_cfg),
-                           std::ref(analytics), std::ref(esp_manager));
+                           std::ref(analytics));
     std::thread t_video_catalog(run_video_catalog_service, std::ref(g_running), std::cref(cfg),
                                 std::cref(sec_cfg));
 
@@ -202,6 +275,7 @@ int main() {
     std::thread t_rfid(&RfidMonitor::start, &rfid_monitor);
 
     std::cout << "서버 정상 가동" << std::endl;
+    log_listening_ports(sec_cfg, g_running);
 
     RTSPRecorder recorder(logger, g_running, analytics);
     recorder.run();
@@ -209,7 +283,6 @@ int main() {
     g_running = false;
 
     close_alert_client_connections();
-    esp_manager.stop();
 
     if (t_rfid.joinable()) t_rfid.join();
     if (t_position.joinable()) t_position.join();

@@ -57,7 +57,6 @@ add_executable(smart_server
     src/modules/auth/auth_service.cpp
     src/modules/streaming/rfid_monitor.cpp
     src/modules/alerts/alert.cpp
-    src/modules/esp/esp_manager.cpp
     src/core/network/tls_server.cpp
     ${AUDIO_SPEAKER_UNIT_DIR}/src/audio_ring_buffer.cpp
     ${AUDIO_SPEAKER_UNIT_DIR}/src/audio_playback.cpp

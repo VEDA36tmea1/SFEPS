@@ -68,8 +68,8 @@ int main(int argc, char *argv[]) {
     PositionManager positionManager;
     engine.rootContext()->setContextProperty("positionManager", &positionManager);
 
-    // PwmTransmitter: camera_RBF에서 수신한 PWM 값을 하드웨어로 송신
-    // 환경변수: SFEPS_PWM_MODE (raspi|stm|both), SFEPS_PWM_HOST, SFEPS_PWM_PORT
+    // PwmTransmitter: camera_RBF에서 수신한 PWM 값을 Raspberry Pi로 송신
+    // 환경변수: SFEPS_PWM_HOST, SFEPS_PWM_PORT
     PwmTransmitter pwmTransmitter;
     engine.rootContext()->setContextProperty("pwmTransmitter", &pwmTransmitter);
 
@@ -88,7 +88,7 @@ int main(int argc, char *argv[]) {
   auto *liveFrameProvider = new LiveFrameProvider();
   engine.addImageProvider(QStringLiteral("live"), liveFrameProvider);
   videoBackend.setLiveFrameProvider(liveFrameProvider);
-  // RBF 계산된 PWM → PwmTransmitter (Raspberry Pi / ESP8266) 직접 전송
+  // RBF 계산된 PWM → PwmTransmitter (Raspberry Pi) 직접 전송
   QObject::connect(&videoBackend, &MainWindow::pwmSetRequested,
                    [&pwmTransmitter, &videoBackend](int pan, int tilt) {
 #ifdef SFEPS_HAVE_OPENCV
@@ -127,25 +127,12 @@ int main(int argc, char *argv[]) {
   };
 
   // ── PwmTransmitter 초기화 ───────────────────────────────────────────────
-  // SFEPS_PWM_MODE : "raspi" (TCP) | "stm" (ESP8266 UDP) | "both" (동시 전송)
-  // SFEPS_PWM_HOST/SFEPS_PWM_PORT: 1차 타겟 (raspi/both에서는 Raspberry Pi TCP)
-  // SFEPS_PWM_STM_HOST/SFEPS_PWM_STM_PORT: both 모드의 2차 타겟 (ESP8266 UDP)
-  // SFEPS_PWM_STM_TRANSPORT: "udp"(기본) | "tcp" (ESP8266 AP + TCP 서버 사용 시)
+  // SFEPS_PWM_HOST : PWM 수신 장치 IP (기본: 192.168.0.100)
+  // SFEPS_PWM_PORT : PWM 수신 포트    (기본: 5566)
   {
-      const QString pwmMode = env.value("SFEPS_PWM_MODE", "raspi").trimmed();
       const QString pwmHost = env.value("SFEPS_PWM_HOST", "192.168.0.100").trimmed();
       const int     pwmPort = parseEnvPort(env, "SFEPS_PWM_PORT", 5566);
-      const QString pwmStmHost = env.value("SFEPS_PWM_STM_HOST", "192.168.4.1").trimmed();
-      const int     pwmStmPort = parseEnvPort(env, "SFEPS_PWM_STM_PORT", 4210);
-      const QString pwmStmTransport = env.value("SFEPS_PWM_STM_TRANSPORT", "udp").trimmed();
-      qDebug() << "[Main] PwmTransmitter mode=" << pwmMode
-               << " host=" << pwmHost << " port=" << pwmPort;
-      pwmTransmitter.setMode(pwmMode);
-      pwmTransmitter.setStmTransport(pwmStmTransport);
-      if (pwmMode.compare("both", Qt::CaseInsensitive) == 0) {
-          qDebug() << "[Main] PwmTransmitter secondary(ESP8266)=" << pwmStmHost << ":" << pwmStmPort;
-          pwmTransmitter.connectSecondaryTarget(pwmStmHost, pwmStmPort);
-      }
+      qDebug() << "[Main] PwmTransmitter host=" << pwmHost << " port=" << pwmPort;
       pwmTransmitter.connectTarget(pwmHost, pwmPort);
   }
 

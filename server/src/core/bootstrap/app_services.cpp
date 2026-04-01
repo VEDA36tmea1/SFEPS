@@ -22,9 +22,8 @@ void run_video_catalog_service(std::atomic<bool>& running,
 
 void run_position_stream_service(std::atomic<bool>& running,
                                  const SecurityRuntimeOptions& sec_cfg,
-                                 AnalyticsProcessor& analytics,
-                                 EspManager& esp_manager) {
-    app_services_impl::run_position_stream_service_impl(running, sec_cfg, analytics, esp_manager);
+                                 AnalyticsProcessor& analytics) {
+    app_services_impl::run_position_stream_service_impl(running, sec_cfg, analytics);
 }
 
 void run_login_auth(std::atomic<bool>& running,

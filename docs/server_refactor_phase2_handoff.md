@@ -25,7 +25,7 @@ Last updated: 2026-03-19
   - `recorder.cpp`: runtime limits 로딩 정리
   - `rfid_monitor.cpp`: text helper 공통화
   - `log.cpp`: DB execute/bind/cleanup helper 분리
-  - `alert.cpp`, `esp_manager.cpp`: dispatch/broadcast 중복 축소
+  - `alert.cpp`: dispatch/broadcast 중복 축소
 - app services 분리:
   - `services/auth_service.cpp`
   - `services/audio_service.cpp`

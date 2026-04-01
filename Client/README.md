@@ -95,7 +95,7 @@ cd C:\Users\<사용자>\Desktop\SFEPS\client_msvc\build-msvc\Release
 - `SFEPS_DIRECT_STREAM_MODE`(로그인 생략 후 RTSP만)
 - `SFEPS_USE_ONVIF_METADATA`, `RTSP_BACKEND`(`ffmpeg` 또는 `gstreamer`), `RTSP_TARGET_FPS`, `RTSP_DROP_GRABS`, `RTSP_FFMPEG_OPTIONS`, `SFEPS_GSTREAMER_PIPELINE`
 
-PWM/추적 연동(라즈베리·STM 등): `SFEPS_PWM_MODE`, `SFEPS_PWM_HOST`, `SFEPS_PWM_PORT` — 배선·수신 측은 `RASPI_PWM_SETUP.md` 참고
+PWM/추적 연동(라즈베리): `SFEPS_PWM_HOST`, `SFEPS_PWM_PORT` — 배선·수신 측은 `RASPI_PWM_SETUP.md` 참고
 
 카메라 CGI:
 - `CAMERA_CGI_USER`

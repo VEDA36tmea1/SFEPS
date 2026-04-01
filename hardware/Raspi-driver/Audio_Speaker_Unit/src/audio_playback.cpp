@@ -45,8 +45,7 @@ bool AudioPlayback::initPcm()
     snd_pcm_get_params(pcm_handle_, &buf_size, &period_size);
     period_frames_ = static_cast<unsigned int>(period_size > 0 ? period_size : 256);
 
-    std::cout << "[AudioPlayback] PCM initialized. buffer_frames=" << buf_size
-              << " period_frames=" << period_frames_ << std::endl;
+    (void)buf_size;
     return true;
 }
 

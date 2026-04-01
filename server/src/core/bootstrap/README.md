@@ -12,7 +12,7 @@
 - `run_video_catalog_service`
   - 런타임 설정과 보안 설정을 받아 녹화 목록 조회 서비스를 시작합니다.
 - `run_position_stream_service`
-  - `AnalyticsProcessor`, `EspManager`를 연결한 위치 스트리밍 서비스를 시작합니다.
+  - `AnalyticsProcessor`를 읽는 위치 스트리밍 서비스를 시작합니다.
 - `run_login_auth`
   - 로그인 인증 서비스를 시작합니다.
 

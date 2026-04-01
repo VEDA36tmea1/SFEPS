@@ -15,9 +15,7 @@
 - 주요 동작:
   - 인증되지 않은 IP는 연결 거부
   - 강제 로그아웃 Alert 이벤트 전송
-  - 클라이언트별 활성 구독 object id 관리
   - `AnalyticsProcessor` snapshot을 주기적으로 읽어 변경분만 방송
-  - Position 구독 대상과 `EspManager` 추적 대상을 동기화
 
 ### `video_catalog_service.cpp`
 - 녹화 파일 목록 구독 및 `id` 기반 재생 서비스입니다.
